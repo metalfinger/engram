@@ -1,6 +1,6 @@
 ---
 name: engram
-description: Hiren's cross-session knowledge base protocol. Trigger at the start of any work session, when Hiren names a project (alt, hyprlocl, deccan-transcon, materia-verde, arete, fx-stuthi, metalfinger), asks "what are we working on", references past sessions or decisions, or says "close session". Governs how to load project context lazily via OKF, read/write concepts, pass messages between sessions, and close sessions so the next one inherits state.
+description: Hiren's cross-session knowledge base protocol. Trigger at the start of any work session, when Hiren names a project (engram, metalfinger — kb_projects lists the live set), asks "what are we working on", references past sessions or decisions, or says "close session". Governs how to load project context lazily via OKF, read/write concepts, pass messages between sessions, and close sessions so the next one inherits state.
 ---
 
 # Engram Protocol
