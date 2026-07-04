@@ -2,4 +2,4 @@
 
 ## 2026-07-04 — Bundle initialized
 
-Skeleton created from the Helix KB handoff. No sessions logged yet.
+Skeleton created from the Engram handoff. No sessions logged yet.

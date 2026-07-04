@@ -9,4 +9,4 @@ project: metalfinger
 ---
 # Helix (Video 1)
 
-TODO: script/state. Note: the Helix KB build (this system) is Helix v2 material.
+TODO: script/state. Note: the Engram build (this system) is Helix v2 material.

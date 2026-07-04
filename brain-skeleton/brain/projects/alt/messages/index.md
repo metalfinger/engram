@@ -1,3 +1,3 @@
 # Messages
 
-No unread messages. Read messages live in [archive/](archive/).
+No unread messages. Read messages live in [archive/](archive/index.md).

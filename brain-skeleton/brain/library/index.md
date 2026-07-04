@@ -1,4 +1,4 @@
 # Library
 
-* [Runbooks](runbooks/) - Cross-project how-tos.
-* [Snippets](snippets/) - Reusable code and configs.
+* [Runbooks](runbooks/index.md) - Cross-project how-tos.
+* [Snippets](snippets/index.md) - Reusable code and configs.
