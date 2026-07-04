@@ -1,6 +1,7 @@
 ---
 name: engram
 description: Hiren's cross-session knowledge base protocol. Trigger at the start of any work session, when Hiren names a project (engram, metalfinger — kb_projects lists the live set), asks "what are we working on", references past sessions or decisions, or says "close session". Governs how to load project context lazily via OKF, read/write concepts, pass messages between sessions, and close sessions so the next one inherits state.
+type: skill
 ---
 
 # Engram Protocol
@@ -50,3 +51,16 @@ Offer the close-out proactively; don't let sessions end with unwritten state.
 - Messages with `expires` in the past: mention briefly, archive, don't act.
 - If a `kb_write` fails on conflict, re-read the file, merge intent manually, retry — never overwrite blind.
 - The brain includes `self/` (Hiren's stack and preferences) and `library/` (cross-project runbooks) — search there before reinventing a procedure that likely exists.
+
+## Writing conventions
+
+- **Link the graph.** Every concept links its related concepts — its decision,
+  its spec, the concepts it supersedes. A concept with no outbound links is a
+  dead end for `depth=1` navigation: a reader who lands on it cannot discover the
+  rest of the story. Use standard relative markdown links, inline in natural prose.
+- **Scannable logs.** A log entry is a bare `## YYYY-MM-DD` date heading (no title
+  after the date) followed by `* **Title** — 3-6 bullet lines`. Split long prose
+  into scannable sub-bullets rather than a paragraph wall, and merge same-date
+  entries under one heading.
+- **Real timestamps.** A concept's `timestamp:` is its actual write time in ISO
+  8601 UTC — never a batch constant copied across a set of files.
