@@ -9,6 +9,7 @@ import markdown
 import yaml
 
 _HREF_RE = re.compile(r'href="([^"]*)"')
+_TASK_RE = re.compile(r"<li>(\s*<p>)?\s*\[([ xX])\]\s")
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -41,7 +42,23 @@ def render_markdown(body: str, current_path: str) -> str:
     rendered; relative links resolve against its directory.
     """
     html = markdown.markdown(body, extensions=["extra", "sane_lists"])
+    html = _render_tasklists(html)
     return rewrite_links(html, posixpath.dirname(current_path))
+
+
+def _render_tasklists(html: str) -> str:
+    """Turn ``- [ ]`` / ``- [x]`` list items into disabled checkbox rows.
+
+    python-markdown leaves the literal brackets; this promotes them to real
+    (read-only) checkboxes so task lists read like Notion's.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        prefix = match.group(1) or ""
+        checked = " checked" if match.group(2).lower() == "x" else ""
+        return f'<li class="task">{prefix}<input type="checkbox" disabled{checked}> '
+
+    return _TASK_RE.sub(_repl, html)
 
 
 def rewrite_links(html: str, current_dir: str) -> str:

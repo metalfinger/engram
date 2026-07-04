@@ -1,9 +1,25 @@
-"""Unit tests for explorer render helpers and HTML templates (no routes here)."""
+"""Unit tests for explorer render helpers, formatters, and HTML templates."""
 
 from __future__ import annotations
 
-from engram_server.explorer.html import badge, card, page
+import datetime as dt
+from pathlib import Path
+
+from engram_server.explorer.format import (
+    humanize_time,
+    is_expired,
+    properties_panel,
+    score_bar,
+    stamp,
+    type_glyph,
+)
+from engram_server.explorer.html import badge, button, card, chip, codebox, page
 from engram_server.explorer.render import render_markdown, rewrite_links, split_frontmatter
+from engram_server.explorer.routes import _result_card, _setup_body, _sidebar
+from engram_server.explorer.setup import render_setup_script
+
+SKELETON = Path(__file__).resolve().parents[2] / "brain-skeleton" / "brain"
+_NOW = dt.datetime(2026, 7, 4, 12, 0, tzinfo=dt.timezone.utc)
 
 # ------------------------------------------------------------ rewrite_links
 
@@ -107,3 +123,231 @@ def test_badge_and_card_escape_content() -> None:
     c = card("/brain/p/alt", 'Alt "Inc"', "desc & more", b)
     assert "&amp; more" in c
     assert "&lt;unread&gt;" in c
+
+
+def test_chip_link_and_plain_escape() -> None:
+    assert 'class="chip tag"' in chip("infra", cls="tag")
+    linked = chip("alt", "/brain/p/alt")
+    assert 'href="/brain/p/alt"' in linked
+    assert "&amp;" in chip("a & b")
+
+
+def test_page_carries_sidebar_and_search_value() -> None:
+    doc = page("Title", "<p>x</p>", [("brain", "/brain")], sidebar_html="<nav>SIDE</nav>", search_value="dns")
+    assert "SIDE" in doc
+    assert 'value="dns"' in doc
+    assert 'action="/brain/search"' in doc
+
+
+# ------------------------------------------------------------ task lists
+
+
+def test_task_list_renders_checkboxes() -> None:
+    out = render_markdown("- [ ] todo\n- [x] done", "self/x.md")
+    assert 'type="checkbox"' in out
+    assert "checked" in out
+    assert 'class="task"' in out
+
+
+# ------------------------------------------------------------ type glyphs / stamp
+
+
+def test_type_glyph_known_and_default() -> None:
+    assert type_glyph("decision") == "⚖"
+    assert type_glyph("PROJECT") == "📁"
+    assert type_glyph(None) == "◆"
+    assert type_glyph("unheard-of") == "◆"
+
+
+def test_stamp_wraps_glyph() -> None:
+    assert "📐" in stamp("spec")
+    assert 'class="stamp-sm"' in stamp("spec", small=True)
+
+
+# ------------------------------------------------------------ humanize_time
+
+
+def test_humanize_days_ago() -> None:
+    rel, exact = humanize_time("2026-07-02", _NOW)
+    assert rel == "2 days ago"
+    assert exact == "2026-07-02"
+
+
+def test_humanize_just_now() -> None:
+    rel, _ = humanize_time("2026-07-04T12:00:00Z", _NOW)
+    assert rel == "just now"
+
+
+def test_humanize_future() -> None:
+    rel, _ = humanize_time("2026-07-06", _NOW)
+    assert rel.startswith("in ") and "day" in rel
+
+
+def test_humanize_months() -> None:
+    rel, _ = humanize_time("2026-04-04", _NOW)
+    assert rel == "3 months ago"
+
+
+def test_humanize_unparseable_roundtrips() -> None:
+    rel, exact = humanize_time("not a date", _NOW)
+    assert rel == exact == "not a date"
+
+
+# ------------------------------------------------------------ is_expired
+
+
+def test_is_expired_boundaries() -> None:
+    today = dt.date(2026, 7, 4)
+    assert is_expired("2026-07-01", today) is True
+    assert is_expired("2026-07-04", today) is False  # strict: today is not expired
+    assert is_expired("2026-08-01", today) is False
+    assert is_expired("garbage", today) is False
+    assert is_expired(None, today) is False
+
+
+# ------------------------------------------------------------ properties_panel
+
+
+def test_properties_panel_rows_and_dot() -> None:
+    meta = {
+        "type": "decision",
+        "status": "active",
+        "project": "alt",
+        "tags": ["infra", "dns"],
+        "timestamp": "2026-07-02",
+    }
+    html = properties_panel(meta, dt.date(2026, 7, 4), now=_NOW)
+    assert "Type" in html and "decision" in html
+    assert 'class="dot active"' in html
+    assert 'href="/brain/p/alt"' in html
+    assert 'class="chip tag"' in html
+    assert "2 days ago" in html
+
+
+def test_properties_panel_expired_message() -> None:
+    meta = {"type": "message", "to": "claude-code", "priority": "high", "expires": "2026-07-01"}
+    html = properties_panel(meta, dt.date(2026, 7, 4))
+    assert "expired" in html
+    assert "priority-high" in html
+
+
+def test_properties_panel_empty_is_blank() -> None:
+    assert properties_panel({}, dt.date(2026, 7, 4)) == ""
+
+
+# ------------------------------------------------------------ score_bar
+
+
+def test_score_bar_clamps_and_labels() -> None:
+    assert "width:75%" in score_bar(0.75)
+    assert "75%" in score_bar(0.75)
+    assert "width:100%" in score_bar(1.5)
+    assert "width:0%" in score_bar(-0.2)
+
+
+# ------------------------------------------------------------ search result card
+
+
+def test_result_card_path_heading_score() -> None:
+    r = {
+        "path": "projects/alt/decisions/x.md",
+        "title": "Search engine choice",
+        "description": "why we picked ripgrep",
+        "score": 0.5,
+        "matched_heading": "Phase 2",
+    }
+    html = _result_card(r)
+    assert 'href="/brain/f/projects/alt/decisions/x.md"' in html
+    assert "projects" in html and "decisions" in html
+    assert "›" in html  # path breadcrumb separator
+    assert "Phase 2" in html
+    assert "50%" in html
+
+
+# ------------------------------------------------------------ sidebar
+
+
+def test_sidebar_lists_sections_and_projects() -> None:
+    html = _sidebar(SKELETON, "/brain/p/alt")
+    assert "Projects" in html and "Self" in html and "Library" in html
+    assert "nav-proj" in html
+    assert 'href="/brain/p/alt"' in html
+
+
+def test_sidebar_marks_active_file() -> None:
+    html = _sidebar(SKELETON, "/brain/f/self/stack.md")
+    assert 'class="nav-link active" href="/brain/f/self/stack.md"' in html
+
+
+def test_sidebar_opens_active_project_subtree() -> None:
+    html = _sidebar(SKELETON, "/brain/f/projects/alt/context.md")
+    # the alt subtree must be <details open> because the active file lives inside it
+    assert "<details class=\"nav-proj\" open>" in html
+
+
+def test_sidebar_has_setup_link() -> None:
+    html = _sidebar(SKELETON, "/brain/setup")
+    assert 'class="nav-link active" href="/brain/setup"' in html
+
+
+# ------------------------------------------------------------ setup / onboarding
+
+
+def test_button_and_codebox() -> None:
+    b = button("Open", "https://claude.ai/settings/connectors", new_tab=True)
+    assert 'class="btn"' in b
+    assert 'target="_blank"' in b and 'rel="noopener"' in b
+    box = codebox("claude mcp add engram")
+    assert 'class="codebox"' in box
+    assert "claude mcp add engram" in box
+    assert "<button" not in box  # zero-JS: no copy button, selection is CSS-only
+
+
+def test_setup_body_covers_every_client() -> None:
+    html = _setup_body(
+        "https://engram.metalfinger.xyz/mcp",
+        "https://brain.metalfinger.xyz",
+        "brain.metalfinger.xyz",
+        "metalfinger",
+        ["kb_projects", "kb_search"],
+        ["hir.012612@gmail.com", "hiren@metalfinger.xyz"],
+    )
+    # Claude surfaces
+    assert (
+        "claude mcp add --transport http --scope user engram https://engram.metalfinger.xyz/mcp"
+        in html
+    )
+    assert "/brain/setup/engram-setup.ps1" in html
+    assert "claude.ai/settings/connectors" in html
+    # ChatGPT + the discovery endpoint it needs
+    assert "ChatGPT" in html
+    assert "/.well-known/oauth-protected-resource" in html
+    # Codex CLI: command + config.toml fallback
+    assert "codex mcp add engram https://engram.metalfinger.xyz/mcp" in html
+    assert "[mcp_servers.engram]" in html
+    # any-MCP card
+    assert "Cursor" in html
+    # browse card lists both allowed emails
+    assert "hir.012612@gmail.com" in html and "hiren@metalfinger.xyz" in html
+    assert "brain.metalfinger.xyz" in html
+    # tool names render as chips linking to /brain/system
+    assert 'href="/brain/system"' in html
+    assert "kb_projects" in html
+    # zero JavaScript
+    assert "<script" not in html.lower()
+
+
+def test_setup_script_fills_tokens_and_is_idempotent() -> None:
+    script = render_setup_script("https://engram.metalfinger.xyz/mcp")
+    # tokens fully substituted
+    assert "__MCP_URL__" not in script and "__REPO__" not in script
+    # the live MCP URL and the correct repo made it in
+    assert "https://engram.metalfinger.xyz/mcp" in script
+    assert "$Repo     = 'metalfinger/brain'" in script
+    assert "repos/$Repo/contents/skills/engram/SKILL.md" in script
+    # idempotency + skill install + graceful gh-missing handling
+    assert "already registered" in script
+    assert "claude mcp add --transport http --scope user engram" in script
+    assert "New-Item -ItemType Directory -Force -Path $SkillDir" in script
+    assert "application/vnd.github.raw" in script
+    assert "gh auth login" in script
