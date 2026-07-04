@@ -8,6 +8,7 @@ root (path-traversal and .git guards preserved verbatim from v1).
 from __future__ import annotations
 
 import datetime as dt
+import posixpath
 import re
 import subprocess
 from pathlib import Path
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
 
 _LOG_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_MONTH_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
 
 # Standard OKF project subfiles, in reading order, for the sidebar subtree.
 _PROJECT_SUBFILES = (
@@ -123,12 +126,16 @@ def _first_sentence(text: str | None) -> str:
 # ---------------------------------------------------------------- view builders
 
 
-def _crumbs_for(rel: str) -> list[tuple[str, str]]:
+def _crumbs_for(rel: str, leaf_title: str | None = None) -> list[tuple[str, str]]:
+    """Breadcrumbs for a repo-relative path. ``leaf_title`` humanizes the last
+    crumb (frontmatter title instead of the raw ``slug.md``)."""
     crumbs = [("brain", "/brain")]
+    parts = [p for p in rel.split("/") if p]
     acc = ""
-    for part in [p for p in rel.split("/") if p]:
+    for i, part in enumerate(parts):
         acc = f"{acc}/{part}" if acc else part
-        crumbs.append((part, f"/brain/f/{acc}"))
+        label = leaf_title if (leaf_title and i == len(parts) - 1) else part
+        crumbs.append((label, f"/brain/f/{acc}"))
     return crumbs
 
 
@@ -196,24 +203,170 @@ def _project_card(p: dict) -> str:
     )
 
 
+def _concept_month(f: Path, meta: dict) -> str:
+    """A YYYY-MM label from a ``YYYY-MM-slug.md`` filename, else the timestamp."""
+    m = _MONTH_PREFIX_RE.match(f.name)
+    if m:
+        return m.group(1)
+    ts = str(meta.get("timestamp") or "")
+    return ts[:7] if _MONTH_PREFIX_RE.match(ts) else ""
+
+
+def _concept_card(f: Path, brain: Path) -> str:
+    """A card for one concept file: type-stamp + title + description + badges
+    (confidence colored settled=green / tentative=amber, and a YYYY-MM date)."""
+    meta, _ = split_frontmatter(_read(f))
+    rel = _rel(f, brain)
+    title = str(meta.get("title") or f.stem)
+    desc = str(meta.get("description") or "")
+    head_stamp = stamp(meta.get("type"), small=True) if meta.get("type") else ""
+    foot: list[str] = []
+    conf = meta.get("confidence")
+    if conf:
+        foot.append(badge(str(conf), str(conf)))
+    month = _concept_month(f, meta)
+    if month:
+        foot.append(badge(month, "date"))
+    foot_html = f'<div class="card-foot">{"".join(foot)}</div>' if foot else ""
+    desc_html = f"<p>{esc(desc)}</p>" if desc else ""
+    return (
+        f'<a class="card" href="/brain/f/{esc(rel)}" title="{esc(rel)}">'
+        f'<div class="card-head">{head_stamp}<h3>{esc(title)}</h3></div>'
+        f"{desc_html}{foot_html}</a>"
+    )
+
+
 def _doc_cards(d: Path, brain: Path) -> str:
     """Cards for the concept .md files directly in ``d`` (index.md excluded)."""
-    cards: list[str] = []
     if not d.is_dir():
         return ""
-    for f in sorted(d.glob("*.md")):
-        if f.name == "index.md":
-            continue
+    return "".join(
+        _concept_card(f, brain) for f in sorted(d.glob("*.md")) if f.name != "index.md"
+    )
+
+
+def _count_concepts(folder: Path) -> int:
+    """Concept .md files directly in ``folder`` (index.md excluded)."""
+    if not folder.is_dir():
+        return 0
+    return sum(1 for f in folder.glob("*.md") if f.name != "index.md")
+
+
+def _count_sessions(pdir: Path) -> int:
+    """Number of dated '## YYYY-MM-DD' session headings in the project log."""
+    log = pdir / "log.md"
+    if not log.is_file():
+        return 0
+    return len(_LOG_DATE_RE.findall(_read(log)))
+
+
+def _dir_title(folder: Path) -> str:
+    """Human label for a folder: its index.md H1 if present, else the dir name."""
+    idx = folder / "index.md"
+    if idx.is_file():
+        first = next((ln for ln in _read(idx).splitlines() if ln.strip()), "")
+        h1 = first.lstrip("#").strip()
+        if h1:
+            return h1
+    return folder.name
+
+
+def _file_title(f: Path) -> str:
+    """Frontmatter title of a concept file, falling back to its filename stem."""
+    try:
         meta, _ = split_frontmatter(_read(f))
-        title = str(meta.get("title") or f.stem)
-        desc = str(meta.get("description") or "")
-        head_stamp = stamp(meta.get("type"), small=True) if meta.get("type") else ""
-        cards.append(
-            f'<a class="card" href="/brain/f/{esc(_rel(f, brain))}">'
-            f'<div class="card-head">{head_stamp}<h3>{esc(title)}</h3></div>'
-            f"<p>{esc(desc)}</p></a>"
+    except (OSError, UnicodeDecodeError):
+        return f.stem
+    return str(meta.get("title") or f.stem)
+
+
+def _siblings(target: Path) -> list[Path]:
+    """Sorted concept .md files in the same folder (index.md excluded)."""
+    return [f for f in sorted(target.parent.glob("*.md")) if f.name != "index.md"]
+
+
+def _backlinks(brain: Path, target_rel: str) -> list[tuple[str, str]]:
+    """Every non-index .md file that links to ``target_rel``, as (rel, title).
+
+    Full scan of the (~35-file) bundle per call — cheap and always fresh. Only
+    relative markdown links are resolved; external/anchor links are ignored.
+    """
+    out: list[tuple[str, str]] = []
+    for path in sorted(brain.rglob("*.md")):
+        rel = path.relative_to(brain).as_posix()
+        if ".git" in rel.split("/") or path.name == "index.md" or rel == target_rel:
+            continue
+        try:
+            text = _read(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        cur_dir = posixpath.dirname(rel)
+        for m in _MD_LINK_RE.finditer(text):
+            raw = m.group(1).split()[0] if m.group(1).split() else ""
+            link = raw.split("#", 1)[0]
+            if not link or link.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            joined = link.lstrip("/") if link.startswith("/") else posixpath.join(cur_dir, link)
+            if posixpath.normpath(joined) == target_rel:
+                out.append((rel, _file_title(path)))
+                break
+    return out
+
+
+def _concept_footer(target: Path, rel: str, brain: Path) -> str:
+    """Anti-dead-end footer: prev/next siblings, 'more in folder', backlinks, path."""
+    blocks: list[str] = []
+
+    sibs = _siblings(target)
+    idx = next((i for i, f in enumerate(sibs) if f == target), None)
+    if idx is not None and len(sibs) > 1:
+        nav: list[str] = []
+        if idx > 0:
+            prev = sibs[idx - 1]
+            nav.append(
+                f'<a class="sib prev" href="/brain/f/{esc(_rel(prev, brain))}">'
+                f'<span class="lbl">← Previous</span>'
+                f'<span class="t">{esc(_file_title(prev))}</span></a>'
+            )
+        if idx < len(sibs) - 1:
+            nxt = sibs[idx + 1]
+            nav.append(
+                f'<a class="sib next" href="/brain/f/{esc(_rel(nxt, brain))}">'
+                f'<span class="lbl">Next →</span>'
+                f'<span class="t">{esc(_file_title(nxt))}</span></a>'
+            )
+        if nav:
+            blocks.append(f'<div class="siblingnav">{"".join(nav)}</div>')
+
+    others = [f for f in sibs if f != target]
+    if others:
+        chips = "".join(
+            chip(_file_title(f), f"/brain/f/{_rel(f, brain)}", title=_rel(f, brain))
+            for f in others
         )
-    return "".join(cards)
+        blocks.append(
+            '<div class="foot-block">'
+            f'<p class="section-label">More in {esc(_dir_title(target.parent))}</p>'
+            f'<div class="quicknav">{chips}</div></div>'
+        )
+
+    backlinks = _backlinks(brain, rel)
+    inner = (
+        "".join(chip(t, f"/brain/f/{p}", title=p) for p, t in backlinks)
+        if backlinks
+        else '<p class="empty">Nothing links here yet.</p>'
+    )
+    blocks.append(
+        '<div class="foot-block">'
+        '<p class="section-label">Referenced by</p>'
+        f'<div class="backlinks">{inner}</div></div>'
+    )
+
+    blocks.append(
+        f'<p class="pathline"><span class="k">Path</span><code>{esc(rel)}</code>'
+        f'<a class="chip" href="/brain/f/{esc(rel)}?raw=1" title="raw markdown">raw</a></p>'
+    )
+    return f'<footer class="concept-foot">{"".join(blocks)}</footer>'
 
 
 def _msg_card(f: Path, meta: dict, brain: Path, today: dt.date) -> str:
@@ -242,20 +395,29 @@ def _msg_card(f: Path, meta: dict, brain: Path, today: dt.date) -> str:
 
 
 def _timeline(entries: list[str], current_path: str) -> str:
-    """Render log '## ' blocks as a dated timeline."""
+    """Render log '## ' blocks as a dated timeline.
+
+    Handles BOTH log shapes: the old '## YYYY-MM-DD — Title' + paragraph (one
+    entry per heading) and the new bare '## YYYY-MM-DD' with '* **Title** — body'
+    bullets underneath (the heading carries only the date; the bullets are the body).
+    """
     items: list[str] = []
     for entry in entries:
         first, _, rest = entry.partition("\n")
         head = first[3:].strip() if first.startswith("## ") else first.strip()
+        m = _LOG_DATE_RE.match(first)
+        date = m.group(1) if m else ""
         if "—" in head:
-            date, _sep, title = (s.strip() for s in head.partition("—"))
+            title = head.partition("—")[2].strip()
+        elif date and head == date:
+            title = ""  # bare-date heading (new format): the bullets are the content
         else:
-            m = _LOG_DATE_RE.match(first)
-            date, title = (m.group(1) if m else ""), head
+            title = head
         body_html = render_markdown(rest.strip(), current_path) if rest.strip() else ""
-        date_html = f'<span class="tl-date">{esc(date)}</span>' if date else ""
+        date_html = f'<span class="tl-date">{esc(date or head)}</span>'
+        title_html = f"<h3>{esc(title)}</h3>" if title else ""
         items.append(
-            f'<div class="tl-item">{date_html}<h3>{esc(title)}</h3>'
+            f'<div class="tl-item">{date_html}{title_html}'
             f'<div class="tl-body">{body_html}</div></div>'
         )
     return '<div class="timeline">' + "".join(items) + "</div>"
@@ -618,18 +780,27 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         parts: list[str] = [
             '<div class="page-head">',
             stamp(meta.get("type") or "project"),
-            f"<div><p class=\"eyebrow\">Project</p><h1>{esc(title)}</h1></div>",
+            f'<div><p class="eyebrow">Project</p><h1>{esc(title)}</h1></div>',
             "</div>",
         ]
 
-        chips: list[str] = []
+        # Aggregate stat row: status · last session · counts (glob once, reuse).
+        n_dec = _count_concepts(pdir / "decisions")
+        n_spec = _count_concepts(pdir / "specs")
+        n_sess = _count_sessions(pdir)
+        n_unread = _unread_count(pdir)
+        stat: list[str] = []
         if meta.get("status"):
-            chips.append(badge(str(meta["status"]), str(meta["status"])))
+            stat.append(badge(str(meta["status"]), str(meta["status"])))
         last = _last_log_date(pdir)
         if last:
-            chips.append(f'<span class="meta">Last session</span>{_session_time(last)}')
-        if chips:
-            parts.append(f'<div class="badges">{"".join(chips)}</div>')
+            stat.append(_session_time(last))
+        stat.append(chip(f"{n_dec} decisions", f"/brain/f/{rel_dir}/decisions"))
+        stat.append(chip(f"{n_spec} specs", f"/brain/f/{rel_dir}/specs"))
+        stat.append(chip(f"{n_sess} sessions", f"/brain/f/{rel_dir}/log.md"))
+        if n_unread:
+            stat.append(badge(f"{n_unread} unread", "unread"))
+        parts.append(f'<div class="stat-row">{"".join(stat)}</div>')
 
         if ctx.is_file():
             parts.append(f'<div class="md">{render_markdown(body_md, f"{rel_dir}/context.md")}</div>')
@@ -637,13 +808,40 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             parts.append('<p class="empty">No context.md yet.</p>')
 
         inbox = _inbox(pdir)
-        unread = [(f, m) for f, m in inbox if m.get("status") == "unread"]
-        parts.append('<p class="section-label">Inbox</p>')
-        if inbox:
-            for f, m in inbox:
-                parts.append(_msg_card(f, m, brain, today))
+        has_unread = n_unread > 0
+
+        # Inbox sits on top ONLY when there is something unread to act on.
+        if has_unread:
+            parts.append('<p class="section-label">Inbox</p>')
+            parts.extend(_msg_card(f, m, brain, today) for f, m in inbox)
+
+        entries = _log_entries(pdir / "log.md")
+        parts.append('<p class="section-label">Recent sessions</p>')
+        if entries:
+            parts.append(_timeline(entries, f"{rel_dir}/log.md"))
         else:
-            parts.append('<p class="empty">No messages waiting.</p>')
+            parts.append('<p class="empty">No sessions logged yet.</p>')
+
+        # A non-empty-but-all-read inbox drops below Recent sessions.
+        if inbox and not has_unread:
+            parts.append('<p class="section-label">Inbox</p>')
+            parts.extend(_msg_card(f, m, brain, today) for f, m in inbox)
+
+        # Inline concept card sections; empty ones are demoted to the bottom.
+        demoted: list[str] = []
+        for label, sub in (
+            ("Decisions", "decisions"),
+            ("Specs", "specs"),
+            ("Assets", "assets"),
+            ("People", "people"),
+        ):
+            folder = pdir / sub
+            cards = _doc_cards(folder, brain)
+            if cards:
+                parts.append(f'<p class="section-label">{esc(label)}</p>')
+                parts.append(f'<div class="cards">{cards}</div>')
+            elif folder.is_dir():
+                demoted.append(f'<p class="empty">No {label.lower()} yet.</p>')
 
         archive_dir = pdir / "messages" / "archive"
         archived = (
@@ -653,42 +851,37 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         )
         if archived:
             links = "".join(
-                f'<a class="nav-link" href="/brain/f/{esc(_rel(f, brain))}">{esc(f.name)}</a>'
+                f'<a class="nav-link" href="/brain/f/{esc(_rel(f, brain))}" '
+                f'title="{esc(_rel(f, brain))}">{esc(_file_title(f))}</a>'
                 for f in archived
             )
             parts.append(
-                f"<details><summary>Archive ({len(archived)})</summary>"
+                f"<details><summary>Archived messages ({len(archived)})</summary>"
                 f'<div class="nav-sub">{links}</div></details>'
             )
 
-        entries = _log_entries(pdir / "log.md")
-        parts.append('<p class="section-label">Recent sessions</p>')
-        if entries:
-            parts.append(_timeline(entries, f"{rel_dir}/log.md"))
-        else:
-            parts.append('<p class="empty">No sessions logged yet.</p>')
-
-        quick = [
-            (label, f"/brain/f/{rel_dir}/{sub}")
-            for label, sub in (
-                ("Log", "log.md"),
-                ("Decisions", "decisions"),
-                ("Specs", "specs"),
-                ("People", "people"),
-                ("Assets", "assets"),
-            )
-            if (pdir / sub).exists()
-        ]
-        if quick:
+        # Browse chips carry counts.
+        browse: list[str] = []
+        for label, sub, count in (
+            ("Log", "log.md", n_sess),
+            ("Decisions", "decisions", n_dec),
+            ("Specs", "specs", n_spec),
+            ("People", "people", _count_concepts(pdir / "people")),
+            ("Assets", "assets", _count_concepts(pdir / "assets")),
+            ("Messages", "messages/index.md", len(inbox)),
+        ):
+            if (pdir / sub).exists():
+                browse.append(chip(f"{label} · {count}", f"/brain/f/{rel_dir}/{sub}"))
+        if browse:
             parts.append('<p class="section-label">Browse</p>')
-            parts.append(
-                '<div class="quicknav">'
-                + "".join(chip(label, href) for label, href in quick)
-                + "</div>"
-            )
+            parts.append(f'<div class="quicknav">{"".join(browse)}</div>')
+
+        if not inbox:
+            demoted.insert(0, '<p class="empty">Inbox — no new messages.</p>')
+        if demoted:
+            parts.append(f'<div class="demoted">{"".join(demoted)}</div>')
 
         crumbs = [("brain", "/brain"), (name, f"/brain/p/{name}")]
-        _ = unread  # unread count already surfaced via the sidebar badge
         return HTMLResponse(
             _shell(brain, title, "\n".join(parts), crumbs, f"/brain/p/{name}")
         )
@@ -727,8 +920,13 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                 if entry.name.startswith("."):
                     continue
                 erel = entry.relative_to(root).as_posix()
-                label = entry.name + ("/" if entry.is_dir() else "")
-                listing.append(chip(label, f"/brain/f/{erel}"))
+                if entry.is_dir():
+                    label = entry.name + "/"
+                elif entry.suffix == ".md" and entry.name != "index.md":
+                    label = _file_title(entry)  # human title, not the slug filename
+                else:
+                    label = entry.name
+                listing.append(chip(label, f"/brain/f/{erel}", title=erel))
             listing_html = (
                 f'<div class="quicknav">{"".join(listing)}</div>'
                 if listing
@@ -774,9 +972,11 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             *head_parts,
             properties_panel(meta, _today_utc()),
             f'<div class="md">{render_markdown(body_md, rel)}</div>',
+            _concept_footer(target, rel, brain),
         ]
+        leaf = title if meta.get("title") else None
         return HTMLResponse(
-            _shell(brain, title, "\n".join(body_parts), _crumbs_for(rel), f"/brain/f/{rel}")
+            _shell(brain, title, "\n".join(body_parts), _crumbs_for(rel, leaf), f"/brain/f/{rel}")
         )
 
     @mcp.custom_route("/brain/search", ["GET"])

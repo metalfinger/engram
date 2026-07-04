@@ -174,9 +174,11 @@ a.chip:hover { border-color: var(--accent-line); color: var(--accent-ink); text-
 .badge.unread { background: var(--accent); color: var(--accent-fg); }
 .badge.active { background: transparent; color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent); }
 .badge.done { background: transparent; color: var(--blue); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 40%, transparent); }
-.badge.superseded, .badge.archived { background: var(--surface-2); color: var(--amber); }
+.badge.superseded, .badge.archived, .badge.tentative { background: var(--surface-2); color: var(--amber); }
+.badge.settled { background: transparent; color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent); }
 .badge.priority-high { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
 .badge.bot { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
+.badge.date { font-variant-numeric: tabular-nums; }
 .badges { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0 0; }
 
 /* ---------- cards ---------- */
@@ -278,6 +280,25 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
 .meta { color: var(--muted); font-size: .88rem; }
 .empty { color: var(--faint); font-size: .88rem; font-style: italic; }
 
+/* ---------- concept footer (kill dead ends) ---------- */
+.concept-foot { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.siblingnav { display: flex; gap: .8rem; margin: 0 0 1.4rem; }
+.sib {
+  flex: 1 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 9px; padding: .55rem .8rem;
+  background: var(--surface); color: var(--fg); box-shadow: var(--shadow);
+}
+.sib:hover { border-color: var(--accent-line); text-decoration: none; }
+.sib.next { text-align: right; }
+.sib .lbl { display: block; font-size: .66rem; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); margin-bottom: .1rem; }
+.sib .t { font-size: .88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.foot-block { margin: 1.2rem 0; }
+.backlinks { display: flex; flex-wrap: wrap; gap: .4rem; }
+.pathline { margin: 1.6rem 0 0; font-size: .74rem; color: var(--faint); display: flex; align-items: center; gap: .4rem; }
+.pathline .k { text-transform: uppercase; letter-spacing: .08em; }
+.pathline code { -webkit-user-select: all; user-select: all; background: var(--code-bg); padding: .1rem .45rem; border-radius: 4px; color: var(--muted); font-size: .95em; }
+.demoted { margin-top: 2.2rem; padding-top: 1rem; border-top: 1px dashed var(--line); }
+.demoted .empty { margin: .15rem 0; }
+
 /* ---------- setup / onboarding ---------- */
 .setup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 1rem; margin: 1.4rem 0; }
 .setup-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 1.2rem 1.3rem; box-shadow: var(--shadow); }
@@ -341,12 +362,17 @@ def badge(label: str, cls: str = "") -> str:
     return f'<span class="{esc(classes)}">{esc(label)}</span>'
 
 
-def chip(label: str, href: str = "", cls: str = "") -> str:
-    """A small chip, optionally a link. ``cls`` e.g. 'tag' for #-prefixed tags."""
+def chip(label: str, href: str = "", cls: str = "", title: str = "") -> str:
+    """A small chip, optionally a link. ``cls`` e.g. 'tag' for #-prefixed tags.
+
+    ``title`` sets the hover tooltip — used to keep the raw repo path visible
+    (and copyable) even when the chip shows a human title.
+    """
     classes = f"chip {cls}".strip()
+    title_attr = f' title="{esc(title)}"' if title else ""
     if href:
-        return f'<a class="{esc(classes)}" href="{esc(href)}">{esc(label)}</a>'
-    return f'<span class="{esc(classes)}">{esc(label)}</span>'
+        return f'<a class="{esc(classes)}" href="{esc(href)}"{title_attr}>{esc(label)}</a>'
+    return f'<span class="{esc(classes)}"{title_attr}>{esc(label)}</span>'
 
 
 def card(href: str, title: str, desc: str, badges_html: str = "") -> str:

@@ -15,7 +15,20 @@ from engram_server.explorer.format import (
 )
 from engram_server.explorer.html import badge, button, card, chip, codebox, page
 from engram_server.explorer.render import render_markdown, rewrite_links, split_frontmatter
-from engram_server.explorer.routes import _result_card, _setup_body, _sidebar
+from engram_server.explorer.routes import (
+    _backlinks,
+    _concept_card,
+    _concept_footer,
+    _concept_month,
+    _count_concepts,
+    _count_sessions,
+    _crumbs_for,
+    _result_card,
+    _setup_body,
+    _sidebar,
+    _siblings,
+    _timeline,
+)
 from engram_server.explorer.setup import render_setup_script
 
 SKELETON = Path(__file__).resolve().parents[2] / "brain-skeleton" / "brain"
@@ -288,6 +301,151 @@ def test_sidebar_opens_active_project_subtree() -> None:
 def test_sidebar_has_setup_link() -> None:
     html = _sidebar(SKELETON, "/brain/setup")
     assert 'class="nav-link active" href="/brain/setup"' in html
+
+
+# ------------------------------------------------------------ log timeline (both formats)
+
+
+def test_timeline_old_format_dash_heading() -> None:
+    entries = ["## 2026-07-04 — Bundle initialized\n\nSkeleton created from the handoff."]
+    out = _timeline(entries, "projects/alt/log.md")
+    assert 'class="tl-date">2026-07-04</span>' in out
+    assert "<h3>Bundle initialized</h3>" in out
+    assert "Skeleton created" in out
+
+
+def test_timeline_new_format_bare_date_bullets() -> None:
+    entries = [
+        "## 2026-07-04\n"
+        "* **Bundle initialized** — skeleton created.\n"
+        "* **Search picked** — went with ripgrep."
+    ]
+    out = _timeline(entries, "projects/alt/log.md")
+    assert 'class="tl-date">2026-07-04</span>' in out
+    # the bare date must NOT be duplicated as a title heading
+    assert "<h3>2026-07-04</h3>" not in out
+    # bullets render, bold entry titles preserved
+    assert "Bundle initialized" in out and "Search picked" in out
+    assert "<strong>" in out and "<li" in out
+
+
+# ------------------------------------------------------------ depth helpers (mini bundle)
+
+
+def _mini_bundle(tmp_path: Path) -> Path:
+    brain = tmp_path / "brain"
+    alt = brain / "projects" / "alt"
+    dec = alt / "decisions"
+    dec.mkdir(parents=True)
+    (dec / "index.md").write_text("# Decisions\n\n* things\n", encoding="utf-8")
+    (dec / "2026-07-search.md").write_text(
+        "---\ntype: decision\ntitle: Search engine choice\nconfidence: settled\n"
+        "timestamp: 2026-07-02T00:00:00Z\n---\n# Search\nPicked ripgrep.\n",
+        encoding="utf-8",
+    )
+    (dec / "2026-06-hosting.md").write_text(
+        "---\ntype: decision\ntitle: Hosting choice\nconfidence: tentative\n---\n"
+        "# Hosting\nRelated: [search](2026-07-search.md).\n",
+        encoding="utf-8",
+    )
+    (alt / "context.md").write_text(
+        "---\ntype: project\ntitle: alt\n---\n# About\n"
+        "Decided via [the search choice](decisions/2026-07-search.md).\n",
+        encoding="utf-8",
+    )
+    (alt / "log.md").write_text(
+        "# Log — alt\n\n## 2026-07-04\n* **x** — y\n\n## 2026-07-03 — Older\n\nbody\n",
+        encoding="utf-8",
+    )
+    return brain
+
+
+def test_count_concepts_excludes_index(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    assert _count_concepts(brain / "projects" / "alt" / "decisions") == 2
+    assert _count_concepts(brain / "projects" / "alt" / "nope") == 0
+
+
+def test_count_sessions_counts_both_heading_shapes(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    assert _count_sessions(brain / "projects" / "alt") == 2
+
+
+def test_concept_month_prefers_filename_then_timestamp() -> None:
+    assert _concept_month(Path("2026-07-search.md"), {}) == "2026-07"
+    assert _concept_month(Path("bio.md"), {"timestamp": "2026-03-04T00:00:00Z"}) == "2026-03"
+    assert _concept_month(Path("bio.md"), {}) == ""
+
+
+def test_concept_card_shows_confidence_and_month(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    f = brain / "projects" / "alt" / "decisions" / "2026-07-search.md"
+    html = _concept_card(f, brain)
+    assert "Search engine choice" in html  # frontmatter title, not filename
+    assert 'class="badge settled"' in html  # confidence colored
+    assert "2026-07" in html  # month from YYYY-MM filename prefix
+    assert 'title="projects/alt/decisions/2026-07-search.md"' in html  # path kept for copy
+
+
+def test_siblings_sorted_excludes_index(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    target = brain / "projects" / "alt" / "decisions" / "2026-07-search.md"
+    names = [f.name for f in _siblings(target)]
+    assert names == ["2026-06-hosting.md", "2026-07-search.md"]
+
+
+def test_backlinks_finds_referrers_by_title(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    bl = _backlinks(brain, "projects/alt/decisions/2026-07-search.md")
+    paths = {p for p, _ in bl}
+    titles = {t for _, t in bl}
+    # both the sibling decision and the project context link here
+    assert "projects/alt/decisions/2026-06-hosting.md" in paths
+    assert "projects/alt/context.md" in paths
+    # navigation noise and self-links excluded
+    assert "projects/alt/decisions/index.md" not in paths
+    assert "projects/alt/decisions/2026-07-search.md" not in paths
+    # referrers surfaced by human title
+    assert "Hosting choice" in titles and "alt" in titles
+
+
+def test_concept_footer_kills_dead_ends(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    target = brain / "projects" / "alt" / "decisions" / "2026-07-search.md"
+    rel = "projects/alt/decisions/2026-07-search.md"
+    html = _concept_footer(target, rel, brain)
+    assert "siblingnav" in html  # prev/next sibling nav
+    assert "More in Decisions" in html  # folder title from index.md H1
+    assert "Referenced by" in html  # backlinks panel
+    assert "Hosting choice" in html  # sibling/backlink title, not a slug
+    assert 'class="pathline"' in html
+    assert f"<code>{rel}</code>" in html  # raw path kept visible + copyable
+
+
+def test_backlinks_empty_when_nothing_links(tmp_path: Path) -> None:
+    brain = _mini_bundle(tmp_path)
+    html = _concept_footer(
+        brain / "projects" / "alt" / "context.md", "projects/alt/context.md", brain
+    )
+    assert "Nothing links here yet." in html  # context.md is linked-from-nothing here
+
+
+# ------------------------------------------------------------ title-based chrome
+
+
+def test_crumbs_leaf_uses_title_keeps_path_href() -> None:
+    crumbs = _crumbs_for("projects/alt/decisions/2026-07-search.md", "Search engine choice")
+    labels = [lbl for lbl, _ in crumbs]
+    assert labels[0] == "brain"
+    assert labels[-1] == "Search engine choice"  # leaf humanized
+    assert "2026-07-search.md" not in labels  # slug filename gone from chrome
+    assert "decisions" in labels  # intermediate folder slugs stay
+    assert crumbs[-1][1] == "/brain/f/projects/alt/decisions/2026-07-search.md"
+
+
+def test_crumbs_without_title_falls_back_to_slug() -> None:
+    crumbs = _crumbs_for("projects/alt/decisions/2026-07-search.md")
+    assert crumbs[-1][0] == "2026-07-search.md"
 
 
 # ------------------------------------------------------------ setup / onboarding
