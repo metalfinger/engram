@@ -1,0 +1,32 @@
+# MIGRATION ARTIFACT — v1 runs natively on Windows (scripts/start-engram.ps1).
+# When moving to a VM:
+#   1. Copy .env (server/.env) next to this checkout; keep host/port defaults from
+#      the Dockerfile (do NOT set ENGRAM_MCP_HOST/ENGRAM_BRAIN_PATH in .env here).
+#   2. Seed the deploy key into the state volume:
+#        docker compose -f deploy/compose.yml cp ~/.engram/id_engram engram:/state/id_engram
+#      (or bind-mount it) — the brain clones itself on first start.
+#   3. docker compose -f deploy/compose.yml up -d --build
+services:
+  engram:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: ../.env
+    volumes:
+      # Brain checkout + deploy key + oauth_store.json — the only state.
+      - engram-state:/state
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run my-pc
+    # IMPORTANT: the tunnel config's ingress rules for engram.metalfinger.xyz and
+    # brain.metalfinger.xyz must target http://engram:9210 (the compose service
+    # name), NOT http://localhost:9210 — localhost inside this container is not
+    # the engram service.
+    volumes:
+      - ~/.cloudflared:/etc/cloudflared:ro
+    restart: unless-stopped
+
+volumes:
+  engram-state:
