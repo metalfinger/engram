@@ -6,7 +6,9 @@ type: skill
 
 # Engram Protocol
 
-Hiren's knowledge base is an OKF v0.1 bundle in the git repo `brain`. Access it through the `kb_*` MCP tools (claude.ai sessions) or directly via git checkout (Claude Code — same file rules apply, commit with clear messages and push).
+Hiren's knowledge base is an OKF v0.1 bundle in the git repo `brain`. ALWAYS prefer the `kb_*` MCP tools (server name: `engram`) — they validate, index, and push for you, on every surface including Claude Code.
+
+If the kb_* tools are missing in a Claude Code session: do NOT search the filesystem for the repo. Tell Hiren to run `/mcp` → engram → Authenticate (or start a fresh session if `engram` isn't listed — servers load at session start). Git-direct is the LAST resort, only when Hiren explicitly asks: the canonical checkout on his main PC is `C:/Users/Admin/.engram/brain` (else clone `git@github.com:metalfinger/brain.git`); same file rules apply — valid frontmatter, clear commits, push, AND update the parent index.md yourself (direct writes bypass the auto-indexer).
 
 ## Core principle: navigate, never ingest
 
