@@ -283,9 +283,10 @@ def _result_card(r: dict) -> str:
 _ALLOWED_EMAILS = ("hir.012612@gmail.com", "hiren@metalfinger.xyz")
 
 
-def _setup_card(glyph: str, heading: str, *inner: str) -> str:
+def _setup_card(glyph: str, heading: str, *inner: str, compact: bool = False) -> str:
+    cls = "setup-card compact" if compact else "setup-card"
     return (
-        '<div class="setup-card">'
+        f'<div class="{cls}">'
         f'<h2><span class="glyph" aria-hidden="true">{glyph}</span>{esc(heading)}</h2>'
         + "".join(inner)
         + "</div>"
@@ -334,7 +335,7 @@ def _setup_body(
         _setup_card(
             "💬",
             "ChatGPT — web + apps",
-            f'<p class="note">Settings → Connectors → enable <b>Developer mode</b> (Advanced) → '
+            f'<p class="note">Settings → Connectors → enable <b>Developer mode</b> (Advanced settings) → '
             f"Add custom connector → paste the URL → sign in with GitHub as {login_b}.</p>",
             codebox(mcp_url),
             '<p class="note">Custom connectors need a paid plan with developer mode. The server '
@@ -351,11 +352,12 @@ def _setup_body(
         ),
         _setup_card(
             "🔌",
-            "Anything else that speaks MCP",
+            "Any MCP client",
             '<p class="note">Cursor, Gemini CLI, and other MCP clients: point them at the same URL — '
             "streamable HTTP + OAuth, only allowlisted GitHub accounts pass. The protocol travels in "
             "the tool descriptions, so every client behaves the same.</p>",
             codebox(mcp_url),
+            compact=True,
         ),
         _setup_card(
             "🔖",

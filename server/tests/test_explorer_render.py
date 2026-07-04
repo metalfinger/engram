@@ -321,12 +321,15 @@ def test_setup_body_covers_every_client() -> None:
     assert "claude.ai/settings/connectors" in html
     # ChatGPT + the discovery endpoint it needs
     assert "ChatGPT" in html
+    assert "Developer mode" in html
     assert "/.well-known/oauth-protected-resource" in html
     # Codex CLI: command + config.toml fallback
     assert "codex mcp add engram https://engram.metalfinger.xyz/mcp" in html
     assert "[mcp_servers.engram]" in html
-    # any-MCP card
-    assert "Cursor" in html
+    # any-MCP compact card
+    assert "Any MCP client" in html
+    assert "Cursor" in html and "Gemini CLI" in html
+    assert 'class="setup-card compact"' in html
     # browse card lists both allowed emails
     assert "hir.012612@gmail.com" in html and "hiren@metalfinger.xyz" in html
     assert "brain.metalfinger.xyz" in html

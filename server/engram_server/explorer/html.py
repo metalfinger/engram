@@ -301,6 +301,9 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
 }
 .setup-more { margin-top: .8rem; font-size: .85rem; font-weight: 600; }
 .setup-card .quicknav { margin-top: .6rem; }
+.setup-card.compact { background: var(--inset); }
+.setup-card.compact h2 { font-size: .98rem; }
+.setup-card.compact .note { margin-bottom: .35rem; }
 
 /* ---------- masthead (home) ---------- */
 .masthead { margin: .5rem 0 2rem; }
