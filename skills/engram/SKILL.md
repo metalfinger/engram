@@ -52,6 +52,20 @@ Offer the close-out proactively; don't let sessions end with unwritten state.
 - If a `kb_write` fails on conflict, re-read the file, merge intent manually, retry — never overwrite blind.
 - The brain includes `self/` (Hiren's stack and preferences) and `library/` (cross-project runbooks) — search there before reinventing a procedure that likely exists.
 
+## Structure is rules, not schema
+
+Per project, only three anchors are fixed: `context.md` (living state), `log.md`
+(journal), `messages/` (session mail) — they are what makes "load X" work
+identically everywhere. EVERYTHING else is yours to shape: invent the folders
+and `type:` values the work actually needs (research: `sources/`,
+`experiments/`; brainstorm: `ideas/`; client: `meetings/`). New folders
+auto-index and render first-class in the explorer. Don't force decisions/specs/
+people/assets onto a project that doesn't need them — and when a new shape
+proves itself, record it in
+[organizing-projects](../../library/runbooks/organizing-projects.md) so future
+sessions inherit the pattern. Restructuring is allowed too: move/split concepts
+when a project outgrows its shape (git mv in Claude Code), and say so in the log.
+
 ## Writing conventions
 
 - **Link the graph.** Every concept links its related concepts — its decision,

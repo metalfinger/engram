@@ -166,7 +166,10 @@ async def kb_write(path: str, content: str, message: str, description: str = "")
     if none fit), then a markdown body. Link related concepts with relative markdown
     links, never wikilinks. Always include relative markdown links to related concepts —
     the decision a spec implements, the spec a decision shaped, the concept this
-    supersedes. A concept with no links is a dead end for depth=1 navigation. The server
+    supersedes. A concept with no links is a dead end for depth=1 navigation. There is
+    no fixed folder set — only context.md, log.md, and messages/ are anchors; shape the
+    project to the work (research: sources/, experiments/; brainstorm: ideas/; client:
+    meetings/) and new directories auto-index. The server
     auto-fills title/description/timestamp (pass
     `description` if the frontmatter lacks one) and on create auto-appends the concept
     to its parent index.md. Filenames kebab-case; decisions as YYYY-MM-slug.md. Paths
