@@ -44,16 +44,15 @@ _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _MONTH_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
 
-# Standard OKF project subfiles, in reading order, for the sidebar subtree.
-_PROJECT_SUBFILES = (
+# The always-present OKF top-level files, in reading order (sidebar + project page).
+_PROJECT_TOP_FILES = (
     ("Context", "context.md"),
     ("Log", "log.md"),
     ("Messages", "messages/index.md"),
-    ("Decisions", "decisions/index.md"),
-    ("Specs", "specs/index.md"),
-    ("People", "people/index.md"),
-    ("Assets", "assets/index.md"),
 )
+# Ordering PREFERENCE only — project folders may take any shape; these known dirs
+# sort first (in this order), everything else follows alphabetically.
+_KNOWN_SECTION_ORDER = ("decisions", "specs", "assets", "people")
 
 
 # ---------------------------------------------------------------- fs helpers
@@ -261,14 +260,64 @@ def _count_sessions(pdir: Path) -> int:
 
 
 def _dir_title(folder: Path) -> str:
-    """Human label for a folder: its index.md H1 if present, else the dir name."""
+    """Human label for a folder: its index.md H1 if present, else a Title-Cased name."""
     idx = folder / "index.md"
     if idx.is_file():
         first = next((ln for ln in _read(idx).splitlines() if ln.strip()), "")
         h1 = first.lstrip("#").strip()
         if h1:
             return h1
-    return folder.name
+    return folder.name.replace("-", " ").replace("_", " ").title()
+
+
+def _project_sections(pdir: Path) -> list[Path]:
+    """Immediate concept subdirectories of a project, excluding messages/.
+
+    Any folder shape is first-class: known dirs (decisions/specs/assets/people)
+    keep their preferred order; everything else follows alphabetically. Emptiness
+    is decided by the caller — this returns every candidate section dir.
+    """
+    subs = [
+        d
+        for d in pdir.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and d.name != "messages"
+    ]
+
+    def _key(d: Path) -> tuple[int, str]:
+        name = d.name.lower()
+        rank = _KNOWN_SECTION_ORDER.index(name) if name in _KNOWN_SECTION_ORDER else len(_KNOWN_SECTION_ORDER)
+        return (rank, name)
+
+    return sorted(subs, key=_key)
+
+
+def _project_section_render(
+    pdir: Path, brain: Path
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Generic, any-shape section rendering for a project.
+
+    Every immediate subdir (except messages/) that holds at least one concept .md
+    becomes an inline card section titled by its index.md H1 (fallback: Title-Cased
+    dir name); an empty dir becomes a demoted muted line. Returns
+    ``(stat_chips, section_html, browse_chips, demoted_lines)`` — the route wraps
+    the always-present log/messages/session chrome around these.
+    """
+    stat: list[str] = []
+    section_html: list[str] = []
+    browse: list[str] = []
+    demoted: list[str] = []
+    for d in _project_sections(pdir):
+        count = _count_concepts(d)
+        label = _dir_title(d)
+        href = f"/brain/f/{_rel(d, brain)}"
+        browse.append(chip(f"{label} · {count}", href))
+        if count:
+            stat.append(chip(f"{count} {d.name}", href))
+            section_html.append(f'<p class="section-label">{esc(label)}</p>')
+            section_html.append(f'<div class="cards">{_doc_cards(d, brain)}</div>')
+        else:
+            demoted.append(f'<p class="empty">No {esc(label.lower())} yet.</p>')
+    return stat, section_html, browse, demoted
 
 
 def _file_title(f: Path) -> str:
@@ -593,10 +642,15 @@ def _nav_project(pdir: Path, brain: Path, active: str) -> str:
     open_attr = " open" if here else ""
     count = f'<span class="nav-count">{unread}</span>' if unread else ""
     children = [_nav_link(overview, "Overview", active)]
-    for label, rel_name in _PROJECT_SUBFILES:
+    # Always-present top-level files, then every concept subdir (any shape).
+    for label, rel_name in _PROJECT_TOP_FILES:
         fpath = pdir / rel_name
         if fpath.is_file():
             children.append(_nav_link(f"/brain/f/{_rel(fpath, brain)}", label, active))
+    for d in _project_sections(pdir):
+        idx = d / "index.md"
+        target = idx if idx.is_file() else d
+        children.append(_nav_link(f"/brain/f/{_rel(target, brain)}", _dir_title(d), active))
     return (
         f'<details class="nav-proj"{open_attr}>'
         f"<summary>{esc(name)}{count}</summary>"
@@ -784,19 +838,19 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             "</div>",
         ]
 
-        # Aggregate stat row: status · last session · counts (glob once, reuse).
-        n_dec = _count_concepts(pdir / "decisions")
-        n_spec = _count_concepts(pdir / "specs")
+        # Generic section discovery — every concept subdir is first-class.
+        stat_sec, section_html, browse_sec, demoted = _project_section_render(pdir, brain)
         n_sess = _count_sessions(pdir)
         n_unread = _unread_count(pdir)
+
+        # Aggregate stat row: status · last session · one chip per non-empty section.
         stat: list[str] = []
         if meta.get("status"):
             stat.append(badge(str(meta["status"]), str(meta["status"])))
         last = _last_log_date(pdir)
         if last:
             stat.append(_session_time(last))
-        stat.append(chip(f"{n_dec} decisions", f"/brain/f/{rel_dir}/decisions"))
-        stat.append(chip(f"{n_spec} specs", f"/brain/f/{rel_dir}/specs"))
+        stat.extend(stat_sec)
         stat.append(chip(f"{n_sess} sessions", f"/brain/f/{rel_dir}/log.md"))
         if n_unread:
             stat.append(badge(f"{n_unread} unread", "unread"))
@@ -827,21 +881,8 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             parts.append('<p class="section-label">Inbox</p>')
             parts.extend(_msg_card(f, m, brain, today) for f, m in inbox)
 
-        # Inline concept card sections; empty ones are demoted to the bottom.
-        demoted: list[str] = []
-        for label, sub in (
-            ("Decisions", "decisions"),
-            ("Specs", "specs"),
-            ("Assets", "assets"),
-            ("People", "people"),
-        ):
-            folder = pdir / sub
-            cards = _doc_cards(folder, brain)
-            if cards:
-                parts.append(f'<p class="section-label">{esc(label)}</p>')
-                parts.append(f'<div class="cards">{cards}</div>')
-            elif folder.is_dir():
-                demoted.append(f'<p class="empty">No {label.lower()} yet.</p>')
+        # Inline card sections for every non-empty concept dir (any shape).
+        parts.extend(section_html)
 
         archive_dir = pdir / "messages" / "archive"
         archived = (
@@ -860,21 +901,13 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                 f'<div class="nav-sub">{links}</div></details>'
             )
 
-        # Browse chips carry counts.
-        browse: list[str] = []
-        for label, sub, count in (
-            ("Log", "log.md", n_sess),
-            ("Decisions", "decisions", n_dec),
-            ("Specs", "specs", n_spec),
-            ("People", "people", _count_concepts(pdir / "people")),
-            ("Assets", "assets", _count_concepts(pdir / "assets")),
-            ("Messages", "messages/index.md", len(inbox)),
-        ):
-            if (pdir / sub).exists():
-                browse.append(chip(f"{label} · {count}", f"/brain/f/{rel_dir}/{sub}"))
-        if browse:
-            parts.append('<p class="section-label">Browse</p>')
-            parts.append(f'<div class="quicknav">{"".join(browse)}</div>')
+        # Browse chips generated from the actual dirs, with counts.
+        browse: list[str] = [chip(f"Log · {n_sess}", f"/brain/f/{rel_dir}/log.md")]
+        browse.extend(browse_sec)
+        if (pdir / "messages" / "index.md").is_file():
+            browse.append(chip(f"Messages · {len(inbox)}", f"/brain/f/{rel_dir}/messages/index.md"))
+        parts.append('<p class="section-label">Browse</p>')
+        parts.append(f'<div class="quicknav">{"".join(browse)}</div>')
 
         if not inbox:
             demoted.insert(0, '<p class="empty">Inbox — no new messages.</p>')

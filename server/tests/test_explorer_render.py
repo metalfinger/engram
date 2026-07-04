@@ -23,6 +23,9 @@ from engram_server.explorer.routes import (
     _count_concepts,
     _count_sessions,
     _crumbs_for,
+    _dir_title,
+    _project_section_render,
+    _project_sections,
     _result_card,
     _setup_body,
     _sidebar,
@@ -446,6 +449,85 @@ def test_crumbs_leaf_uses_title_keeps_path_href() -> None:
 def test_crumbs_without_title_falls_back_to_slug() -> None:
     crumbs = _crumbs_for("projects/alt/decisions/2026-07-search.md")
     assert crumbs[-1][0] == "2026-07-search.md"
+
+
+# ------------------------------------------------------------ generic sections (any shape)
+
+
+def _project_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    brain = tmp_path / "brain"
+    proj = brain / "projects" / "demo"
+    # known dir with content
+    dec = proj / "decisions"
+    dec.mkdir(parents=True)
+    (dec / "index.md").write_text("# Decisions\n", encoding="utf-8")
+    (dec / "2026-07-x.md").write_text(
+        "---\ntype: decision\ntitle: The X decision\nconfidence: settled\n---\n# X\n",
+        encoding="utf-8",
+    )
+    # known dir that is EMPTY (index only)
+    specs = proj / "specs"
+    specs.mkdir()
+    (specs / "index.md").write_text("# Specs\n", encoding="utf-8")
+    # a CUSTOM dir with an index H1 and 3 concepts
+    src = proj / "sources"
+    src.mkdir()
+    (src / "index.md").write_text("# Sources\n", encoding="utf-8")
+    for n in ("a", "b", "c"):
+        (src / f"paper-{n}.md").write_text(
+            f"---\ntype: reference\ntitle: Paper {n.upper()}\n---\n# {n}\n", encoding="utf-8"
+        )
+    # a custom dir with NO index H1 -> Title-Cased fallback, 1 concept
+    notes = proj / "field-notes"
+    notes.mkdir()
+    (notes / "n1.md").write_text("---\ntype: note\ntitle: Note one\n---\n# n1\n", encoding="utf-8")
+    # messages/ must never be treated as a section
+    (proj / "messages").mkdir()
+    (proj / "messages" / "index.md").write_text("# Messages\n", encoding="utf-8")
+    return brain, proj
+
+
+def test_project_sections_orders_known_first_then_alpha(tmp_path: Path) -> None:
+    _brain, proj = _project_fixture(tmp_path)
+    names = [d.name for d in _project_sections(proj)]
+    # known dirs (decisions, specs) first in preferred order; extras alphabetical
+    assert names == ["decisions", "specs", "field-notes", "sources"]
+    assert "messages" not in names
+
+
+def test_dir_title_h1_then_titlecased_fallback(tmp_path: Path) -> None:
+    _brain, proj = _project_fixture(tmp_path)
+    assert _dir_title(proj / "sources") == "Sources"  # from index.md H1
+    assert _dir_title(proj / "field-notes") == "Field Notes"  # Title-Cased fallback
+
+
+def test_custom_dir_renders_first_class_section_and_chip(tmp_path: Path) -> None:
+    brain, proj = _project_fixture(tmp_path)
+    stat, sections, browse, demoted = _project_section_render(proj, brain)
+    sections_html = "".join(sections)
+    stat_html = "".join(stat)
+    browse_html = "".join(browse)
+    # the custom sources/ dir is a first-class inline section with a stat chip
+    assert '<p class="section-label">Sources</p>' in sections_html
+    assert "3 sources" in stat_html
+    assert "Sources · 3" in browse_html
+    # cards show concept titles, not filenames
+    assert "Paper A" in sections_html
+    # a custom dir with no index H1 title-cases in browse + stat (dir name lower)
+    assert "Field Notes · 1" in browse_html
+    assert "1 field-notes" in stat_html
+    # empty known dir (specs) is demoted, not inline
+    assert '<p class="section-label">Specs</p>' not in sections_html
+    assert any("no specs yet" in d.lower() for d in demoted)
+
+
+def test_sidebar_shows_arbitrary_project_dirs(tmp_path: Path) -> None:
+    brain, proj = _project_fixture(tmp_path)
+    html = _sidebar(brain, "/brain/p/demo")
+    # the custom sources/ + field-notes/ dirs appear in the project subtree
+    assert "Sources" in html
+    assert "Field Notes" in html
+    assert 'href="/brain/f/projects/demo/sources/index.md"' in html
 
 
 # ------------------------------------------------------------ setup / onboarding
