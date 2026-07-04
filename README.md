@@ -21,15 +21,16 @@ Three parts:
 
 ```
 engram/
-├── docs/HANDOFF.md        # full build spec: intent, decisions + rationale, tool contracts, build order
-├── skills/engram/SKILL.md # the protocol skill (install into ~/.claude/skills; also lives inside brain)
-├── brain-skeleton/brain/  # OKF bundle skeleton → becomes the private `brain` repo
-└── server/                # kb_* MCP implementation (to be built)
+├── docs/HANDOFF.md        # original build spec (historical): intent, decisions + rationale, contracts
+├── skills/engram/SKILL.md # the protocol skill (synced: here, inside brain, ~/.claude/skills)
+├── brain-skeleton/brain/  # the skeleton that seeded the private `brain` repo (historical)
+└── server/                # engram_server — SHIPPED: 8 kb_* tools + OAuth allowlist + explorer, 152 tests
 ```
 
-## Build order (from docs/HANDOFF.md §9)
+## Status
 
-- **v1** — brain repo on GitHub (private) + 7 core tools: `kb_projects`, `kb_load`, `kb_read`, `kb_write`, `kb_append_log`, `kb_leave_message`, `kb_mark_read` (+ ripgrep `kb_search` stub). Accept: a fresh mobile session answers "which projects am I working on?" with zero pasted context.
-- **v1.1** — Qdrant Cloud embeddings, real `kb_search`, nightly reconcile.
+- **v1 — LIVE (2026-07-04).** `github.com/metalfinger/brain` + all 8 tools + explorer, deployed on the `my-pc` Cloudflare tunnel: `engram.metalfinger.xyz` (MCP, GitHub OAuth allowlisted) + `brain.metalfinger.xyz` (explorer, Cloudflare Access; `/brain/setup` onboards any MCP client). Cross-surface message loop proven. Engine philosophy: rules over schema — three anchors per project, every other shape LLM-invented, auto-indexed, first-class in the UI.
+- **v1.1 (next)** — Qdrant Cloud embeddings behind the same `kb_search` contract, nightly reconcile, read/write race hardening.
 - **v1.2** — skill polish, `kb_inbox` quick-capture.
-- **v1.3** — OKF visualizer on Netlify (brain.metalfinger.xyz).
+- **v1.3** — OKF visualizer on Netlify (bundle audited conformant).
+- **Later** — MCP App widgets (study the Survey implementation first; see CLAUDE.md roadmap).
