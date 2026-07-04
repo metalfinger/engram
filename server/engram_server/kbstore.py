@@ -256,6 +256,60 @@ class KBStore:
             )
         return rel
 
+    async def kb_rename_project(self, old_id: str, new_id: str) -> dict[str, Any]:
+        """Rename projects/<old_id> to projects/<new_id>, rewriting links bundle-wide.
+
+        Returns {old, new, links_rewritten, sha, pushed}."""
+        old = (old_id or "").strip()
+        new = (new_id or "").strip()
+        if old == "metalfinger" or new == "metalfinger":
+            raise KBError("metalfinger is a fixed top-level tree and cannot be renamed.")
+        if not _PROJECT_ID_RE.fullmatch(old) or not _PROJECT_ID_RE.fullmatch(new):
+            raise KBError("Project ids are lowercase letters/digits/hyphens, e.g. 'mcp-explorations'.")
+        if old == new:
+            raise KBError("old_id and new_id are identical — nothing to rename.")
+        old_dir = self.root / "projects" / old
+        new_dir = self.root / "projects" / new
+        state: dict[str, Any] = {"links": 0}
+
+        def _mutate() -> list[str]:
+            if not old_dir.is_dir():
+                raise KBError(f"Unknown project {old!r}. Call kb_projects to list projects.")
+            if new_dir.exists():
+                raise KBError(f"projects/{new} already exists — pick a different new_id.")
+            old_dir.rename(new_dir)
+            touched: set[str] = {f"projects/{old}", f"projects/{new}"}
+            # Rewrite link targets everywhere: 'projects/<old>/...' anywhere in the bundle,
+            # '<old>/...' from projects/index.md, '../<old>/...' from sibling projects;
+            # plus the denormalized 'project:' frontmatter field inside the moved tree.
+            deep = re.compile(rf"(\]\([^)]*?)projects/{re.escape(old)}/")
+            sibling = re.compile(rf"(\]\(\.\./){re.escape(old)}/")
+            for f in self.root.rglob("*.md"):
+                if ".git" in f.parts:
+                    continue
+                text = f.read_text(encoding="utf-8")
+                orig = text
+                text, n1 = deep.subn(rf"\g<1>projects/{new}/", text)
+                n2 = n3 = 0
+                if f.parent == self.root / "projects" and f.name == "index.md":
+                    text, n2 = re.subn(
+                        rf"(\]\(){re.escape(old)}/", rf"\g<1>{new}/", text
+                    )
+                elif f.is_relative_to(new_dir.parent) and not f.is_relative_to(new_dir):
+                    text, n3 = sibling.subn(rf"\g<1>{new}/", text)
+                if f.is_relative_to(new_dir):
+                    text = re.sub(
+                        rf"^project: {re.escape(old)}$", f"project: {new}", text, flags=re.M
+                    )
+                if text != orig:
+                    state["links"] += n1 + n2 + n3
+                    _write_text(f, text)
+                    touched.add(f.relative_to(self.root).as_posix())
+            return sorted(touched)
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: rename project {old} -> {new}")
+        return {"old": old, "new": new, "links_rewritten": state["links"], "sha": sha, "pushed": pushed}
+
     async def _refresh(self) -> None:
         """Read-path throttled pull. Skips inside the TTL or while a write holds the lock;
         swallows GitError so reads serve stale content when the remote is unreachable."""

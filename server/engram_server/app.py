@@ -263,6 +263,21 @@ async def kb_search(
     return await store.kb_search(query, project=project, type=type, limit=limit)
 
 
+@mcp.tool()
+async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
+    """Rename a project's id (its folder under projects/). Use when the user says a
+    project should be called something else ('rename mcp-explorations to mcp-apps').
+    Safe and atomic: moves the folder, rewrites every markdown link across the whole
+    knowledge base that pointed at the old id (including from other projects, self/,
+    and library/), and updates the denormalized project field inside the moved tree —
+    one commit. New id must be kebab-case and unused. metalfinger cannot be renamed.
+    After renaming, refer to the project by its new id (kb_load, kb_search filters).
+
+    Returns {old, new, links_rewritten, sha, pushed}.
+    """
+    return await store.kb_rename_project(old_id, new_id)
+
+
 # ------------------------------------------------------------------ routes
 
 if _AUTH_ENABLED:

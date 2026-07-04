@@ -261,3 +261,44 @@ async def test_write_warns_when_concept_has_no_links(store):
     )
     r2 = await store.kb_write("projects/engram/ideas/social.md", linked, "add social idea")
     assert not any("links to nothing" in w for w in r2["warnings"])
+
+
+async def test_rename_project_moves_tree_and_rewrites_links(store):
+    # a concept in another tree linking into the project (deep form)
+    outside = (
+        "---\ntype: runbook\ndescription: Links into engram.\n---\n\n"
+        "See [the spec](../projects/alt/context.md).\n"
+    )
+    await store.kb_write("library/runbooks/pointer.md", outside, "add pointer")
+
+    r = await store.kb_rename_project("alt", "alt-core")
+    assert r["old"] == "alt" and r["new"] == "alt-core"
+    assert r["links_rewritten"] >= 1
+
+    root = store.root
+    assert not (root / "projects/alt").exists()
+    assert (root / "projects/alt-core/context.md").exists()
+    # deep link rewritten
+    assert "projects/alt-core/context.md" in (root / "library/runbooks/pointer.md").read_text(
+        encoding="utf-8"
+    )
+    # projects/index.md bullet rewritten
+    assert "alt-core/" in (root / "projects/index.md").read_text(encoding="utf-8")
+    # old id now unknown, new id loads
+    import pytest as _pytest
+    from engram_server.errors import KBError as _KBError
+
+    with _pytest.raises(_KBError):
+        await store.kb_load("alt")
+    load = await store.kb_load("alt-core")
+    assert load["project"] == "alt-core"
+
+
+async def test_rename_project_rejects_metalfinger_and_collisions(store):
+    import pytest as _pytest
+    from engram_server.errors import KBError as _KBError
+
+    with _pytest.raises(_KBError):
+        await store.kb_rename_project("metalfinger", "brand")
+    with _pytest.raises(_KBError):
+        await store.kb_rename_project("nonexistent", "whatever")
