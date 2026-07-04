@@ -113,27 +113,52 @@ def _parse_log_entries(text: str) -> list[dict[str, Any]]:
     return entries
 
 
-def _format_log_block(entry: str, today: str) -> str:
-    """A '## ' entry is used verbatim; anything else wraps as '## <today> — <first line>'."""
+def _entry_to_bullet(entry: str) -> str:
+    """Render an append_log entry as one OKF bullet ``* **<title>** — <body>``, with
+    any continuation lines indented two spaces. A ``## `` entry is normalized rather
+    than kept verbatim: the title comes from a ``## <date> — <title>`` heading, else
+    from the first line — so the log stays a flat bullet list under bare date headings."""
     text = entry.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if text.startswith("## "):
-        return text
     lines = text.split("\n")
-    block = f"## {today} — {lines[0].strip()}"
-    rest = "\n".join(lines[1:]).strip()
-    return f"{block}\n\n{rest}" if rest else block
+    first = lines[0].strip()
+    if first.startswith("## "):
+        heading = first[3:].strip()
+        m = _LOG_HEADING_RE.match(heading)
+        title = (m.group(2).strip() or heading) if m else heading
+    else:
+        title = first
+    body = "\n".join(lines[1:]).strip()
+    bullet = f"* **{title}**"
+    if body:
+        body_lines = body.split("\n")
+        bullet += f" — {body_lines[0].strip()}"
+        for cont in body_lines[1:]:
+            stripped = cont.strip()
+            bullet += f"\n  {stripped}" if stripped else "\n"
+    return bullet
 
 
-def _prepend_log(text: str, block: str) -> str:
-    """Insert block after the H1, before the first existing '## ' entry."""
+def _insert_log_bullet(text: str, bullet: str, today: str) -> str:
+    """Place ``bullet`` under today's date heading, newest bullet first. If the top
+    ``## `` heading is already today's bare ISO date the bullet slots directly beneath
+    it; otherwise a bare ``## <today>`` heading is created right after the H1, above the
+    older days. History below is never edited."""
     lines = text.splitlines()
+    bullet_lines = bullet.split("\n")
     for i, line in enumerate(lines):
-        if line.startswith("## "):
-            head = "\n".join(lines[:i]).rstrip()
-            tail = "\n".join(lines[i:]).rstrip()
-            prefix = f"{head}\n\n" if head else ""
-            return f"{prefix}{block}\n\n{tail}\n"
-    stripped = text.rstrip("\n")
+        if not line.startswith("## "):
+            continue
+        m = _LOG_HEADING_RE.match(line[3:].strip())
+        if m and m.group(1) == today:
+            new_lines = lines[: i + 1] + bullet_lines + lines[i + 1 :]
+        else:
+            head = lines[:i]
+            while head and not head[-1].strip():
+                head.pop()
+            new_lines = head + ["", f"## {today}"] + bullet_lines + [""] + lines[i:]
+        return "\n".join(new_lines).rstrip("\n") + "\n"
+    stripped = "\n".join(lines).rstrip("\n")
+    block = "\n".join([f"## {today}", *bullet_lines])
     return f"{stripped}\n\n{block}\n" if stripped.strip() else f"{block}\n"
 
 
@@ -571,14 +596,14 @@ class KBStore:
         pid = proot_rel.split("/")[-1]
         rel = f"{proot_rel}/log.md"
         today = _utcnow().strftime("%Y-%m-%d")
-        block = _format_log_block(entry, today)
+        bullet = _entry_to_bullet(entry)
 
         def _mutate() -> list[str]:
             log_path = self.root / rel
             if log_path.is_file():
-                new_text = _prepend_log(log_path.read_text(encoding="utf-8"), block)
+                new_text = _insert_log_bullet(log_path.read_text(encoding="utf-8"), bullet, today)
             else:
-                new_text = f"# Log — {pid}\n\n{block}\n"
+                new_text = f"# Log — {pid}\n\n## {today}\n{bullet}\n"
             _write_text(log_path, new_text)
             return [rel]
 

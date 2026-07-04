@@ -164,7 +164,10 @@ async def kb_write(path: str, content: str, message: str, description: str = "")
     there. Content must be OKF: YAML frontmatter with `type` (project, client, person,
     decision, spec, runbook, idea, meeting, video, snippet, reference — or a new type
     if none fit), then a markdown body. Link related concepts with relative markdown
-    links, never wikilinks. The server auto-fills title/description/timestamp (pass
+    links, never wikilinks. Always include relative markdown links to related concepts —
+    the decision a spec implements, the spec a decision shaped, the concept this
+    supersedes. A concept with no links is a dead end for depth=1 navigation. The server
+    auto-fills title/description/timestamp (pass
     `description` if the frontmatter lacks one) and on create auto-appends the concept
     to its parent index.md. Filenames kebab-case; decisions as YYYY-MM-slug.md. Paths
     are repo-relative POSIX, e.g. 'projects/alt/decisions/2026-07-search-engine.md'.
@@ -189,8 +192,9 @@ async def kb_append_log(project: str, entry: str) -> dict[str, Any]:
     (2) update the project's context.md (Current Phase / Open Loops / Next Actions)
     via kb_write; (3) offer kb_leave_message for anything the next session must be
     told directly; (4) confirm in one line what was committed. Offer the close-out
-    proactively — don't let sessions end with unwritten state. Plain entries are
-    wrapped as '## YYYY-MM-DD — <first line>' automatically.
+    proactively — don't let sessions end with unwritten state. Entries are
+    auto-formatted as scannable bullets ('* **title** — body') under a bare ISO date
+    heading, so pass a first line that works as a title with the detail after it.
 
     Returns {ok, path, sha, date, pushed}.
     """

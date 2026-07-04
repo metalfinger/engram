@@ -34,6 +34,13 @@ def _remote_head(remote_repo: Path) -> str:
     return proc.stdout.strip()
 
 
+def _pin_today(monkeypatch: pytest.MonkeyPatch, iso: str) -> None:
+    """Freeze kb_append_log's notion of 'today' so heading placement is deterministic
+    regardless of the wall clock (and of the skeleton's own 2026-07-04 seed heading)."""
+    fixed = datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
+    monkeypatch.setattr("engram_server.kbstore._utcnow", lambda: fixed)
+
+
 async def test_write_autofills_and_pushes(
     store: KBStore, settings: Settings, remote_repo: Path
 ) -> None:
@@ -187,16 +194,55 @@ async def test_append_log_prepends_newest_first_and_keeps_history(
     }
 
     text = (settings.brain_path / "projects/alt/log.md").read_text(encoding="utf-8")
-    assert text.startswith("# Log — alt\n\n## 2099-01-01 — Custom heading")
-    i_custom = text.index("Custom heading")
-    i_shipped = text.index(f"## {today} — Shipped the API spec.")
-    i_orig = text.index("## 2026-07-04 — Bundle initialized")
-    assert i_custom < i_shipped < i_orig  # newest first
-    assert "Details about the ship." in text
-    assert "Skeleton created from the Engram handoff." in text  # history intact
+    # OKF-strict: entries render as bullets, not decorated headings — a '## date' in the
+    # entry is only a title source, never a heading in the file.
+    assert "## 2099-01-01" not in text
+    assert "* **Custom heading** — Custom body." in text
+    assert "* **Shipped the API spec.** — Details about the ship." in text
+    # newest bullet first, both sitting above the seeded history (never rewritten)
+    i_custom = text.index("* **Custom heading**")
+    i_shipped = text.index("* **Shipped the API spec.**")
+    i_history = text.index("Skeleton created from the Engram handoff.")  # history intact
+    assert i_custom < i_shipped < i_history
 
     assert _remote_head(remote_repo) == r2["sha"]
     assert store.repo.run("log", "-1", "--format=%s").strip() == f"log: alt {today}"
+
+
+async def test_append_log_new_day_creates_bare_date_heading(
+    store: KBStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_today(monkeypatch, "2026-07-10")
+    res = await store.kb_append_log("alt", "Shipped the API spec.\nDetails about the ship.")
+    assert res["date"] == "2026-07-10"
+
+    text = (settings.brain_path / "projects/alt/log.md").read_text(encoding="utf-8")
+    # a bare ISO date heading (no ' — decoration') is created right after the H1
+    assert text.startswith(
+        "# Log — alt\n\n## 2026-07-10\n* **Shipped the API spec.** — Details about the ship.\n"
+    )
+    # the older seed day is left exactly as it was, below the new one
+    assert "## 2026-07-04 — Bundle initialized" in text
+    assert "Skeleton created from the Engram handoff." in text
+    assert store.repo.run("log", "-1", "--format=%s").strip() == "log: alt 2026-07-10"
+
+
+async def test_append_log_same_day_shares_heading_and_indents_multiline(
+    store: KBStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_today(monkeypatch, "2026-07-10")
+    await store.kb_append_log("alt", "First thing.")
+    await store.kb_append_log("alt", "Second thing.\nWith a detail line.\nAnd another.")
+
+    text = (settings.brain_path / "projects/alt/log.md").read_text(encoding="utf-8")
+    # a same-day second append lands under the one existing heading, not a new one
+    assert text.count("## 2026-07-10") == 1
+    # newest bullet first within the day
+    assert text.index("* **Second thing.**") < text.index("* **First thing.**")
+    # a multi-line entry: first body line inline after ' — ', the rest indented two spaces
+    assert (
+        "* **Second thing.** — With a detail line.\n  And another.\n* **First thing.**" in text
+    )
 
 
 async def test_append_log_unknown_project(store: KBStore) -> None:
