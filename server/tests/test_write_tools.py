@@ -248,3 +248,16 @@ async def test_append_log_same_day_shares_heading_and_indents_multiline(
 async def test_append_log_unknown_project(store: KBStore) -> None:
     with pytest.raises(KBError, match="kb_projects"):
         await store.kb_append_log("ghost-project", "entry")
+
+
+async def test_write_warns_when_concept_has_no_links(store):
+    linkless = "---\ntype: idea\ndescription: An unlinked thought.\n---\n\nNo references here.\n"
+    r = await store.kb_write("projects/engram/ideas/loner.md", linkless, "add loner idea")
+    assert any("links to nothing" in w for w in r["warnings"])
+
+    linked = (
+        "---\ntype: idea\ndescription: A linked thought.\n---\n\n"
+        "Relates to [context](../context.md).\n"
+    )
+    r2 = await store.kb_write("projects/engram/ideas/social.md", linked, "add social idea")
+    assert not any("links to nothing" in w for w in r2["warnings"])

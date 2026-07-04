@@ -28,6 +28,8 @@ from .search import search as _run_search
 _PROJECT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MD_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+# A relative .md link — the kind depth=1 navigation can follow (not http/mailto).
+_REL_MD_LINK = re.compile(r"\]\((?!https?://|mailto:)[^)\s#]*\.md(?:#[^)\s]*)?\)")
 _BULLET_RE = re.compile(
     r"^\s*[*+-]\s+\[(?P<title>[^\]]*)\]\((?P<target>[^)\s]+)\)\s*(?:[-–—]\s*(?P<desc>.*))?\s*$"
 )
@@ -561,6 +563,12 @@ class KBStore:
             normalized, meta, warnings = validate_concept(
                 content, rel_path=rel, description_arg=description
             )
+            if abs_path.name != "context.md" and not _REL_MD_LINK.search(normalized):
+                warnings.append(
+                    "This concept links to nothing — future sessions cannot navigate to "
+                    "related knowledge from it (kb_read depth=1 will be empty). Add "
+                    "relative markdown links to the concepts it relates to."
+                )
             state["warnings"] = warnings
             created = not abs_path.exists()
             state["created"] = created

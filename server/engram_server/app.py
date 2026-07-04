@@ -138,6 +138,11 @@ async def kb_load(project: str) -> dict[str, Any]:
     is true: mention briefly, archive, don't act. Then confirm project state in ONE
     line (current phase + top open loop) — do not recite the whole context back.
 
+    Every project has three anchors (context.md, log.md, messages/) — beyond that,
+    structure varies by project; the index_tree shows this project's actual shape.
+    Before inventing new structure, kb_read 'library/runbooks/organizing-projects.md'
+    for the house conventions.
+
     Returns {project, context_md, index_tree, recent_log (last 3 entries),
     unread_messages (full bodies), active_concepts (frontmatter only)}.
     """
