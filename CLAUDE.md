@@ -28,6 +28,9 @@ Artifacts = `type: artifact` concepts under `projects/<p>/artifacts/` with prove
 ## v1.1 (shipped 2026-07-05)
 Semantic `kb_search` live: fastembed local embeddings + Qdrant Cloud (`ENGRAM_QDRANT_*` in `.env`, collection `engram-brain`); text scorer = automatic fallback; results carry `engine`. In-process scheduler (lifespan-hooked): nightly reconcile 03:30 (index self-repair, orphan/dead-knowledge → `library/reports/brain-health.md`, full reindex) + 08:00 briefing artifact. `kb_inbox` capture (+ widget box). Interactive graph `/brain/graph`. Live-view share pages. Recipes UX (beta listing via kb_search until a kb_recipes tool exists). Real logging at last. 248 tests. Field notes: qdrant-client ≥1.12 uses `query_points` (`.search()` removed); Qdrant Cloud needs keyword payload indexes on filtered fields. While production runs, use `uv run --no-sync` (venv exe lock).
 
+## v2 direction (documented, not started)
+Social brains — federated knowledge, AI-mediated (public shelves, guest MCP, cross-brain adoption, agent-to-agent Q&A). The vision + reserved conventions live in the brain: `projects/engram/ideas/2026-07-social-brains.md`. Do not start before the personal-tightening backlog below is done and Hiren says go.
+
 ## What's next
 1. v1.2 remainder — skill polish from real-session friction (kb_inbox already shipped).
 2. Fresh claude.ai MOBILE session run-through (last acceptance nicety).
