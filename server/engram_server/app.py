@@ -41,18 +41,6 @@ settings = get_settings()
 store = KBStore(settings)
 
 
-@asynccontextmanager
-async def _lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Start the daily scheduler on the server's own event loop (so scheduled store
-    mutations share the store's asyncio.Lock), and stop it on shutdown."""
-    scheduler = start_schedulers(store, settings, asyncio.get_running_loop())
-    try:
-        yield {}
-    finally:
-        if scheduler is not None:
-            scheduler.stop()
-
-
 # ------------------------------------------------------------------ auth (optional)
 
 
@@ -117,7 +105,6 @@ mcp = FastMCP(
     host=settings.mcp_host,
     port=settings.mcp_port,
     log_level=settings.log_level,
-    lifespan=_lifespan,
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[_public_host, _explorer_host, "127.0.0.1:*", "localhost:*"],
@@ -511,8 +498,40 @@ def main() -> None:
     try:
         store.repo.pull_rebase()
     except GitError as exc:
-        print(f"engram: WARNING: initial pull failed, serving local checkout: {exc}", flush=True)
-    mcp.run(transport="streamable-http")
+        log.warning("engram: initial pull failed, serving local checkout: %s", exc)
+
+    import anyio
+    import uvicorn
+
+    async def _serve() -> None:
+        # Wrap the Starlette app's own lifespan (FastMCP hardcodes it to the session
+        # manager) so the daily scheduler starts ONCE at server startup on the serving
+        # loop — that's the loop that owns the store's asyncio.Lock, which scheduled
+        # store mutations must run on. FastMCP's own `lifespan=` runs per MCP session,
+        # not server-lifetime, so it can't host a background scheduler.
+        app = mcp.streamable_http_app()
+        inner_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def _lifespan_with_scheduler(app_: Any) -> AsyncIterator[None]:
+            scheduler = start_schedulers(store, settings, asyncio.get_running_loop())
+            try:
+                async with inner_lifespan(app_):
+                    yield
+            finally:
+                if scheduler is not None:
+                    scheduler.stop()
+
+        app.router.lifespan_context = _lifespan_with_scheduler
+        config = uvicorn.Config(
+            app,
+            host=settings.mcp_host,
+            port=settings.mcp_port,
+            log_level=settings.log_level.lower(),
+        )
+        await uvicorn.Server(config).serve()
+
+    anyio.run(_serve)
 
 
 if __name__ == "__main__":
