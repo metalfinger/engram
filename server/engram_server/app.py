@@ -24,6 +24,7 @@ from engram_server.config import Settings, get_settings
 from engram_server.errors import GitError
 from engram_server.explorer import register as register_explorer
 from engram_server.kbstore import KBStore
+from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server.oauth.store import InMemoryOAuthStore
@@ -111,8 +112,13 @@ mcp = FastMCP(
 
 # ------------------------------------------------------------------ kb_* tools
 
+# Brain Navigator widget (SEP-1865): when ENGRAM_WIDGET is on, the three
+# navigation tools advertise the ui:// resource so a capable host mounts the
+# inline card. When off, _nav_meta is None and the tools stay plain.
+_nav_meta = navigator_tool_meta(settings.widget)
 
-@mcp.tool()
+
+@mcp.tool(meta=_nav_meta)
 async def kb_projects() -> list[dict[str, Any]]:
     """List all projects in Hiren's knowledge base. Call this when the user asks what
     they're working on, mentions choosing a project, or at the start of a work session
@@ -120,11 +126,13 @@ async def kb_projects() -> list[dict[str, Any]]:
     named yet, ask which one (or infer it from what the user is discussing).
 
     Returns [{id, title, description, status, last_session, unread_messages}].
+
+    When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
     return await store.kb_projects()
 
 
-@mcp.tool()
+@mcp.tool(meta=_nav_meta)
 async def kb_load(project: str) -> dict[str, Any]:
     """Load a project's working context. Call when the user names a project to work on
     ('load alt', "let's do hyprlocl work"). Returns state + navigation indexes + unread
@@ -145,6 +153,8 @@ async def kb_load(project: str) -> dict[str, Any]:
 
     Returns {project, context_md, index_tree, recent_log (last 3 entries),
     unread_messages (full bodies), active_concepts (frontmatter only)}.
+
+    When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
     return await store.kb_load(project)
 
@@ -243,7 +253,7 @@ async def kb_mark_read(message_path: str) -> dict[str, Any]:
     return await store.kb_mark_read(message_path)
 
 
-@mcp.tool()
+@mcp.tool(meta=_nav_meta)
 async def kb_search(
     query: str,
     project: str | None = None,
@@ -259,6 +269,8 @@ async def kb_search(
     ranked best-first; follow up with kb_read on the paths.
 
     Returns [{path, title, description, score, matched_heading}].
+
+    When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
     return await store.kb_search(query, project=project, type=type, limit=limit)
 
@@ -307,6 +319,7 @@ if _AUTH_ENABLED:
 
 
 register_explorer(mcp, settings)
+register_navigator(mcp, settings.widget)
 
 
 # ------------------------------------------------------------------ entrypoint
