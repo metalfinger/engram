@@ -46,6 +46,30 @@ def render_markdown(body: str, current_path: str) -> str:
     return rewrite_links(html, posixpath.dirname(current_path))
 
 
+def render_markdown_public(body: str) -> str:
+    """Render an OKF markdown body for the PUBLIC share page.
+
+    Unlike ``render_markdown``, every relative/internal link is neutralized to plain
+    text — the share page must never leak repo paths as ``/brain/f/...`` hrefs. Only
+    external links (http/https/mailto) survive.
+    """
+    html = markdown.markdown(body, extensions=["extra", "sane_lists"])
+    html = _render_tasklists(html)
+    return _strip_internal_hrefs(html)
+
+
+def _strip_internal_hrefs(html: str) -> str:
+    """Drop the href of every non-external link (anchor renders as plain text)."""
+
+    def _rewrite(match: re.Match[str]) -> str:
+        target = match.group(1)
+        if target.startswith(("http://", "https://", "mailto:")):
+            return match.group(0)
+        return ""
+
+    return _HREF_RE.sub(_rewrite, html)
+
+
 def _render_tasklists(html: str) -> str:
     """Turn ``- [ ]`` / ``- [x]`` list items into disabled checkbox rows.
 

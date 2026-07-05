@@ -401,6 +401,33 @@ def codebox(text: str) -> str:
     return f'<div class="codebox"><code>{esc(text)}</code></div>'
 
 
+def share_page(title: str, body_html: str) -> str:
+    """A standalone, UNGUARDED public page for a shared artifact.
+
+    Deliberately minimal: same visual language (shared CSS) but NO topbar, NO sidebar,
+    NO search, NO breadcrumbs — nothing that reveals the bundle's structure or offers
+    navigation into the private knowledge base. Only the artifact body and a neutral
+    footer. ``body_html`` is trusted (server-built).
+    """
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(title)}</title>
+<style>{CSS}</style>
+</head>
+<body>
+<div class="layout">
+  <main>
+{body_html}
+  </main>
+</div>
+</body>
+</html>
+"""
+
+
 def page(
     title: str,
     body_html: str,

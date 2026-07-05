@@ -168,6 +168,31 @@ def test_html_basket_build_message_shape() -> None:
         assert label in NAVIGATOR_HTML
 
 
+def test_html_artifacts_tab_and_listing() -> None:
+    # the Artifacts tab exists and lists via kb_artifacts
+    assert 'data-tab="artifacts"' in NAVIGATOR_HTML
+    assert 'callTool("kb_artifacts"' in NAVIGATOR_HTML
+    # empty state points back to the basket workflow
+    assert "No artifacts yet — build one from the basket." in NAVIGATOR_HTML
+
+
+def test_html_artifacts_share_unshare_and_url_box() -> None:
+    # Share / Unshare drive the revocable-link tools
+    assert 'callTool("kb_share_artifact"' in NAVIGATOR_HTML
+    assert 'callTool("kb_unshare_artifact"' in NAVIGATOR_HTML
+    # the minted URL is shown in a one-click-selectable codebox
+    assert "share-url" in NAVIGATOR_HTML
+    # a stale artifact is flagged in the row
+    assert "sources changed" in NAVIGATOR_HTML
+
+
+def test_html_basket_offers_to_save_as_artifact() -> None:
+    # the build brief now closes with an offer to persist the result as an artifact
+    assert "OFFER to save it into the brain" in NAVIGATOR_HTML
+    assert "type: artifact" in NAVIGATOR_HTML
+    assert "Artifacts tab" in NAVIGATOR_HTML
+
+
 def test_html_has_polish_affordances() -> None:
     # loading skeletons, retry-able errors, toasts, tab badge, reconcile-on-boot
     assert "skel" in NAVIGATOR_HTML
@@ -199,7 +224,7 @@ def test_app_flag_off_tools_have_no_meta(monkeypatch) -> None:
     app_module = _reload_app(monkeypatch, widget=False)
     try:
         tools = {t.name: t for t in asyncio.run(app_module.mcp.list_tools())}
-        for name in ("kb_projects", "kb_load", "kb_search"):
+        for name in ("kb_projects", "kb_load", "kb_search", "kb_artifacts"):
             assert tools[name].meta is None, name
         resources = asyncio.run(app_module.mcp.list_resources())
         assert not any(str(r.uri) == NAVIGATOR_URI for r in resources)
@@ -212,7 +237,7 @@ def test_app_flag_on_wires_three_tools_and_resource(monkeypatch) -> None:
     try:
         tools = {t.name: t for t in asyncio.run(app_module.mcp.list_tools())}
         wired = {"ui": {"resourceUri": NAVIGATOR_URI}}
-        for name in ("kb_projects", "kb_load", "kb_search"):
+        for name in ("kb_projects", "kb_load", "kb_search", "kb_artifacts"):
             assert tools[name].meta == wired, name
         # every OTHER kb_* tool stays plain
         for name in (
@@ -222,6 +247,8 @@ def test_app_flag_on_wires_three_tools_and_resource(monkeypatch) -> None:
             "kb_leave_message",
             "kb_mark_read",
             "kb_rename_project",
+            "kb_share_artifact",
+            "kb_unshare_artifact",
         ):
             assert tools[name].meta is None, name
         resources = asyncio.run(app_module.mcp.list_resources())

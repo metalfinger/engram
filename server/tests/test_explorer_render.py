@@ -13,9 +13,15 @@ from engram_server.explorer.format import (
     stamp,
     type_glyph,
 )
-from engram_server.explorer.html import badge, button, card, chip, codebox, page
-from engram_server.explorer.render import render_markdown, rewrite_links, split_frontmatter
+from engram_server.explorer.html import badge, button, card, chip, codebox, page, share_page
+from engram_server.explorer.render import (
+    render_markdown,
+    render_markdown_public,
+    rewrite_links,
+    split_frontmatter,
+)
 from engram_server.explorer.routes import (
+    _artifact_provenance,
     _backlinks,
     _concept_card,
     _concept_footer,
@@ -24,6 +30,7 @@ from engram_server.explorer.routes import (
     _count_sessions,
     _crumbs_for,
     _dir_title,
+    _find_shared_artifact,
     _project_section_render,
     _project_sections,
     _result_card,
@@ -528,6 +535,75 @@ def test_sidebar_shows_arbitrary_project_dirs(tmp_path: Path) -> None:
     assert "Sources" in html
     assert "Field Notes" in html
     assert 'href="/brain/f/projects/demo/sources/index.md"' in html
+
+
+# ------------------------------------------------------------ artifacts (provenance + share)
+
+
+def test_render_markdown_public_neutralizes_internal_links() -> None:
+    body = "See [ctx](../context.md) and [site](https://x.io) and [mail](mailto:a@b.c)."
+    out = render_markdown_public(body)
+    # internal link dropped to plain text — no repo path leaks
+    assert "/brain/f/" not in out
+    assert "context.md" not in out
+    assert ">ctx<" in out  # anchor text survives, unlinked
+    # external links preserved
+    assert 'href="https://x.io"' in out
+    assert 'href="mailto:a@b.c"' in out
+
+
+def test_share_page_is_minimal_no_nav() -> None:
+    doc = share_page("Weekly Status", "<h1>Weekly Status</h1>")
+    assert "Weekly Status" in doc
+    # no topbar/search/sidebar chrome on the public page
+    assert "Search the brain" not in doc
+    assert 'class="sidebar"' not in doc
+    assert "/brain/system" not in doc
+
+
+def test_artifact_provenance_current_vs_stale() -> None:
+    meta = {
+        "type": "artifact",
+        "built_from": "0123456789abcdef",
+        "sources": ["projects/alt/context.md"],
+    }
+    fresh = _artifact_provenance(meta, False, "https://brain.metalfinger.xyz")
+    assert "Provenance" in fresh
+    assert "0123456789" in fresh  # short sha
+    assert "current" in fresh
+    assert 'href="/brain/f/projects/alt/context.md"' in fresh  # source linked (guarded view)
+    assert "Not shared" in fresh
+
+    stale = _artifact_provenance(meta, True, "https://brain.metalfinger.xyz")
+    assert "sources changed since build" in stale
+
+
+def test_artifact_provenance_shows_share_url() -> None:
+    meta = {"type": "artifact", "share": "TOKEN123456789012345", "sources": []}
+    html = _artifact_provenance(meta, None, "https://brain.metalfinger.xyz")
+    assert "https://brain.metalfinger.xyz/share/TOKEN123456789012345" in html
+
+
+def test_find_shared_artifact_matches_token_only(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    adir = brain / "projects" / "alt" / "artifacts"
+    adir.mkdir(parents=True)
+    (adir / "index.md").write_text("# Artifacts\n", encoding="utf-8")
+    (adir / "2026-07-r.md").write_text(
+        "---\ntype: artifact\ntitle: Report\nshare: the-secret-token-0123456789\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    # a non-artifact with a share field must never resolve
+    dec = brain / "projects" / "alt" / "decisions"
+    dec.mkdir(parents=True)
+    (dec / "d.md").write_text(
+        "---\ntype: decision\nshare: not-an-artifact-token-000\n---\n\nx\n", encoding="utf-8"
+    )
+
+    hit = _find_shared_artifact(brain, "the-secret-token-0123456789")
+    assert hit is not None and hit[1]["title"] == "Report"
+    assert _find_shared_artifact(brain, "wrong-token-0123456789") is None
+    assert _find_shared_artifact(brain, "not-an-artifact-token-000") is None
 
 
 # ------------------------------------------------------------ setup / onboarding

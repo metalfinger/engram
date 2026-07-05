@@ -278,6 +278,18 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .act:hover { filter:brightness(1.06); }
 .arch:hover { border-color:var(--accent-line); color:var(--accent-ink); }
 
+/* artifacts */
+.artrow { border:1px solid var(--line); border-radius:10px; background:var(--surface); box-shadow:var(--shadow); margin:.55rem 0; padding:.5rem .6rem; }
+.artrow .artmain { display:flex; flex-direction:column; gap:.35rem; cursor:pointer; }
+.artrow .arthead { display:flex; align-items:center; gap:.45rem; }
+.artrow .artt { font-size:.9rem; font-weight:650; }
+.artrow .artchips { display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; }
+.artrow .artacts { display:flex; gap:.5rem; margin-top:.5rem; }
+.chip.shared { color:var(--accent-ink); border-color:var(--accent-line); background:var(--accent-soft); }
+.chip.stale { background:color-mix(in srgb,var(--amber) 16%,transparent); color:var(--amber); border-color:transparent; }
+.sharebox { margin-top:.5rem; border:1px solid var(--line-2); border-radius:8px; background:var(--code-bg); overflow-x:auto; }
+.sharebox .share-url { display:block; padding:.45rem .6rem; font-family:ui-monospace,Consolas,monospace; font-size:.74rem; white-space:pre; color:var(--fg); -webkit-user-select:all; user-select:all; }
+
 /* basket footer bar */
 .basket { position:sticky; bottom:0; z-index:6; background:color-mix(in srgb,var(--surface) 96%,var(--accent) 4%);
           border-top:1px solid var(--accent-line); padding:0; max-height:0; overflow:hidden; transition:max-height .2s ease; }
@@ -322,6 +334,7 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
   <button class="tab" data-tab="browse">Browse</button>
   <button class="tab" data-tab="search">Search</button>
   <button class="tab" data-tab="inbox">Inbox<span class="tbadge" id="ib-badge"></span></button>
+  <button class="tab" data-tab="artifacts">Artifacts</button>
 </nav>
 <div id="toasts"></div>
 <div class="wrap"><div id="view"><div class="skgrid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div></div></div>
@@ -338,6 +351,7 @@ let state={
   view:"home", projects:null, load:null, projectId:null, readPath:null, read:null,
   searchQuery:"", searchProject:null, searchResults:null, searchStatus:null,
   inbox:null, inboxStatus:null,
+  artifacts:null, artifactsStatus:null,
   basket:[]   // [{path, title}] — ordered
 };
 let booted=false, busy=false;
@@ -408,7 +422,7 @@ function persist(){ try{ if(window.openai && typeof window.openai.setWidgetState
 
 // ─────────────────────────── helpers ──────────────────────────
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-const TYPE_GLYPHS={decision:"⚖",spec:"📐",runbook:"🛠",person:"👤",client:"🏢",video:"🎬",message:"✉",reference:"🔖",project:"📁",idea:"💡",meeting:"🗓",snippet:"✂",note:"📝"};
+const TYPE_GLYPHS={decision:"⚖",spec:"📐",runbook:"🛠",person:"👤",client:"🏢",video:"🎬",message:"✉",reference:"🔖",project:"📁",idea:"💡",meeting:"🗓",snippet:"✂",note:"📝",artifact:"📄"};
 function glyph(t){ return TYPE_GLYPHS[String(t||"").trim().toLowerCase()]||"◆"; }
 function statusDot(s){ s=String(s||"").toLowerCase();
   if(["active","settled","paid","published"].includes(s)) return "s-green";
@@ -534,7 +548,7 @@ async function buildArtifact(){
     handoff:"a HANDOFF BRIEF for the next person/session: context in one paragraph, current state, exact next actions as a checklist, gotchas called out",
   };
   let msg;
-  const quality=" Create it as a proper ARTIFACT (side-panel document — never plain chat text). Make it genuinely well-designed: clear hierarchy, scannable structure; prefer rich formatted markdown, or a styled HTML artifact when visuals (tables, status colors, timelines) would materially help. Cite the source paths in a small footer.";
+  const quality=" Create it as a proper ARTIFACT (side-panel document — never plain chat text). Make it genuinely well-designed: clear hierarchy, scannable structure; prefer rich formatted markdown, or a styled HTML artifact when visuals (tables, status colors, timelines) would materially help. Cite the source paths in a small footer. After presenting the artifact, OFFER to save it into the brain: kb_write to projects/<project>/artifacts/YYYY-MM-<slug>.md with frontmatter type: artifact, sources: [the exact paths above], instruction: <the instruction you were given> — the server stamps provenance; then it appears in the Artifacts tab.";
   if(v==="custom"){ const ci=$("bk-custom"); const instr=(ci&&ci.value.trim())||"Write a useful document";
     msg=instr+"\n\nUse ONLY these knowledge-base concepts — kb_read each path first, use only their content."+quality+"\n"+paths;
   } else { const c=CRAFT[v]||CRAFT.summary;
@@ -753,6 +767,72 @@ async function actMsg(path){
   showToast(ok?"Handed to Claude":"Couldn't reach Claude — try again", ok?null:()=>actMsg(path));
 }
 
+// ── ARTIFACTS ──
+// Saved documents (type: artifact) built from the basket, with provenance. Rows open
+// in the Reader; Share mints a PUBLIC link (kb_share_artifact), Unshare revokes it.
+async function loadArtifacts(force){
+  if(state.artifacts && !force){ renderArtifacts(); return; }
+  state.artifactsStatus="loading"; renderArtifacts();
+  try{
+    const d=await callTool("kb_artifacts",{});
+    if(d && d.error) throw new Error(d.error);
+    state.artifacts=Array.isArray(d)?d:[]; state.artifactsStatus="ok";
+  }catch(e){ state.artifactsStatus="error"; }
+  renderArtifacts();
+}
+function artifactRow(a){
+  const stale=(a.stale===true)?'<span class="chip stale">sources changed</span>':"";
+  const shared=a.shared?'<span class="chip shared">🔗 shared</span>':"";
+  const when=a.timestamp?'<span class="when">'+esc(relTime(a.timestamp))+'</span>':"";
+  const acts=a.shared
+    ? (a._confirm
+        ? '<button class="arch" data-unshare="'+esc(a.path)+'">Confirm unshare</button>'
+        : '<button class="arch" data-unshare="'+esc(a.path)+'">Unshare</button>')
+    : '<button class="act" data-share="'+esc(a.path)+'">Share</button>';
+  const box=(a.shared && a.share_url)
+    ? '<div class="sharebox"><code class="share-url">'+esc(a.share_url)+'</code></div>' : "";
+  return '<div class="artrow">'
+    +'<div class="artmain" data-open-path="'+esc(a.path)+'">'
+      +'<div class="arthead"><span class="stamp">'+glyph("artifact")+'</span><span class="artt">'+esc(a.title||a.path.split("/").pop())+'</span></div>'
+      +'<div class="artchips"><span class="chip proj">'+esc(a.project||"")+'</span>'+stale+shared+when+'</div>'
+    +'</div>'
+    +'<div class="artacts">'+acts+'</div>'
+    +box
+  +'</div>';
+}
+function renderArtifacts(){
+  state.view="artifacts"; persist(); setActiveTab();
+  let body;
+  if(state.artifactsStatus==="loading"){ body=skelRows(3); }
+  else if(state.artifactsStatus==="error"){ body=errBlock("Couldn't load artifacts.","artifacts"); }
+  else { const rows=state.artifacts||[];
+    body = rows.length ? rows.map(artifactRow).join("")
+      : '<div class="empty">No artifacts yet — build one from the basket.</div>'; }
+  show('<div class="ihead"><p class="eyebrow" style="margin:0">Artifacts</p><button class="refresh" id="art-refresh">⟳ Refresh</button></div>'+body);
+  const rf=$("art-refresh"); if(rf) rf.onclick=()=>loadArtifacts(true);
+}
+async function shareArtifact(path){
+  try{
+    const r=await callTool("kb_share_artifact",{path:path});
+    if(r&&r.error) throw new Error(r.error);
+    const a=(state.artifacts||[]).find(x=>x.path===path);
+    if(a){ a.shared=true; a.share_url=r.share_url; a._confirm=false; }
+    renderArtifacts();
+    showToast("Public link created — anyone with the URL can read this");
+  }catch(e){ showToast("Couldn't create link — try again", ()=>shareArtifact(path)); }
+}
+async function unshareArtifact(path){
+  const a=(state.artifacts||[]).find(x=>x.path===path);
+  if(a && !a._confirm){ a._confirm=true; renderArtifacts(); return; }   // inline confirm
+  try{
+    const r=await callTool("kb_unshare_artifact",{path:path});
+    if(r&&r.error) throw new Error(r.error);
+    if(a){ a.shared=false; a.share_url=null; a._confirm=false; }
+    renderArtifacts();
+    showToast("Link revoked — the URL no longer resolves");
+  }catch(e){ if(a) a._confirm=false; showToast("Couldn't revoke — try again", ()=>unshareArtifact(path)); }
+}
+
 // ─────────────────────── async loaders ──────────────────────
 async function loadHome(){ show(skelCards(6));
   try{ const d=await callTool("kb_projects",{}); if(Array.isArray(d)){ state.projects=d; renderHome(); } else show(errBlock("Could not load projects.","home")); }
@@ -773,6 +853,7 @@ function seedFrom(data){
   if(data.index_tree){ state.load=data; state.projectId=data.project||state.projectId; renderBrowse(); return; }
   if(Array.isArray(data)){
     if(data.length && data[0] && data[0].id!==undefined){ state.projects=data; renderHome(); return; }
+    if(data.length && data[0] && data[0].path!==undefined && data[0].shared!==undefined){ state.artifacts=data; state.artifactsStatus="ok"; renderArtifacts(); return; }
     if(data.length && data[0] && data[0].path!==undefined && data[0].score!==undefined){ state.searchResults=data; state.searchStatus="ok"; renderSearch(); return; }
     loadHome(); return;   // empty/unknown array
   }
@@ -789,9 +870,12 @@ document.addEventListener("click",(e)=>{
   const nav=e.target.closest("[data-nav]"); if(nav){ goTab(nav.getAttribute("data-nav")); return; }
   const rt=e.target.closest("[data-retry]"); if(rt){ const w=rt.getAttribute("data-retry");
     if(w==="home") loadHome(); else if(w==="search") runSearch(); else if(w==="inbox") loadInbox(true);
+    else if(w==="artifacts") loadArtifacts(true);
     else if(w==="project") openProject(state.projectId); else if(w==="read") openFile(state.readPath); return; }
   const ar=e.target.closest("[data-arch]"); if(ar){ archiveMsg(ar.getAttribute("data-arch")); return; }
   const ac=e.target.closest("[data-act]"); if(ac){ actMsg(ac.getAttribute("data-act")); return; }
+  const sh=e.target.closest("[data-share]"); if(sh){ e.preventDefault(); shareArtifact(sh.getAttribute("data-share")); return; }
+  const un=e.target.closest("[data-unshare]"); if(un){ e.preventDefault(); unshareArtifact(un.getAttribute("data-unshare")); return; }
 });
 
 // tabs
@@ -800,6 +884,7 @@ function goTab(t){
   else if(t==="browse"){ if(state.load) renderBrowse(); else if(state.projects) renderHome(); else loadHome(); }
   else if(t==="search"){ renderSearch(); }
   else if(t==="inbox"){ loadInbox(false); }
+  else if(t==="artifacts"){ loadArtifacts(false); }
 }
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>goTab(t.dataset.tab));
 
@@ -822,6 +907,7 @@ document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>goTab(t.dataset.tab))
     else if(st && st.view==="browse" && st.projectId){ await openProject(st.projectId); }
     else if(st && st.view==="search"){ if(!state.projects){ try{ const d=await callTool("kb_projects",{}); if(Array.isArray(d)) state.projects=d; }catch(e){} } renderSearch(); }
     else if(st && st.view==="inbox"){ await loadInbox(false); }
+    else if(st && st.view==="artifacts"){ await loadArtifacts(false); }
     else { await loadHome(); }
   }
   reportHeight();

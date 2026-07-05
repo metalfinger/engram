@@ -291,6 +291,50 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
     return await store.kb_rename_project(old_id, new_id)
 
 
+@mcp.tool(meta=_nav_meta)
+async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
+    """List the saved artifacts in Hiren's knowledge base with their provenance and
+    staleness. Call this when the user asks about their artifacts, reports, documents,
+    or 'what have I saved' — and when they want to share or revisit one. Artifacts are
+    concepts of type 'artifact' under projects/<p>/artifacts/, each recording the exact
+    source paths it was built from and the bundle sha it was built against; the server
+    computes whether any of those sources have changed since (stale). Optional `project`
+    filters to one project id.
+
+    Returns [{path, project, title, description, timestamp, sources, built_from, stale
+    (true = a source changed since build, false = current, null = undecidable), shared,
+    share_url}], newest first. Open one with kb_read; share it with kb_share_artifact.
+
+    When the Navigator widget mounts from this call, say one short line and let the user drive it.
+    """
+    return await store.kb_artifacts(project)
+
+
+@mcp.tool()
+async def kb_share_artifact(path: str) -> dict[str, Any]:
+    """Create a PUBLIC, revocable share link for a saved artifact (type: artifact concept).
+    WARNING: this makes THIS document readable by anyone who has the URL — no sign-in, no
+    Access gate. Only the artifact's rendered body is exposed; its source paths and the
+    rest of the knowledge base stay private. Confirm with the user before sharing anything
+    sensitive. Idempotent: re-sharing returns the same link. Revoke anytime with
+    kb_unshare_artifact.
+
+    Returns {path, share_url, sha, pushed}.
+    """
+    return await store.kb_share_artifact(path)
+
+
+@mcp.tool()
+async def kb_unshare_artifact(path: str) -> dict[str, Any]:
+    """Revoke an artifact's public share link — the URL stops resolving immediately on the
+    next push. Use when the user says to unshare, revoke, or make an artifact private again.
+    No-op (still succeeds) if it was never shared.
+
+    Returns {path, sha, pushed}.
+    """
+    return await store.kb_unshare_artifact(path)
+
+
 # ------------------------------------------------------------------ routes
 
 if _AUTH_ENABLED:

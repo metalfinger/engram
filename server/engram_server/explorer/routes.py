@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import posixpath
 import re
+import secrets
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,8 +28,12 @@ from engram_server.explorer.format import (
     score_bar,
     stamp,
 )
-from engram_server.explorer.html import badge, button, chip, codebox, esc, page
-from engram_server.explorer.render import render_markdown, split_frontmatter
+from engram_server.explorer.html import badge, button, chip, codebox, esc, page, share_page
+from engram_server.explorer.render import (
+    render_markdown,
+    render_markdown_public,
+    split_frontmatter,
+)
 from engram_server.explorer.setup import render_setup_script
 from engram_server.search import search as run_search
 
@@ -486,6 +491,104 @@ def _result_card(r: dict) -> str:
         f'<div class="rpath">{seg_html}</div>'
         f"{desc}{heading_html}{score_bar(r['score'])}</a>"
     )
+
+
+# ---------------------------------------------------------------- artifacts
+
+
+def _artifact_is_stale(
+    brain: Path, built_from: str | None, sources: list[str], timeout: float
+) -> bool | None:
+    """True when any source changed since ``built_from``; None when undecidable.
+
+    SYNC subprocess — callers run it in a worker thread. Mirrors KBStore._artifact_stale
+    so the explorer and the tools agree on staleness.
+    """
+    if not built_from or not sources:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--oneline", f"{built_from}..HEAD", "--", *sources],
+            cwd=str(brain),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return bool(proc.stdout.strip())
+
+
+def _artifact_provenance(meta: dict, stale: bool | None, explorer_url: str) -> str:
+    """Provenance panel for an artifact concept page (guarded view): built_from sha,
+    staleness badge, linked sources, and share status/URL."""
+    raw_sources = meta.get("sources")
+    sources = [str(s) for s in raw_sources] if isinstance(raw_sources, list) else []
+    built_from = meta.get("built_from")
+    row: list[str] = []
+    if built_from:
+        short = esc(str(built_from)[:10])
+        row.append(f'<span class="chip" title="{esc(built_from)}">built from <code>{short}</code></span>')
+    if stale is True:
+        row.append(badge("sources changed since build", "priority-high"))
+    elif stale is False:
+        row.append(badge("current", "active"))
+    parts = [
+        '<div class="foot-block">',
+        '<p class="section-label">Provenance</p>',
+        f'<div class="badges">{"".join(row)}</div>' if row else "",
+    ]
+    if sources:
+        chips = "".join(
+            chip(posixpath.basename(s), f"/brain/f/{s}", title=s) for s in sources
+        )
+        parts.append(f'<p class="meta">Built from these sources:</p><div class="quicknav">{chips}</div>')
+    share = meta.get("share")
+    if share:
+        url = f"{explorer_url.rstrip('/')}/share/{share}"
+        parts.append(
+            '<p class="meta">Shared publicly — anyone with this link can read it:</p>'
+            f"{codebox(url)}"
+        )
+    else:
+        parts.append('<p class="meta">Not shared. Use kb_share_artifact to create a public link.</p>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _find_shared_artifact(brain: Path, token: str) -> tuple[Path, dict, str] | None:
+    """Locate the artifact whose frontmatter ``share`` equals ``token``.
+
+    Lookup is by full scan of projects/*/artifacts/*.md and constant-time token
+    comparison — never by any path derived from caller input (traversal-proof). No
+    early return, so a hit late in the scan is not distinguishable by timing. Returns
+    (path, meta, body) or None; the scan skips index.md and non-artifact files.
+    """
+    projects_dir = brain / "projects"
+    if not projects_dir.is_dir():
+        return None
+    match: tuple[Path, dict, str] | None = None
+    for pdir in sorted(projects_dir.iterdir()):
+        adir = pdir / "artifacts"
+        if not adir.is_dir():
+            continue
+        for f in sorted(adir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            try:
+                meta, body = split_frontmatter(_read(f))
+            except (OSError, UnicodeDecodeError):
+                continue
+            if str(meta.get("type") or "") != "artifact":
+                continue
+            share = meta.get("share")
+            if isinstance(share, str) and secrets.compare_digest(share, token):
+                match = (f, meta, body)
+    return match
 
 
 # ---------------------------------------------------------------- setup / onboarding
@@ -1001,9 +1104,18 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             ]
         else:
             head_parts = [f"<h1>{esc(title)}</h1>"]
+        provenance = ""
+        if str(meta.get("type") or "") == "artifact":
+            raw_sources = meta.get("sources")
+            srcs = [str(s) for s in raw_sources] if isinstance(raw_sources, list) else []
+            stale = await to_thread.run_sync(
+                _artifact_is_stale, brain, meta.get("built_from"), srcs, settings.git_timeout
+            )
+            provenance = _artifact_provenance(meta, stale, settings.explorer_url)
         body_parts = [
             *head_parts,
             properties_panel(meta, _today_utc()),
+            provenance,
             f'<div class="md">{render_markdown(body_md, rel)}</div>',
             _concept_footer(target, rel, brain),
         ]
@@ -1174,6 +1286,39 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         return HTMLResponse(
             _shell(brain, "Activity", "\n".join(parts), crumbs, "/brain/activity")
         )
+
+    @mcp.custom_route("/share/{token}", ["GET"])
+    async def share_view(request: Request) -> Response:
+        # DELIBERATELY UNGUARDED — the ONLY content route without the Cloudflare Access
+        # gate. It serves ONLY the rendered body of an explicitly-shared artifact: no
+        # source paths, no nav, no sidebar, no other concepts. The token is matched by a
+        # full scan + constant-time compare and is NEVER used to build a filesystem path
+        # (traversal is impossible); tokens shorter than 20 chars are rejected outright.
+        token = str(request.path_params.get("token", ""))
+        if len(token) < 20:
+            return PlainTextResponse("Not found", status_code=404)
+        found = await to_thread.run_sync(_find_shared_artifact, brain, token)
+        if found is None:
+            return PlainTextResponse("Not found", status_code=404)
+        _target, meta, body_md = found
+        title = str(meta.get("title") or "Shared document")
+        head = [
+            '<div class="page-head">',
+            stamp(meta.get("type") or "artifact"),
+            f'<div><p class="eyebrow">Shared document</p><h1>{esc(title)}</h1></div>',
+            "</div>",
+        ]
+        ts = meta.get("timestamp")
+        if ts:
+            _reltime, exact = humanize_time(ts)
+            head.append(f'<p class="meta">{esc(exact)}</p>')
+        body = (
+            "".join(head)
+            + f'<div class="md">{render_markdown_public(body_md)}</div>'
+            + '<footer class="concept-foot"><p class="meta">'
+            "Shared from Hiren&rsquo;s knowledge base.</p></footer>"
+        )
+        return HTMLResponse(share_page(title, body))
 
     @mcp.custom_route("/", ["GET"])
     @guard

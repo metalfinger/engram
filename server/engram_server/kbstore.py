@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import posixpath
 import re
+import secrets
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -647,7 +648,24 @@ class KBStore:
             normalized, meta, warnings = validate_concept(
                 content, rel_path=rel, description_arg=description
             )
-            if abs_path.name != "context.md" and not _REL_MD_LINK.search(normalized):
+            # Artifact provenance: stamp built_from = current HEAD when absent, so the
+            # saved document records exactly which bundle state it was built against.
+            is_artifact = str(meta.get("type") or "") == "artifact"
+            if is_artifact and not meta.get("built_from"):
+                doc = split(normalized)
+                assert doc is not None  # validate_concept guaranteed a frontmatter fence
+                meta = normalize_meta(doc.meta)
+                meta["built_from"] = self.repo.head_sha()
+                normalized = serialize(Doc(meta=meta, body=doc.body))
+            # An artifact's provenance lives in its `sources:` list, not body links —
+            # a non-empty sources list counts as "links to something", so don't nag.
+            sources = meta.get("sources")
+            has_sources = isinstance(sources, list) and len(sources) > 0
+            if (
+                abs_path.name != "context.md"
+                and not _REL_MD_LINK.search(normalized)
+                and not (is_artifact and has_sources)
+            ):
                 warnings.append(
                     "This concept links to nothing — future sessions cannot navigate to "
                     "related knowledge from it (kb_read depth=1 will be empty). Add "
@@ -827,6 +845,131 @@ class KBStore:
 
         sha, pushed = await self._locked_commit(_mutate, f"msg: read {name}")
         return {"archived_path": state["archived"], "sha": sha, "pushed": pushed}
+
+    # ------------------------------------------------------------------ artifacts
+
+    async def kb_artifacts(self, project: str | None = None) -> list[dict[str, Any]]:
+        """List saved artifacts (type: artifact concepts under projects/*/artifacts/) with
+        provenance and staleness. Returns records sorted newest first."""
+        await self._refresh()
+        return await to_thread.run_sync(lambda: self._artifacts_sync(project))
+
+    def _artifacts_sync(self, project: str | None) -> list[dict[str, Any]]:
+        projects_dir = self.root / "projects"
+        out: list[dict[str, Any]] = []
+        if not projects_dir.is_dir():
+            return out
+        explorer = self.settings.explorer_url.rstrip("/")
+        for pdir in sorted(projects_dir.iterdir()):
+            if not pdir.is_dir() or pdir.name.startswith("."):
+                continue
+            if project is not None and pdir.name != project:
+                continue
+            adir = pdir / "artifacts"
+            if not adir.is_dir():
+                continue
+            for f in sorted(adir.glob("*.md")):
+                if f.name == "index.md":
+                    continue
+                meta = read_meta(f)
+                raw_sources = meta.get("sources")
+                sources = [str(s) for s in raw_sources] if isinstance(raw_sources, list) else []
+                built_from = str(meta["built_from"]) if meta.get("built_from") else None
+                token = meta.get("share")
+                shared = bool(token)
+                out.append(
+                    {
+                        "path": f.relative_to(self.root).as_posix(),
+                        "project": pdir.name,
+                        "title": str(meta.get("title") or f.stem),
+                        "description": str(meta.get("description") or ""),
+                        "timestamp": meta.get("timestamp"),
+                        "sources": sources,
+                        "built_from": built_from,
+                        "stale": self._artifact_stale(built_from, sources),
+                        "shared": shared,
+                        "share_url": f"{explorer}/share/{token}" if shared else None,
+                    }
+                )
+        out.sort(key=lambda a: str(a.get("timestamp") or ""), reverse=True)
+        return out
+
+    def _artifact_stale(self, built_from: str | None, sources: list[str]) -> bool | None:
+        """True when any source changed since built_from; None when it can't be decided
+        (no built_from/sources, an unknown sha, or git unavailable)."""
+        if not built_from or not sources:
+            return None
+        try:
+            changed = self.repo.run("log", "--oneline", f"{built_from}..HEAD", "--", *sources)
+        except GitError:
+            return None
+        return bool(changed.strip())
+
+    async def kb_share_artifact(self, path: str) -> dict[str, Any]:
+        """Mint (or return the existing) public share token for a type: artifact concept.
+        Idempotent: an already-shared artifact returns its token with no new commit.
+        Returns {path, share_url, sha, pushed}."""
+        abs_path, rel = self._resolve(path)
+        name = posixpath.basename(rel)
+        state: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            meta, doc = self._load_artifact(abs_path, rel)
+            existing = meta.get("share")
+            if existing:
+                state["token"] = str(existing)
+                return []  # already shared — idempotent, no commit
+            token = secrets.token_urlsafe(24)
+            meta["share"] = token
+            state["token"] = token
+            _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+            return [rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: share {name}")
+        explorer = self.settings.explorer_url.rstrip("/")
+        return {
+            "path": rel,
+            "share_url": f"{explorer}/share/{state['token']}",
+            "sha": sha,
+            "pushed": pushed,
+        }
+
+    async def kb_unshare_artifact(self, path: str) -> dict[str, Any]:
+        """Revoke a type: artifact concept's public share link (removes the share token).
+        No-op when it was never shared. Returns {path, sha, pushed}."""
+        abs_path, rel = self._resolve(path)
+        name = posixpath.basename(rel)
+
+        def _mutate() -> list[str]:
+            meta, doc = self._load_artifact(abs_path, rel)
+            if not meta.get("share"):
+                return []  # nothing to revoke — no_change ok
+            meta.pop("share", None)
+            _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+            return [rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: unshare {name}")
+        return {"path": rel, "sha": sha, "pushed": pushed}
+
+    def _load_artifact(self, abs_path: Path, rel: str) -> tuple[dict[str, Any], Doc]:
+        """Read + validate an existing type: artifact concept for a share mutation.
+        Returns (normalized meta, Doc) or raises KBError teaching the fix."""
+        if not abs_path.is_file():
+            raise KBError(
+                f"No such artifact: '{rel}'. Call kb_artifacts to list saved artifacts."
+            )
+        doc = split(abs_path.read_text(encoding="utf-8"))
+        if doc is None:
+            raise KBError(
+                f"'{rel}' has no frontmatter — sharing only applies to 'type: artifact' concepts."
+            )
+        meta = normalize_meta(doc.meta)
+        if str(meta.get("type") or "") != "artifact":
+            raise KBError(
+                f"'{rel}' has type {meta.get('type')!r} — only 'type: artifact' concepts can be "
+                "shared. Save it as an artifact (frontmatter type: artifact) first."
+            )
+        return meta, doc
 
     def _regen_messages_index(self, proot_rel: str) -> None:
         """Regenerate <project>/messages/index.md canonically (server-owned, no frontmatter)."""
