@@ -185,10 +185,9 @@ def test_html_has_polish_affordances() -> None:
 def _reload_app(monkeypatch, *, widget: bool):
     from engram_server import config
 
-    if widget:
-        monkeypatch.setenv("ENGRAM_WIDGET", "1")
-    else:
-        monkeypatch.delenv("ENGRAM_WIDGET", raising=False)
+    # Pin explicitly either way: deleting the env var would fall through to the
+    # repo's .env file (which enables the widget in production).
+    monkeypatch.setenv("ENGRAM_WIDGET", "1" if widget else "0")
     config.get_settings.cache_clear()
     import engram_server.app as app_module
 
