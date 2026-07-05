@@ -25,11 +25,14 @@ The flagship MCP App widget (`engram_server/navigator.py`, flag `ENGRAM_WIDGET=1
 ## Artifact system (shipped 2026-07-05)
 Artifacts = `type: artifact` concepts under `projects/<p>/artifacts/` with provenance manifests (`sources`, `instruction`, server-stamped `built_from`), computed staleness, revocable public `/share/<token>` links (Cloudflare Access edge-bypass app covers `/share/*` — created via API), explorer gallery at `/brain/artifacts`, Navigator Artifacts tab, and four MCP prompts (`daily_briefing`, `close_session`, `build_artifact`, `rebuild_artifact` — the manifest is a recipe; saving over the same path = git-versioned living documents). Spec + field notes: `projects/engram/specs/artifact-system.md` in the brain. 206 tests. Field-tested through the live connector (first shared artifact: the Engram one-pager).
 
+## v1.1 (shipped 2026-07-05)
+Semantic `kb_search` live: fastembed local embeddings + Qdrant Cloud (`ENGRAM_QDRANT_*` in `.env`, collection `engram-brain`); text scorer = automatic fallback; results carry `engine`. In-process scheduler (lifespan-hooked): nightly reconcile 03:30 (index self-repair, orphan/dead-knowledge → `library/reports/brain-health.md`, full reindex) + 08:00 briefing artifact. `kb_inbox` capture (+ widget box). Interactive graph `/brain/graph`. Live-view share pages. Recipes UX (beta listing via kb_search until a kb_recipes tool exists). Real logging at last. 248 tests. Field notes: qdrant-client ≥1.12 uses `query_points` (`.search()` removed); Qdrant Cloud needs keyword payload indexes on filtered fields. While production runs, use `uv run --no-sync` (venv exe lock).
+
 ## What's next
-1. **v1.1** — Qdrant Cloud embeddings + real semantic `kb_search` (same contract as the shipped text scorer) + nightly reconcile walk; harden lock-free reads vs concurrent writes (known Windows race, low probability).
-2. **v1.2** — skill polish from real-session friction; `kb_inbox` quick-capture.
-3. **v1.3** — OKF visualizer on Netlify (bundle verified conformant; two nits already fixed).
-4. Remaining acceptance nicety: a fresh claude.ai MOBILE session run-through.
+1. v1.2 remainder — skill polish from real-session friction (kb_inbox already shipped).
+2. Fresh claude.ai MOBILE session run-through (last acceptance nicety).
+3. Recipes v2 — real `kb_recipes` tool; scheduled recipe rebuilds when headless LLM runs exist.
+4. Netlify OKF visualizer — largely superseded by `/brain/graph`; decide keep-or-drop.
 5. Code repo: `github.com/metalfinger/engram` (private).
 
 ## Roadmap after v1.x (Hiren, 2026-07-04)
