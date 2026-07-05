@@ -524,11 +524,21 @@ async function buildArtifact(){
   if(!state.basket.length) return;
   const sel=$("bk-type"); const v=sel?sel.value:"summary";
   const paths=state.basket.map((b,i)=>(i+1)+". "+b.path).join("\n");
+  // The handoff prompt controls artifact QUALITY: demand a real Artifact (never
+  // chat text) and give per-type craft direction — Claude renders what we ask for.
+  const CRAFT={
+    "status-report":"a polished STATUS REPORT: title, date, at-a-glance summary box, then sections (Current state / Decisions & rationale / Open items / Next steps); use tables or status chips where the data is list-like",
+    spec:"a clean SPEC DOCUMENT: numbered sections, requirement tables, architecture described precisely; professional technical-doc typography",
+    blog:"an engaging BLOG POST in Hiren's metalfinger voice: strong hook, subheads, short paragraphs, a closing takeaway",
+    summary:"a crisp EXECUTIVE SUMMARY: one-screen overview, key points as scannable bullets, a bottom-line verdict",
+    handoff:"a HANDOFF BRIEF for the next person/session: context in one paragraph, current state, exact next actions as a checklist, gotchas called out",
+  };
   let msg;
+  const quality=" Create it as a proper ARTIFACT (side-panel document — never plain chat text). Make it genuinely well-designed: clear hierarchy, scannable structure; prefer rich formatted markdown, or a styled HTML artifact when visuals (tables, status colors, timelines) would materially help. Cite the source paths in a small footer.";
   if(v==="custom"){ const ci=$("bk-custom"); const instr=(ci&&ci.value.trim())||"Write a useful document";
-    msg=instr+"\n\nUse ONLY these knowledge-base concepts, as an artifact — kb_read each path first, use only their content, cite paths at the end:\n"+paths;
-  } else { const t=(ARTIFACT_TYPES.find(x=>x.v===v)||{t:"summary"}).t.toLowerCase();
-    msg="Build a "+t+" as an artifact from these knowledge-base concepts — kb_read each path first, use only their content, cite paths at the end:\n"+paths;
+    msg=instr+"\n\nUse ONLY these knowledge-base concepts — kb_read each path first, use only their content."+quality+"\n"+paths;
+  } else { const c=CRAFT[v]||CRAFT.summary;
+    msg="From these knowledge-base concepts — kb_read each path first, use only their content — build "+c+"."+quality+"\n"+paths;
   }
   const ok=await askAgent(msg);
   showToast(ok?"Sent to Claude — building your artifact":"Couldn't reach Claude — try again", ok?null:buildArtifact);

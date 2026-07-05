@@ -151,10 +151,11 @@ def test_html_basket_persists_in_widget_state() -> None:
 
 
 def test_html_basket_build_message_shape() -> None:
-    # BUILD asks the agent to build an artifact from exactly the ordered paths
-    assert "Build a " in NAVIGATOR_HTML
+    # BUILD demands a real Artifact with per-type craft direction, from the ordered paths
     assert "kb_read each path first" in NAVIGATOR_HTML
-    assert "cite paths at the end" in NAVIGATOR_HTML
+    assert "proper ARTIFACT" in NAVIGATOR_HTML
+    assert "STATUS REPORT" in NAVIGATOR_HTML
+    assert "Cite the source paths" in NAVIGATOR_HTML
     # all six artifact types incl. Custom
     for label in (
         "Status report",
