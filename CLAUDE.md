@@ -19,6 +19,9 @@ Cross-session knowledge ecosystem for Hiren: OKF v0.1 bundle (`brain`) in git + 
 ## Boundary
 Engram is deliberately EXTERNAL to the helix repo: brain = decisions/specs/context/messages (knowledge of record); helix-memory = tasks/deadlines/world-state (operational).
 
+## Brain Navigator (shipped 2026-07-05)
+The flagship MCP App widget (`engram_server/navigator.py`, flag `ENGRAM_WIDGET=1` in `.env`): Home/Browse/Search/Inbox views + select-to-artifact basket, mounting live on claude.ai. Before ANY future widget work read the field notes in the brain: `projects/engram/specs/brain-navigator.md` (SDK `{result:...}` envelope, per-session widget HTML caching, appInfo/jsonrpc rails).
+
 ## What's next
 1. **v1.1** — Qdrant Cloud embeddings + real semantic `kb_search` (same contract as the shipped text scorer) + nightly reconcile walk; harden lock-free reads vs concurrent writes (known Windows race, low probability).
 2. **v1.2** — skill polish from real-session friction; `kb_inbox` quick-capture.
