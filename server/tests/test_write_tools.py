@@ -302,3 +302,39 @@ async def test_rename_project_rejects_metalfinger_and_collisions(store):
         await store.kb_rename_project("metalfinger", "brand")
     with _pytest.raises(_KBError):
         await store.kb_rename_project("nonexistent", "whatever")
+
+
+async def test_rename_project_updates_bullet_title(store, settings):
+    # alt/context.md has frontmatter title 'alt'; the projects/index.md bullet reads
+    # 'Alt Inc'. After rename the bullet TEXT should become the context.md title, and
+    # the target should point at the new id.
+    await store.kb_rename_project("alt", "alt-core")
+    idx = (settings.brain_path / "projects/index.md").read_text(encoding="utf-8")
+    assert "[alt](alt-core/index.md)" in idx  # title from context.md + rewritten target
+    assert "[Alt Inc]" not in idx  # stale bullet title replaced (description text may still mention it)
+
+
+async def test_rename_project_bullet_title_falls_back_to_title_case(store, settings):
+    # a project with NO context.md -> the bullet title falls back to Title-Case of the new id
+    await store.kb_write(
+        "projects/newproj/specs/x.md",
+        "---\ntype: spec\ndescription: d.\n---\n\nBody.\n",
+        "seed newproj",
+    )
+    assert not (settings.brain_path / "projects/newproj/context.md").exists()
+    await store.kb_rename_project("newproj", "new-name")
+    idx = (settings.brain_path / "projects/index.md").read_text(encoding="utf-8")
+    assert "[New Name](new-name/index.md)" in idx
+
+
+async def test_write_emits_mutation_log_line(store, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="engram.kbstore"):
+        res = await store.kb_write(
+            "projects/alt/decisions/2026-07-log-me.md",
+            "---\ntype: decision\ndescription: d.\n---\n\nBody.\n",
+            "log me",
+        )
+    lines = [r.getMessage() for r in caplog.records if "kb_mutation" in r.getMessage()]
+    assert any("tool=kb_write" in m and res["sha"][:12] in m for m in lines)

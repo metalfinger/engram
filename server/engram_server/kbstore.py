@@ -9,6 +9,7 @@ threads via anyio.to_thread. Every tool-visible path is repo-relative POSIX.
 from __future__ import annotations
 
 import asyncio
+import logging
 import posixpath
 import re
 import secrets
@@ -25,6 +26,9 @@ from .frontmatter import Doc, normalize_meta, read_meta, serialize, split, valid
 from .gitops import GitRepo
 from .indexer import ensure_indexed
 from .search import search as _run_search
+from .semantic import SemanticIndex
+
+log = logging.getLogger("engram.kbstore")
 
 _PROJECT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -45,6 +49,11 @@ _SLUG_MAX = 60
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _title_case(slug: str) -> str:
+    """kebab-case id -> Title Case display name ('mcp-apps' -> 'Mcp Apps')."""
+    return " ".join(w[:1].upper() + w[1:] for w in slug.split("-") if w) or slug
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -201,10 +210,70 @@ class KBStore:
         )
         self._lock = asyncio.Lock()
         self._last_pull = 0.0  # time.monotonic() of the last successful-or-attempted pull
+        # Semantic backend is optional: only live when enabled AND a Qdrant URL is set.
+        # Everything else degrades to the text scorer. Never constructed for text-only.
+        self.semantic: SemanticIndex | None = (
+            SemanticIndex(settings)
+            if settings.semantic_search and settings.qdrant_url
+            else None
+        )
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:
         """Clone the brain if missing and enforce local git config. Idempotent."""
         await to_thread.run_sync(self.repo.ensure_clone)
+
+    # ------------------------------------------------------------------ observability + indexing
+
+    def _log_mutation(self, tool: str, paths: list[str], sha: str, pushed: bool) -> None:
+        """One structured line per kb_* mutation: tool, sha, pushed flag, touched paths."""
+        log.info(
+            "kb_mutation tool=%s sha=%s pushed=%s paths=%s",
+            tool,
+            (sha or "")[:12],
+            pushed,
+            ",".join(paths) if paths else "-",
+        )
+
+    def _schedule_index(
+        self,
+        upserts: list[str] | None = None,
+        deletes: list[str] | None = None,
+        reindex: bool = False,
+    ) -> None:
+        """Fire-and-forget semantic (re)index of touched files after a commit. No-op when
+        the semantic backend is off or no event loop is running (sync test contexts).
+        Errors are logged, never raised — indexing must not affect the tool's result."""
+        if self.semantic is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _job() -> None:
+            index = self.semantic
+            assert index is not None
+            try:
+                if reindex:
+                    await to_thread.run_sync(lambda: index.full_reindex(self.root))
+                    return
+                for p in deletes or []:
+                    await to_thread.run_sync(lambda p=p: index.delete_file(p))
+                for p in upserts or []:
+                    if posixpath.basename(p) == "index.md":
+                        continue
+                    abs_p = self.root / p
+                    if not abs_p.is_file():
+                        continue
+                    text = abs_p.read_text(encoding="utf-8")
+                    await to_thread.run_sync(lambda p=p, t=text: index.upsert_file(p, t))
+            except Exception:  # noqa: BLE001 — background indexing is best-effort
+                log.warning("semantic: background index job failed", exc_info=True)
+
+        task = loop.create_task(_job())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     # ------------------------------------------------------------------ plumbing
 
@@ -279,12 +348,19 @@ class KBStore:
             if new_dir.exists():
                 raise KBError(f"projects/{new} already exists — pick a different new_id.")
             old_dir.rename(new_dir)
+            # The bullet in projects/index.md should read the project's real name after a
+            # rename, not the old title: prefer the moved context.md's frontmatter title,
+            # else Title-Case the new id.
+            new_title = str(read_meta(new_dir / "context.md").get("title") or "") or _title_case(new)
             touched: set[str] = {f"projects/{old}", f"projects/{new}"}
             # Rewrite link targets everywhere: 'projects/<old>/...' anywhere in the bundle,
             # '<old>/...' from projects/index.md, '../<old>/...' from sibling projects;
             # plus the denormalized 'project:' frontmatter field inside the moved tree.
             deep = re.compile(rf"(\]\([^)]*?)projects/{re.escape(old)}/")
             sibling = re.compile(rf"(\]\(\.\./){re.escape(old)}/")
+            index_bullet = re.compile(
+                rf"(?P<pre>[*+-]\s+)\[(?P<title>[^\]]*)\](?P<open>\(){re.escape(old)}/"
+            )
             for f in self.root.rglob("*.md"):
                 if ".git" in f.parts:
                     continue
@@ -293,9 +369,12 @@ class KBStore:
                 text, n1 = deep.subn(rf"\g<1>projects/{new}/", text)
                 n2 = n3 = 0
                 if f.parent == self.root / "projects" and f.name == "index.md":
-                    text, n2 = re.subn(
-                        rf"(\]\(){re.escape(old)}/", rf"\g<1>{new}/", text
-                    )
+                    # Rewrite the bullet TEXT (project title) and target together for the
+                    # renamed project; leave every other project's bullet untouched.
+                    def _rewrite_bullet(m: re.Match[str]) -> str:
+                        return f"{m.group('pre')}[{new_title}]{m.group('open')}{new}/"
+
+                    text, n2 = index_bullet.subn(_rewrite_bullet, text)
                 elif f.is_relative_to(new_dir.parent) and not f.is_relative_to(new_dir):
                     text, n3 = sibling.subn(rf"\g<1>{new}/", text)
                 if f.is_relative_to(new_dir):
@@ -309,6 +388,10 @@ class KBStore:
             return sorted(touched)
 
         sha, pushed = await self._locked_commit(_mutate, f"kb: rename project {old} -> {new}")
+        self._log_mutation("kb_rename_project", [f"projects/{old}", f"projects/{new}"], sha, pushed)
+        # A rename moves many concepts at once — reindex the whole bundle rather than
+        # tracking each moved path; the walk skips index.md and is failure-soft.
+        self._schedule_index(reindex=True)
         return {"old": old, "new": new, "links_rewritten": state["links"], "sha": sha, "pushed": pushed}
 
     async def _refresh(self) -> None:
@@ -607,11 +690,30 @@ class KBStore:
         type: str | None = None,  # noqa: A002 — tool contract field name
         limit: int = 8,
     ) -> list[dict[str, Any]]:
-        """Rank concept/log files against query: [{path, title, description, score, matched_heading}]."""
+        """Rank concept/log files against query. Prefers the semantic (vector) engine when
+        Qdrant is configured; on any failure or empty config falls back to the text scorer.
+        Each result carries an additive `engine` field ('semantic' | 'text').
+
+        Returns [{path, title, description, score, matched_heading, engine}]."""
         await self._refresh()
-        return await to_thread.run_sync(
+        if self.semantic is not None:
+            index = self.semantic
+            results = await to_thread.run_sync(
+                lambda: index.search(query, project=project, type=type, limit=limit)
+            )
+            # None = backend failure; [] = empty/unpopulated collection. Either way the
+            # text scorer is the better answer, so only serve semantic when it has hits.
+            if results:
+                for r in results:
+                    r["engine"] = "semantic"
+                return results
+            log.info("semantic: no hits/unavailable, falling back to text engine")
+        text_results = await to_thread.run_sync(
             lambda: _run_search(self.root, query, project=project, type_=type, limit=limit)
         )
+        for r in text_results:
+            r["engine"] = "text"
+        return text_results
 
     # ------------------------------------------------------------------ writes
 
@@ -687,6 +789,9 @@ class KBStore:
             return paths
 
         sha, pushed = await self._locked_commit(_mutate, f"kb: {message.strip()}")
+        self._log_mutation("kb_write", [rel], sha, pushed)
+        if not state["no_change"]:
+            self._schedule_index(upserts=[rel])
         return {
             "path": rel,
             "created": state["created"] and not state["no_change"],
@@ -718,6 +823,8 @@ class KBStore:
             return [rel]
 
         sha, pushed = await self._locked_commit(_mutate, f"log: {pid} {today}")
+        self._log_mutation("kb_append_log", [rel], sha, pushed)
+        self._schedule_index(upserts=[rel])
         return {"ok": True, "path": rel, "sha": sha, "date": today, "pushed": pushed}
 
     async def kb_leave_message(
@@ -789,6 +896,8 @@ class KBStore:
             return paths
 
         sha, pushed = await self._locked_commit(_mutate, f"msg: {pid}: {title}")
+        self._log_mutation("kb_leave_message", [state["path"]], sha, pushed)
+        self._schedule_index(upserts=[state["path"]])
         return {"path": state["path"], "sha": sha, "pushed": pushed, "warnings": warnings}
 
     async def kb_mark_read(self, message_path: str) -> dict[str, Any]:
@@ -844,7 +953,52 @@ class KBStore:
             return paths
 
         sha, pushed = await self._locked_commit(_mutate, f"msg: read {name}")
+        self._log_mutation("kb_mark_read", [rel, state["archived"]], sha, pushed)
+        self._schedule_index(upserts=[state["archived"]], deletes=[rel])
         return {"archived_path": state["archived"], "sha": sha, "pushed": pushed}
+
+    # ------------------------------------------------------------------ inbox
+
+    async def kb_inbox(self, text: str) -> dict[str, Any]:
+        """Quick-capture a raw thought into inbox/ at the bundle root — zero ceremony,
+        untriaged. Returns {path, sha, pushed}."""
+        if not text or not text.strip():
+            raise KBError("Empty inbox capture — pass the thought, task, or link to remember.")
+        clean = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        first_line = clean.splitlines()[0].strip()
+        title = first_line[:120].strip() or "Inbox note"
+        now = _utcnow()
+        today = now.strftime("%Y-%m-%d")
+        slug = re.sub(r"[^a-z0-9]+", "-", first_line.lower()).strip("-")[:_SLUG_MAX].strip("-") or "note"
+        state: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            idir = self.root / "inbox"
+            name = f"{today}-{slug}.md"
+            n = 2
+            while (idir / name).exists():
+                name = f"{today}-{slug}-{n}.md"
+                n += 1
+            rel = f"inbox/{name}"
+            meta: dict[str, Any] = {
+                "type": "inbox",
+                "title": title,
+                "description": _first_sentence(clean) or title,
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "status": "untriaged",
+            }
+            _write_text(self.root / rel, serialize(Doc(meta=meta, body=f"{clean}\n")))
+            state["path"] = rel
+            paths = [rel]
+            paths.extend(
+                ensure_indexed(self.root, rel, title, str(meta["description"]))
+            )
+            return paths
+
+        sha, pushed = await self._locked_commit(_mutate, f"inbox: {title[:60]}")
+        self._log_mutation("kb_inbox", [state["path"]], sha, pushed)
+        self._schedule_index(upserts=[state["path"]])
+        return {"path": state["path"], "sha": sha, "pushed": pushed}
 
     # ------------------------------------------------------------------ artifacts
 

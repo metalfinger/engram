@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,6 +49,26 @@ class Settings(BaseSettings):
     # kb_* tools stay plain (conversational) and the ui:// resource is unregistered
     # — zero behavior change. ENGRAM_WIDGET=1 opts in.
     widget: bool = False
+
+    # observability
+    log_level: str = "INFO"  # root/uvicorn log level (DEBUG|INFO|WARNING|ERROR)
+
+    # semantic search (Qdrant + local fastembed ONNX embeddings). Falls back to
+    # the pure-Python text scorer whenever qdrant_url is empty or any call fails.
+    semantic_search: bool = True
+    qdrant_url: str = ""  # e.g. https://xxxx.cloud.qdrant.io:6333 — empty = text-only
+    qdrant_api_key: str = ""
+    qdrant_collection: str = "engram-brain"
+    embed_model: str = "BAAI/bge-small-en-v1.5"
+
+    # in-process scheduler (nightly reconcile + morning briefing). ENGRAM_SCHEDULER=0
+    # kills both; times are local-clock HH:MM.
+    scheduler_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ENGRAM_SCHEDULER", "ENGRAM_SCHEDULER_ENABLED"),
+    )
+    reconcile_at: str = "03:30"
+    briefing_at: str = "08:00"
 
 
 @lru_cache

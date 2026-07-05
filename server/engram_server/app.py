@@ -10,6 +10,11 @@ be installed) they carry the entire Engram protocol.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -28,9 +33,24 @@ from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server.oauth.store import InMemoryOAuthStore
+from engram_server.scheduler import start_schedulers
+
+log = logging.getLogger("engram.app")
 
 settings = get_settings()
 store = KBStore(settings)
+
+
+@asynccontextmanager
+async def _lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    """Start the daily scheduler on the server's own event loop (so scheduled store
+    mutations share the store's asyncio.Lock), and stop it on shutdown."""
+    scheduler = start_schedulers(store, settings, asyncio.get_running_loop())
+    try:
+        yield {}
+    finally:
+        if scheduler is not None:
+            scheduler.stop()
 
 
 # ------------------------------------------------------------------ auth (optional)
@@ -96,6 +116,8 @@ mcp = FastMCP(
     "engram",
     host=settings.mcp_host,
     port=settings.mcp_port,
+    log_level=settings.log_level,
+    lifespan=_lifespan,
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[_public_host, _explorer_host, "127.0.0.1:*", "localhost:*"],
@@ -261,19 +283,35 @@ async def kb_search(
     type: str | None = None,  # noqa: A002 — tool contract field name
     limit: int = 8,
 ) -> list[dict[str, Any]]:
-    """Search the whole knowledge base by text match over titles, descriptions, tags,
-    headings, and body (v1). Use it to find concepts whose paths you don't already
-    have — including in projects not currently loaded, and in self/ (Hiren's stack and
-    preferences) and library/ (cross-project runbooks): search there before
-    reinventing a procedure that likely already exists. Optional filters: project
-    (project id) and type (frontmatter type, e.g. 'decision', 'runbook'). Results are
-    ranked best-first; follow up with kb_read on the paths.
+    """Search the whole knowledge base for concepts by meaning and text. Uses the
+    semantic (vector) engine when it's configured and reachable, and transparently
+    falls back to the pure-text scorer otherwise — each result carries an `engine`
+    field ('semantic' | 'text') so you can tell which served. Use it to find concepts
+    whose paths you don't already have — including in projects not currently loaded, and
+    in self/ (Hiren's stack and preferences) and library/ (cross-project runbooks):
+    search there before reinventing a procedure that likely already exists. Optional
+    filters: project (project id) and type (frontmatter type, e.g. 'decision',
+    'runbook'). Results are ranked best-first; follow up with kb_read on the paths.
 
-    Returns [{path, title, description, score, matched_heading}].
+    Returns [{path, title, description, score, matched_heading, engine}].
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
     return await store.kb_search(query, project=project, type=type, limit=limit)
+
+
+@mcp.tool()
+async def kb_inbox(text: str) -> dict[str, Any]:
+    """Quick-capture a thought/task/link into the brain's inbox with ZERO ceremony —
+    call whenever the user says 'remember this', 'note this down', 'inbox: ...'. No
+    project, no frontmatter decisions, no links required: it drops the raw text into
+    inbox/YYYY-MM-DD-<slug>.md at the bundle root as an untriaged item and pushes.
+    Triage later moves it to a proper project concept (kb_write) — the morning briefing
+    lists everything still untriaged so nothing captured gets lost.
+
+    Returns {path, sha, pushed}.
+    """
+    return await store.kb_inbox(text)
 
 
 @mcp.tool()
@@ -439,7 +477,21 @@ register_navigator(mcp, settings.widget)
 # ------------------------------------------------------------------ entrypoint
 
 
+def _configure_logging() -> None:
+    """Give the root logger a stdout handler so our engram.* module loggers actually
+    emit (uvicorn only configures its own loggers; ours propagate to a bare root and
+    would otherwise be swallowed). force=True wins over any earlier root config."""
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+
 def main() -> None:
+    _configure_logging()
+    log.info("engram: starting (semantic=%s scheduler=%s)", store.semantic is not None, settings.scheduler_enabled)
     if settings.dev_no_access and not (
         _public_host.startswith(("localhost", "127.0.0.1"))
         and _explorer_host.startswith(("localhost", "127.0.0.1"))
