@@ -20,7 +20,10 @@ Cross-session knowledge ecosystem for Hiren: OKF v0.1 bundle (`brain`) in git + 
 Engram is deliberately EXTERNAL to the helix repo: brain = decisions/specs/context/messages (knowledge of record); helix-memory = tasks/deadlines/world-state (operational).
 
 ## Brain Navigator (shipped 2026-07-05)
-The flagship MCP App widget (`engram_server/navigator.py`, flag `ENGRAM_WIDGET=1` in `.env`): Home/Browse/Search/Inbox views + select-to-artifact basket, mounting live on claude.ai. Before ANY future widget work read the field notes in the brain: `projects/engram/specs/brain-navigator.md` (SDK `{result:...}` envelope, per-session widget HTML caching, appInfo/jsonrpc rails).
+The flagship MCP App widget (`engram_server/navigator.py`, flag `ENGRAM_WIDGET=1` in `.env`): Home/Browse/Search/Inbox/Artifacts views + select-to-artifact basket, mounting live on claude.ai. Before ANY future widget work read the field notes in the brain: `projects/engram/specs/brain-navigator.md` (SDK `{result:...}` envelope, per-session widget HTML caching, appInfo/jsonrpc rails).
+
+## Artifact system (shipped 2026-07-05)
+Artifacts = `type: artifact` concepts under `projects/<p>/artifacts/` with provenance manifests (`sources`, `instruction`, server-stamped `built_from`), computed staleness, revocable public `/share/<token>` links (Cloudflare Access edge-bypass app covers `/share/*` — created via API), explorer gallery at `/brain/artifacts`, Navigator Artifacts tab, and four MCP prompts (`daily_briefing`, `close_session`, `build_artifact`, `rebuild_artifact` — the manifest is a recipe; saving over the same path = git-versioned living documents). Spec + field notes: `projects/engram/specs/artifact-system.md` in the brain. 206 tests. Field-tested through the live connector (first shared artifact: the Engram one-pager).
 
 ## What's next
 1. **v1.1** — Qdrant Cloud embeddings + real semantic `kb_search` (same contract as the shipped text scorer) + nightly reconcile walk; harden lock-free reads vs concurrent writes (known Windows race, low probability).
