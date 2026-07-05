@@ -164,3 +164,34 @@ async def test_read_depth1_includes_backlinks(store):
     # depth=0 stays lean
     r0 = await store.kb_read("projects/alt/specs/cited.md")
     assert "backlinks" not in r0
+
+
+def test_read_text_retry_survives_transient_oserror(tmp_path, monkeypatch):
+    """The Windows lock-free-read race: a reader hitting a file mid-replace gets
+    OSError; the helper retries briefly instead of failing the tool call."""
+    from pathlib import Path as _P
+
+    from engram_server.kbstore import _read_text_retry
+
+    target = tmp_path / "x.md"
+    target.write_text("hello", encoding="utf-8")
+    real = _P.read_text
+    calls = {"n": 0}
+
+    def flaky(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("file busy (simulated in-flight replace)")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(_P, "read_text", flaky)
+    assert _read_text_retry(target) == "hello"
+    assert calls["n"] == 3
+
+    calls["n"] = -100  # never succeeds within attempts
+    def always(self, *a, **kw):
+        raise PermissionError("still busy")
+    monkeypatch.setattr(_P, "read_text", always)
+    import pytest as _pytest
+    with _pytest.raises(PermissionError):
+        _read_text_retry(target, attempts=2, delay=0.001)

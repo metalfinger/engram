@@ -56,6 +56,21 @@ def _title_case(slug: str) -> str:
     return " ".join(w[:1].upper() + w[1:] for w in slug.split("-") if w) or slug
 
 
+def _read_text_retry(path: Path, attempts: int = 3, delay: float = 0.05) -> str:
+    """Read that tolerates a concurrent writer's momentary lock/replace (the known
+    Windows lock-free-read race): brief backoff retries on OSError, then re-raise.
+    UnicodeDecodeError propagates unchanged — that's a content problem, not a race."""
+    last: OSError | None = None
+    for i in range(attempts):
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:  # includes PermissionError from in-flight replace
+            last = exc
+            time.sleep(delay * (i + 1))
+    assert last is not None
+    raise last
+
+
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
@@ -72,7 +87,7 @@ def _index_entries(index_path: Path) -> dict[str, tuple[str, str]]:
     if not index_path.is_file():
         return entries
     try:
-        text = index_path.read_text(encoding="utf-8")
+        text = _read_text_retry(index_path)
     except (OSError, UnicodeDecodeError):
         return entries
     for line in text.splitlines():
@@ -266,7 +281,7 @@ class KBStore:
                     abs_p = self.root / p
                     if not abs_p.is_file():
                         continue
-                    text = abs_p.read_text(encoding="utf-8")
+                    text = _read_text_retry(abs_p)
                     await to_thread.run_sync(lambda p=p, t=text: index.upsert_file(p, t))
             except Exception:  # noqa: BLE001 — background indexing is best-effort
                 log.warning("semantic: background index job failed", exc_info=True)
@@ -364,7 +379,7 @@ class KBStore:
             for f in self.root.rglob("*.md"):
                 if ".git" in f.parts:
                     continue
-                text = f.read_text(encoding="utf-8")
+                text = _read_text_retry(f)
                 orig = text
                 text, n1 = deep.subn(rf"\g<1>projects/{new}/", text)
                 n2 = n3 = 0
@@ -491,7 +506,7 @@ class KBStore:
         pid = proot_rel.split("/")[-1]
 
         ctx_path = proot / "context.md"
-        context_md = ctx_path.read_text(encoding="utf-8") if ctx_path.is_file() else None
+        context_md = _read_text_retry(ctx_path) if ctx_path.is_file() else None
 
         if proot_rel == "metalfinger":
             parent_entries = _index_entries(self.root / "index.md")
@@ -502,7 +517,7 @@ class KBStore:
 
         log_path = proot / "log.md"
         recent_log = (
-            _parse_log_entries(log_path.read_text(encoding="utf-8"))[:3]
+            _parse_log_entries(_read_text_retry(log_path))[:3]
             if log_path.is_file()
             else []
         )
@@ -559,7 +574,7 @@ class KBStore:
             if f.name == "index.md":
                 continue
             try:
-                doc = split(f.read_text(encoding="utf-8"))
+                doc = split(_read_text_retry(f))
             except (OSError, UnicodeDecodeError, KBError):
                 continue
             if doc is None:
@@ -619,7 +634,7 @@ class KBStore:
                 f"No such file: '{rel}'. Discover paths via kb_load's index_tree or kb_search."
             )
         try:
-            content = abs_path.read_text(encoding="utf-8")
+            content = _read_text_retry(abs_path)
         except UnicodeDecodeError as exc:
             raise KBError(f"'{rel}' is not a UTF-8 text file — kb_read serves text only.") from exc
         result: dict[str, Any] = {"path": rel, "content": content, "meta": read_meta(abs_path)}
@@ -639,7 +654,7 @@ class KBStore:
             if src == rel:
                 continue
             try:
-                text = f.read_text(encoding="utf-8")
+                text = _read_text_retry(f)
             except (OSError, UnicodeDecodeError):
                 continue
             for m in _MD_LINK_RE.finditer(text):
@@ -776,7 +791,7 @@ class KBStore:
             state["warnings"] = warnings
             created = not abs_path.exists()
             state["created"] = created
-            if not created and abs_path.read_text(encoding="utf-8") == normalized:
+            if not created and _read_text_retry(abs_path) == normalized:
                 state["no_change"] = True
                 return []
             _write_text(abs_path, normalized)
@@ -816,7 +831,7 @@ class KBStore:
         def _mutate() -> list[str]:
             log_path = self.root / rel
             if log_path.is_file():
-                new_text = _insert_log_bullet(log_path.read_text(encoding="utf-8"), bullet, today)
+                new_text = _insert_log_bullet(_read_text_retry(log_path), bullet, today)
             else:
                 new_text = f"# Log — {pid}\n\n## {today}\n{bullet}\n"
             _write_text(log_path, new_text)
@@ -928,7 +943,7 @@ class KBStore:
                     f"No such message: '{rel}'. Call kb_load — unread_messages carries the "
                     "current paths."
                 )
-            doc = split(abs_path.read_text(encoding="utf-8"))
+            doc = split(_read_text_retry(abs_path))
             if doc is None:
                 raise KBError(f"'{rel}' has no frontmatter — kb_mark_read only archives 'type: message' files.")
             meta = normalize_meta(doc.meta)
@@ -1112,7 +1127,7 @@ class KBStore:
             raise KBError(
                 f"No such artifact: '{rel}'. Call kb_artifacts to list saved artifacts."
             )
-        doc = split(abs_path.read_text(encoding="utf-8"))
+        doc = split(_read_text_retry(abs_path))
         if doc is None:
             raise KBError(
                 f"'{rel}' has no frontmatter — sharing only applies to 'type: artifact' concepts."
