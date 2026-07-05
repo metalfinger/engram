@@ -66,21 +66,39 @@ def navigator_tool_meta(enabled: bool) -> dict | None:
     return {"ui": {"resourceUri": NAVIGATOR_URI}} if enabled else None
 
 
+def get_navigator_html(explorer_url: str) -> str:
+    """Render the widget HTML, stamping the explorer host into the Graph link.
+
+    ``NAVIGATOR_HTML`` is a template carrying the ``__EXPLORER_URL__`` sentinel —
+    kept literal in the module constant so the no-external-requests test can keep
+    asserting the constant has no real URLs. The concrete host is injected ONLY at
+    serve time here (server-side), so the served document never contains the
+    sentinel and never ships a hard-coded domain.
+    """
+    return NAVIGATOR_HTML.replace("__EXPLORER_URL__", explorer_url.rstrip("/"))
+
+
 def register_navigator(mcp: "FastMCP", enabled: bool) -> None:
     """Register the ui:// resource when the widget flag is on; a no-op when off.
 
     Factored out of app.py so a test can build a fresh FastMCP with the flag on
     and assert the resource is present, without reloading the app module (whose
-    settings are read once at import via an lru_cache).
+    settings are read once at import via an lru_cache). The explorer URL for the
+    Graph link is read from settings HERE (keeping app.py's two-arg call intact)
+    and baked into the served HTML once at registration.
     """
     if not enabled:
         return
+
+    from engram_server.config import get_settings
+
+    html = get_navigator_html(get_settings().explorer_url)
 
     @mcp.resource(
         NAVIGATOR_URI, mime_type=NAVIGATOR_MIME, meta=navigator_resource_meta()
     )
     def navigator_resource() -> str:
-        return NAVIGATOR_HTML
+        return html
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +161,25 @@ button { font:inherit; }
 .tab:hover { color:var(--fg); }
 .tab.active { color:var(--accent-ink); border-bottom-color:var(--accent); }
 .tbadge { background:var(--accent); color:var(--accent-fg); font-size:.6rem; font-weight:700; min-width:1.05rem; height:1.05rem; padding:0 .3rem; border-radius:999px; display:none; place-items:center; }
+.graphlink { margin-left:auto; align-self:center; font-size:.72rem; font-weight:600; letter-spacing:.02em; color:var(--muted); padding:.3rem .5rem; border-radius:7px; white-space:nowrap; }
+.graphlink:hover { color:var(--accent-ink); text-decoration:none; background:var(--surface-2); }
+
+/* quick capture (Home) */
+.qcap { display:flex; gap:.5rem; margin:0 0 .9rem; }
+.qc-in { flex:1 1 auto; min-width:0; padding:.45rem .7rem; font-size:.86rem; color:var(--fg); background:var(--surface); border:1px solid var(--line-2); border-radius:8px; outline:none; }
+.qc-in:focus { border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-soft); }
+.qc-go { flex:0 0 auto; background:var(--accent); color:var(--accent-fg); font-weight:650; font-size:.8rem; border:1px solid var(--accent); border-radius:8px; padding:.42rem .85rem; cursor:pointer; }
+.qc-go:hover { filter:brightness(1.06); }
+.qc-in:disabled, .qc-go:disabled { opacity:.55; cursor:default; }
+
+/* artifacts filter row + recipes */
+.filterrow { display:flex; gap:.35rem; margin:.6rem 0 .2rem; }
+.fbtn { appearance:none; border:1px solid var(--line-2); background:var(--surface); color:var(--muted); font-size:.74rem; font-weight:600; padding:.28rem .6rem; border-radius:999px; cursor:pointer; }
+.fbtn:hover { border-color:var(--accent-line); color:var(--accent-ink); }
+.fbtn.on { background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent-line); }
+.chip.beta { background:color-mix(in srgb,var(--violet) 16%,transparent); color:var(--violet); border-color:transparent; text-transform:uppercase; letter-spacing:.06em; font-size:.6rem; }
+.save-recipe { flex:0 0 auto; background:var(--surface); color:var(--accent-ink); font-weight:600; font-size:.82rem; border:1px solid var(--accent-line); border-radius:8px; padding:.42rem .8rem; cursor:pointer; }
+.save-recipe:hover { background:var(--accent-soft); }
 
 h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15rem; font-weight:700; }
 .lede { color:var(--muted); font-size:.85rem; margin:.15rem 0 0; }
@@ -335,6 +372,7 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
   <button class="tab" data-tab="search">Search</button>
   <button class="tab" data-tab="inbox">Inbox<span class="tbadge" id="ib-badge"></span></button>
   <button class="tab" data-tab="artifacts">Artifacts</button>
+  <a class="graphlink" id="graphlink" href="__EXPLORER_URL__/brain/graph" target="_blank" rel="noopener" title="Open the brain graph in a new tab">Graph ↗</a>
 </nav>
 <div id="toasts"></div>
 <div class="wrap"><div id="view"><div class="skgrid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div></div></div>
@@ -352,6 +390,7 @@ let state={
   searchQuery:"", searchProject:null, searchResults:null, searchStatus:null,
   inbox:null, inboxStatus:null,
   artifacts:null, artifactsStatus:null,
+  recipes:null, recipesStatus:null, artifactFilter:"all",
   basket:[]   // [{path, title}] — ordered
 };
 let booted=false, busy=false;
@@ -523,6 +562,25 @@ const ARTIFACT_TYPES=[
   {v:"handoff", t:"Handoff brief"},
   {v:"custom", t:"Custom…"}
 ];
+// per-type craft direction — shared by BUILD (drives artifact quality) and
+// SAVE-AS-RECIPE (becomes the recipe's stored `instruction`).
+const CRAFT_BRIEF={
+  "status-report":"a polished STATUS REPORT: title, date, at-a-glance summary box, then sections (Current state / Decisions & rationale / Open items / Next steps); use tables or status chips where the data is list-like",
+  spec:"a clean SPEC DOCUMENT: numbered sections, requirement tables, architecture described precisely; professional technical-doc typography",
+  blog:"an engaging BLOG POST in Hiren's metalfinger voice: strong hook, subheads, short paragraphs, a closing takeaway",
+  summary:"a crisp EXECUTIVE SUMMARY: one-screen overview, key points as scannable bullets, a bottom-line verdict",
+  handoff:"a HANDOFF BRIEF for the next person/session: context in one paragraph, current state, exact next actions as a checklist, gotchas called out",
+};
+// project owning a brain path is projects/<project>/…
+function projectOf(p){ const parts=(p||"").split("/"); return (parts[0]==="projects"&&parts[1])?parts[1]:""; }
+// dominant project across the basket; ties (and mixed) fall back to the first path's project
+function dominantProject(){
+  const counts={}; let first="";
+  for(const b of state.basket){ const pj=projectOf(b.path); if(!first&&pj) first=pj; if(pj) counts[pj]=(counts[pj]||0)+1; }
+  let best=first, bestN=-1;
+  for(const k in counts){ if(counts[k]>bestN){ bestN=counts[k]; best=k; } }
+  return best||first||"<project>";
+}
 function inBasket(path){ return state.basket.some(x=>x.path===path); }
 function bkBtn(path,title){ const on=inBasket(path);
   return '<button class="bk-toggle'+(on?" on":"")+'" data-bk-path="'+esc(path)+'" data-bk-title="'+esc(title||"")+'" title="'+(on?"In basket":"Add to basket")+'" aria-label="Add to basket">'+(on?"✓":"＋")+'</button>'; }
@@ -534,28 +592,40 @@ function toggleBasket(path, title){
 }
 function moveBasket(i,d){ const j=i+d; if(j<0||j>=state.basket.length) return; const a=state.basket; const t=a[i]; a[i]=a[j]; a[j]=t; persist(); renderBasket(); }
 function clearBasket(){ state.basket=[]; document.querySelectorAll("[data-bk-path]").forEach(el=>{ el.classList.remove("on"); el.textContent="＋"; el.title="Add to basket"; }); persist(); renderBasket(); }
+// the chosen type's instruction text — a custom instruction, or the craft brief.
+function chosenInstruction(){
+  const sel=$("bk-type"); const v=sel?sel.value:"summary";
+  if(v==="custom"){ const ci=$("bk-custom"); return (ci&&ci.value.trim())||"Write a useful document"; }
+  return CRAFT_BRIEF[v]||CRAFT_BRIEF.summary;
+}
 async function buildArtifact(){
   if(!state.basket.length) return;
   const sel=$("bk-type"); const v=sel?sel.value:"summary";
   const paths=state.basket.map((b,i)=>(i+1)+". "+b.path).join("\n");
   // The handoff prompt controls artifact QUALITY: demand a real Artifact (never
   // chat text) and give per-type craft direction — Claude renders what we ask for.
-  const CRAFT={
-    "status-report":"a polished STATUS REPORT: title, date, at-a-glance summary box, then sections (Current state / Decisions & rationale / Open items / Next steps); use tables or status chips where the data is list-like",
-    spec:"a clean SPEC DOCUMENT: numbered sections, requirement tables, architecture described precisely; professional technical-doc typography",
-    blog:"an engaging BLOG POST in Hiren's metalfinger voice: strong hook, subheads, short paragraphs, a closing takeaway",
-    summary:"a crisp EXECUTIVE SUMMARY: one-screen overview, key points as scannable bullets, a bottom-line verdict",
-    handoff:"a HANDOFF BRIEF for the next person/session: context in one paragraph, current state, exact next actions as a checklist, gotchas called out",
-  };
   let msg;
   const quality=" Create it as a proper ARTIFACT (side-panel document — never plain chat text). Make it genuinely well-designed: clear hierarchy, scannable structure; prefer rich formatted markdown, or a styled HTML artifact when visuals (tables, status colors, timelines) would materially help. Cite the source paths in a small footer. After presenting the artifact, OFFER to save it into the brain: kb_write to projects/<project>/artifacts/YYYY-MM-<slug>.md with frontmatter type: artifact, sources: [the exact paths above], instruction: <the instruction you were given> — the server stamps provenance; then it appears in the Artifacts tab.";
-  if(v==="custom"){ const ci=$("bk-custom"); const instr=(ci&&ci.value.trim())||"Write a useful document";
+  if(v==="custom"){ const instr=chosenInstruction();
     msg=instr+"\n\nUse ONLY these knowledge-base concepts — kb_read each path first, use only their content."+quality+"\n"+paths;
-  } else { const c=CRAFT[v]||CRAFT.summary;
+  } else { const c=CRAFT_BRIEF[v]||CRAFT_BRIEF.summary;
     msg="From these knowledge-base concepts — kb_read each path first, use only their content — build "+c+"."+quality+"\n"+paths;
   }
   const ok=await askAgent(msg);
   showToast(ok?"Sent to Claude — building your artifact":"Couldn't reach Claude — try again", ok?null:buildArtifact);
+}
+// SAVE-AS-RECIPE: persist the basket (ordered sources) + chosen instruction as a
+// reusable, rebuildable recipe concept. content MUST be an ARRAY of blocks (askAgent).
+async function saveRecipe(){
+  if(!state.basket.length) return;
+  const proj=dominantProject();
+  const month=new Date().toISOString().slice(0,7);   // YYYY-MM
+  const paths=state.basket.map((b,i)=>(i+1)+". "+b.path).join("\n");
+  const msg="Save this as a reusable recipe: kb_write to projects/"+proj+"/recipes/"+month+"-<slug>.md"
+    +" with frontmatter type: recipe, sources: [the ordered paths below], instruction: "+chosenInstruction()+"."
+    +" Recipes are rebuildable anytime with the rebuild_artifact prompt.\n"+paths;
+  const ok=await askAgent(msg);
+  showToast(ok?"Sent to Claude — saving your recipe":"Couldn't reach Claude — try again", ok?null:saveRecipe);
 }
 function renderBasket(){
   const bar=$("basket"); if(!bar) return;
@@ -572,10 +642,12 @@ function renderBasket(){
     +'<div class="bkchips">'+chips+'</div>'
     +'<div class="bkbuild"><select id="bk-type" class="bksel" aria-label="Artifact type">'+opts+'</select>'
     +'<input id="bk-custom" class="bkcustom" placeholder="Custom instruction…" hidden>'
-    +'<button class="build" id="bk-build">Build artifact</button></div>';
+    +'<button class="build" id="bk-build">Build artifact</button>'
+    +'<button class="save-recipe" id="bk-recipe" title="Save the sources + instruction as a reusable recipe">Save as recipe</button></div>';
   bar.classList.add("on");
   $("bk-clear").onclick=clearBasket;
   $("bk-build").onclick=buildArtifact;
+  $("bk-recipe").onclick=saveRecipe;
   const sel=$("bk-type"); sel.onchange=()=>{ $("bk-custom").hidden=(sel.value!=="custom"); scheduleHeight(); };
   bar.querySelectorAll("[data-mv]").forEach(b=>b.onclick=()=>{ const p=b.getAttribute("data-mv").split(","); moveBasket(+p[0],+p[1]); });
   bar.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>toggleBasket(b.getAttribute("data-rm"),null));
@@ -602,9 +674,30 @@ function renderHome(){
         +(p.last_session?'<span class="when">'+esc(relTime(p.last_session))+'</span>':'')
       +'</div></button>';
   }).join("") : '<div class="empty">No projects found.</div>';
-  show('<p class="eyebrow">Knowledge Base</p><h1>brain</h1>'
+  show('<div class="qcap"><input id="qc-input" class="qc-in" type="text" placeholder="Quick capture — remember anything…" autocomplete="off" aria-label="Quick capture to inbox">'
+        +'<button class="qc-go" id="qc-go">Capture</button></div>'
+      +'<p class="eyebrow">Knowledge Base</p><h1>brain</h1>'
       +'<p class="lede">Pick a project to browse its context, concepts, and log.</p>'
       +'<div class="cards">'+cards+'</div>');
+  const qi=$("qc-input"), qg=$("qc-go");
+  if(qg) qg.onclick=quickCapture;
+  if(qi) qi.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); quickCapture(); } };
+}
+// QUICK CAPTURE: fire-and-forget note into the inbox via kb_inbox. Graceful when
+// the tool isn't live yet (older server) — toast instead of a hard error.
+async function quickCapture(){
+  const inp=$("qc-input"); if(!inp) return; const text=inp.value.trim(); if(!text) return;
+  const go=$("qc-go"); inp.disabled=true; if(go) go.disabled=true;
+  let errMsg=null;
+  try{ const r=await callTool("kb_inbox",{text:text}); if(r && r.error) errMsg=String(r.error); }
+  catch(e){ errMsg=String((e&&e.message)||"tool error"); }
+  inp.disabled=false; if(go) go.disabled=false;
+  if(errMsg){
+    if(/unknown.?tool|not.?found|no such tool|not live|unrecognized|method not found/i.test(errMsg)) showToast("Inbox tool not live yet");
+    else showToast("Couldn't capture — try again", quickCapture);
+    return;
+  }
+  inp.value=""; showToast("Captured to inbox"); try{ inp.focus(); }catch(e){}
 }
 
 function treeHtml(node, depth){
@@ -800,16 +893,69 @@ function artifactRow(a){
     +box
   +'</div>';
 }
+// RECIPES: best-effort listing. kb_artifacts scans artifacts/ only; recipes live
+// in recipes/, so we surface them via kb_search(type:"recipe") until a dedicated
+// kb_recipes tool exists — hence the "beta" chip. Tap opens the Reader; Run hands
+// the recipe back to the agent to rebuild from its current sources.
+async function loadRecipes(force){
+  if(state.recipes && !force){ renderArtifacts(); return; }
+  state.recipesStatus="loading"; renderArtifacts();
+  try{
+    const d=await callTool("kb_search",{query:"recipe", type:"recipe", limit:25});
+    if(d && d.error) throw new Error(d.error);
+    state.recipes=Array.isArray(d)?d:[]; state.recipesStatus="ok";
+  }catch(e){ state.recipesStatus="error"; state.recipes=state.recipes||[]; }
+  renderArtifacts();
+}
+function recipeRow(r){
+  const nm=(r.path||"").split("/").pop();
+  const proj=projectOf(r.path)||r.project||"";
+  return '<div class="artrow">'
+    +'<div class="artmain" data-open-path="'+esc(r.path)+'">'
+      +'<div class="arthead"><span class="stamp">'+glyph("runbook")+'</span><span class="artt">'+esc(r.title||nm)+'</span></div>'
+      +'<div class="artchips">'+(proj?'<span class="chip proj">'+esc(proj)+'</span>':'')+'</div>'
+    +'</div>'
+    +'<div class="artacts"><button class="act" data-run-recipe="'+esc(r.path)+'">Run</button></div>'
+  +'</div>';
+}
+async function runRecipe(path){
+  const proj=projectOf(path)||"<project>";
+  const text="Run the recipe "+path+": kb_read it, kb_read its current sources, build per its instruction as a proper ARTIFACT, then offer to save the result to projects/"+proj+"/artifacts/.";
+  const ok=await askAgent(text);
+  showToast(ok?"Sent to Claude — running the recipe":"Couldn't reach Claude — try again", ok?null:()=>runRecipe(path));
+}
+function artifactsBody(){
+  if(state.artifactsStatus==="loading") return skelRows(3);
+  if(state.artifactsStatus==="error") return errBlock("Couldn't load artifacts.","artifacts");
+  const rows=state.artifacts||[];
+  return rows.length ? rows.map(artifactRow).join("")
+    : '<div class="empty">No artifacts yet — build one from the basket.</div>';
+}
+function recipesBody(){
+  if(state.recipesStatus==="loading") return skelRows(2);
+  if(state.recipesStatus==="error") return errBlock("Couldn't load recipes.","recipes");
+  const rows=state.recipes||[];
+  return rows.length ? rows.map(recipeRow).join("")
+    : '<div class="empty">No recipes found yet — save one from the basket.</div>';
+}
+function setFilter(f){ state.artifactFilter=f;
+  if((f==="all"||f==="recipes") && !state.recipes && state.recipesStatus!=="loading"){ loadRecipes(false); return; }
+  renderArtifacts();
+}
 function renderArtifacts(){
   state.view="artifacts"; persist(); setActiveTab();
-  let body;
-  if(state.artifactsStatus==="loading"){ body=skelRows(3); }
-  else if(state.artifactsStatus==="error"){ body=errBlock("Couldn't load artifacts.","artifacts"); }
-  else { const rows=state.artifacts||[];
-    body = rows.length ? rows.map(artifactRow).join("")
-      : '<div class="empty">No artifacts yet — build one from the basket.</div>'; }
-  show('<div class="ihead"><p class="eyebrow" style="margin:0">Artifacts</p><button class="refresh" id="art-refresh">⟳ Refresh</button></div>'+body);
-  const rf=$("art-refresh"); if(rf) rf.onclick=()=>loadArtifacts(true);
+  const f=state.artifactFilter||"all";
+  const labels={all:"All", artifacts:"Artifacts", recipes:"Recipes"};
+  const filterRow='<div class="filterrow">'+["all","artifacts","recipes"].map(k=>
+    '<button class="fbtn'+(f===k?" on":"")+'" data-filter="'+k+'">'+labels[k]+'</button>').join("")+'</div>';
+  let sections="";
+  if(f==="all"||f==="artifacts"){ sections+='<p class="section-label">Artifacts</p>'+artifactsBody(); }
+  if(f==="all"||f==="recipes"){ sections+='<p class="section-label">Recipes <span class="chip beta">beta</span></p>'+recipesBody(); }
+  show('<div class="ihead"><p class="eyebrow" style="margin:0">Artifacts</p><button class="refresh" id="art-refresh">⟳ Refresh</button></div>'
+    +filterRow+sections);
+  const rf=$("art-refresh"); if(rf) rf.onclick=()=>{ loadArtifacts(true); if(f!=="artifacts") loadRecipes(true); };
+  // lazily populate recipes the first time they're in view
+  if((f==="all"||f==="recipes") && !state.recipes && state.recipesStatus!=="loading"){ loadRecipes(false); }
 }
 async function shareArtifact(path){
   try{
@@ -870,8 +1016,10 @@ document.addEventListener("click",(e)=>{
   const nav=e.target.closest("[data-nav]"); if(nav){ goTab(nav.getAttribute("data-nav")); return; }
   const rt=e.target.closest("[data-retry]"); if(rt){ const w=rt.getAttribute("data-retry");
     if(w==="home") loadHome(); else if(w==="search") runSearch(); else if(w==="inbox") loadInbox(true);
-    else if(w==="artifacts") loadArtifacts(true);
+    else if(w==="artifacts") loadArtifacts(true); else if(w==="recipes") loadRecipes(true);
     else if(w==="project") openProject(state.projectId); else if(w==="read") openFile(state.readPath); return; }
+  const ff=e.target.closest("[data-filter]"); if(ff){ setFilter(ff.getAttribute("data-filter")); return; }
+  const rr=e.target.closest("[data-run-recipe]"); if(rr){ e.preventDefault(); runRecipe(rr.getAttribute("data-run-recipe")); return; }
   const ar=e.target.closest("[data-arch]"); if(ar){ archiveMsg(ar.getAttribute("data-arch")); return; }
   const ac=e.target.closest("[data-act]"); if(ac){ actMsg(ac.getAttribute("data-act")); return; }
   const sh=e.target.closest("[data-share]"); if(sh){ e.preventDefault(); shareArtifact(sh.getAttribute("data-share")); return; }

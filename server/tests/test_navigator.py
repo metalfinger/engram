@@ -18,6 +18,7 @@ from engram_server.navigator import (
     NAVIGATOR_HTML,
     NAVIGATOR_MIME,
     NAVIGATOR_URI,
+    get_navigator_html,
     navigator_resource_meta,
     navigator_tool_meta,
     register_navigator,
@@ -262,6 +263,74 @@ def test_navigator_module_reexports() -> None:
     # guard against accidental symbol renames the wiring depends on
     assert navigator.NAVIGATOR_URI == "ui://engram/navigator"
     assert callable(navigator.register_navigator)
+
+
+# ------------------------------------------- recipes / quick-capture / graph link
+
+
+def test_html_save_as_recipe_message_shape() -> None:
+    # a second basket-footer button that saves the ordered sources + instruction
+    assert "Save as recipe" in NAVIGATOR_HTML
+    assert "function saveRecipe(" in NAVIGATOR_HTML
+    # the ui/message tells the agent to kb_write a recipe concept
+    assert "Save this as a reusable recipe" in NAVIGATOR_HTML
+    assert "type: recipe" in NAVIGATOR_HTML
+    assert "sources: [the ordered paths below]" in NAVIGATOR_HTML
+    assert "rebuild_artifact" in NAVIGATOR_HTML
+    # project derives from the basket paths (projects/<project>/…)
+    assert "function dominantProject(" in NAVIGATOR_HTML
+
+
+def test_html_run_recipe_message_shape() -> None:
+    # recipes list best-effort via kb_search(type:"recipe"); a per-row Run rebuilds
+    assert 'callTool("kb_search",{query:"recipe", type:"recipe", limit:25})' in NAVIGATOR_HTML
+    assert "data-run-recipe" in NAVIGATOR_HTML
+    assert "Run the recipe " in NAVIGATOR_HTML
+    assert "build per its instruction as a proper ARTIFACT" in NAVIGATOR_HTML
+
+
+def test_html_artifacts_filter_row() -> None:
+    # [ All | Artifacts | Recipes ] filter (buttons built from this key list),
+    # with the recipes section flagged beta
+    assert 'class="filterrow"' in NAVIGATOR_HTML
+    assert 'data-filter="' in NAVIGATOR_HTML
+    assert '["all","artifacts","recipes"]' in NAVIGATOR_HTML
+    assert "function setFilter(" in NAVIGATOR_HTML
+    assert 'class="chip beta"' in NAVIGATOR_HTML
+
+
+def test_html_quick_capture_uses_kb_inbox_with_fallback() -> None:
+    # top-of-Home capture row -> kb_inbox, success + graceful not-live toasts
+    assert 'callTool("kb_inbox",{text:text})' in NAVIGATOR_HTML
+    assert "Quick capture — remember anything…" in NAVIGATOR_HTML
+    assert "Captured to inbox" in NAVIGATOR_HTML
+    assert "Inbox tool not live yet" in NAVIGATOR_HTML
+
+
+def test_html_graph_link_uses_sentinel() -> None:
+    # the constant carries the sentinel (never a literal host — no-external test)
+    assert 'href="__EXPLORER_URL__/brain/graph"' in NAVIGATOR_HTML
+    assert 'class="graphlink"' in NAVIGATOR_HTML
+
+
+def test_get_navigator_html_replaces_sentinel() -> None:
+    # render function stamps the explorer host in; served HTML has no sentinel
+    assert "__EXPLORER_URL__" in NAVIGATOR_HTML
+    html = get_navigator_html("https://brain.example.com/")
+    assert "__EXPLORER_URL__" not in html
+    # trailing slash trimmed; /brain/graph appended; safe target + rel intact
+    assert 'href="https://brain.example.com/brain/graph"' in html
+    assert 'target="_blank" rel="noopener"' in html
+
+
+def test_register_on_serves_html_without_sentinel() -> None:
+    # the registered resource serves rendered HTML (sentinel already replaced)
+    mcp = FastMCP("test-render")
+    register_navigator(mcp, True)
+    contents = asyncio.run(mcp.read_resource(NAVIGATOR_URI))
+    body = "".join(c.content for c in contents)
+    assert "__EXPLORER_URL__" not in body
+    assert "/brain/graph" in body
 
 
 def test_html_unwraps_sdk_result_envelope():
