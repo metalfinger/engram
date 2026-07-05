@@ -235,3 +235,13 @@ def test_navigator_module_reexports() -> None:
     # guard against accidental symbol renames the wiring depends on
     assert navigator.NAVIGATOR_URI == "ui://engram/navigator"
     assert callable(navigator.register_navigator)
+
+
+def test_html_unwraps_sdk_result_envelope():
+    """The python SDK wraps list/dict tool returns in {"result": ...} — the widget
+    must unwrap that envelope everywhere or every shape check fails on claude.ai."""
+    from engram_server.navigator import NAVIGATOR_HTML
+
+    assert "function unwrap(" in NAVIGATOR_HTML
+    assert 'unwrap(pr.structuredContent' in NAVIGATOR_HTML
+    assert "unwrap(r.structuredContent)" in NAVIGATOR_HTML

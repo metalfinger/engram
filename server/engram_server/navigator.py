@@ -367,10 +367,14 @@ window.addEventListener("message",(e)=>{
     return;
   }
   if(m.method==="ui/notifications/tool-result"){
-    const pr=m.params||{}; const d=pr.structuredContent ?? parseText(pr.content);
+    const pr=m.params||{}; const d=unwrap(pr.structuredContent ?? parseText(pr.content));
     if(d) seedFrom(d);   // a fresh tool call remounted us with new data — reseed
   }
 },{passive:true});
+// The python SDK wraps list/dict tool returns in a single-key {"result": ...}
+// envelope for structured content (mcp func_metadata) — unwrap it EVERYWHERE,
+// or every shape check (Array.isArray, d.index_tree) silently fails on claude.ai.
+function unwrap(v){ if(v && typeof v==="object" && !Array.isArray(v) && "result" in v && Object.keys(v).length===1) return v.result; return v; }
 function rpcReq(method,params,timeout){ return new Promise((resolve,reject)=>{ const id=nextId++; pending.set(id,{resolve,reject});
   window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
   setTimeout(()=>{ if(pending.has(id)){ pending.delete(id); reject(new Error("host timeout")); } }, timeout||120000); }); }
@@ -381,10 +385,10 @@ function parseText(content){ try{ const t=Array.isArray(content)?(content.find(c
 function normalize(r){ if(r==null) return null;
   if(typeof r==="object"){
     if(r.isError){ const t=(r.content||[]).find(c=>c&&c.type==="text"); return {error:(t&&t.text)||"tool error"}; }
-    if(r.structuredContent) return r.structuredContent;
-    if(Array.isArray(r.content)){ const t=r.content.find(c=>c&&c.type==="text"); if(t){ try{ return JSON.parse(t.text); }catch(e){ return {error:t.text}; } } }
-    return r; }
-  if(typeof r==="string"){ try{ return JSON.parse(r); }catch(e){ return null; } }
+    if(r.structuredContent) return unwrap(r.structuredContent);
+    if(Array.isArray(r.content)){ const t=r.content.find(c=>c&&c.type==="text"); if(t){ try{ return unwrap(JSON.parse(t.text)); }catch(e){ return {error:t.text}; } } }
+    return unwrap(r); }
+  if(typeof r==="string"){ try{ return unwrap(JSON.parse(r)); }catch(e){ return null; } }
   return null; }
 async function callTool(name,args){
   // ChatGPT exposes window.openai.callTool; MCP Apps hosts relay tools/call over the bridge.
