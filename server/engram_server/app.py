@@ -304,6 +304,9 @@ async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
     Returns [{path, project, title, description, timestamp, sources, built_from, stale
     (true = a source changed since build, false = current, null = undecidable), shared,
     share_url}], newest first. Open one with kb_read; share it with kb_share_artifact.
+    Artifacts are REUSABLE knowledge: kb_read them as sources for new documents, compose
+    them into higher-order artifacts, and REBUILD any of them from its stored recipe
+    (sources + instruction) against the current brain — git keeps every version.
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
@@ -333,6 +336,72 @@ async def kb_unshare_artifact(path: str) -> dict[str, Any]:
     Returns {path, sha, pushed}.
     """
     return await store.kb_unshare_artifact(path)
+
+
+# ------------------------------------------------------------------ prompts
+# One-tap workflows for claude.ai (the host surfaces these as runnable prompts).
+
+
+@mcp.prompt()
+def daily_briefing() -> str:
+    """Morning briefing across the whole brain: messages first, project states, today's focus."""
+    return (
+        "Give me my Engram briefing. Call kb_projects first. Surface unread messages "
+        "FIRST: for every project with unread_messages > 0, kb_load it and present each "
+        "message (title, what it asks, priority; act or ask, then kb_mark_read). Then one "
+        "line per active project: current state + top open loop (use kb_projects data; "
+        "kb_load at most the 1-2 projects that look hot — navigate, never ingest). Flag "
+        "anything stale (last_session older than ~2 weeks). Close with a proposed top-3 "
+        "focus for today as a short list. Whole briefing under 20 lines."
+    )
+
+
+@mcp.prompt()
+def close_session(project: str = "") -> str:
+    """Close out the current work session properly — log entry, context update, handoff."""
+    target = f"the '{project}' project" if project else "the project we worked on this session"
+    return (
+        f"Run the Engram session close-out for {target}: (1) DRAFT the log entry — what "
+        "happened, decisions made with links to any new concepts, open threads — and SHOW "
+        "it to me BEFORE calling kb_append_log; (2) update the project's context.md "
+        "(Current Phase / Open Loops / Next Actions) via kb_write; (3) ask if anything "
+        "should be told to the next session directly and kb_leave_message if yes; "
+        "(4) confirm in one line what was committed."
+    )
+
+
+@mcp.prompt()
+def build_artifact(project: str = "", ask: str = "") -> str:
+    """Build a polished document from knowledge-base concepts and offer to save it back."""
+    scope = f" from the '{project}' project" if project else ""
+    want = ask or "the document I describe"
+    return (
+        f"Help me build {want}{scope}. Pick the source concepts WITH me: use kb_load's "
+        "index_tree and kb_search to propose candidate paths, confirm the set, then "
+        "kb_read each one. Build it as a proper ARTIFACT (side-panel document, never "
+        "chat text) with clear hierarchy and rich formatting; cite source paths in a "
+        "small footer. Then OFFER to save it into the brain: kb_write to "
+        "projects/<project>/artifacts/YYYY-MM-<slug>.md with frontmatter type: artifact, "
+        "sources: [the exact paths], instruction: <what I asked for> — the server stamps "
+        "build provenance, and it appears in the Navigator's Artifacts tab, the explorer "
+        "gallery at /brain/artifacts, and kb_artifacts."
+    )
+
+
+@mcp.prompt()
+def rebuild_artifact(path: str = "") -> str:
+    """Rebuild a saved artifact from its stored recipe against the CURRENT brain (living documents)."""
+    target = f"'{path}'" if path else "the artifact I name (kb_artifacts lists them)"
+    return (
+        f"Rebuild {target} from its recipe. kb_read the artifact: its frontmatter carries "
+        "sources (the exact concept paths) and instruction (what it was built to be) — "
+        "that IS the recipe. kb_read every source at its CURRENT state, then rebuild the "
+        "document per the instruction at the same craft standard (proper ARTIFACT, never "
+        "chat text). Present it, then tell me briefly WHAT CHANGED versus the stored "
+        "version. Offer to save over the SAME path with kb_write (same frontmatter shape; "
+        "the server re-stamps built_from) — git keeps every previous version, so this is "
+        "how living documents stay current."
+    )
 
 
 # ------------------------------------------------------------------ routes

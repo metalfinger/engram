@@ -28,7 +28,7 @@ from engram_server.explorer.format import (
     score_bar,
     stamp,
 )
-from engram_server.explorer.html import badge, button, chip, codebox, esc, page, share_page
+from engram_server.explorer.html import badge, button, card, chip, codebox, esc, page, share_page
 from engram_server.explorer.render import (
     render_markdown,
     render_markdown_public,
@@ -799,6 +799,17 @@ def _sidebar(brain: Path, active: str) -> str:
         if items:
             out.append(_nav_section("Library", "".join(items)))
 
+    proot = brain / "projects"
+    if proot.is_dir() and any(
+        f.name != "index.md"
+        for p in sorted(proot.iterdir())
+        if (p / "artifacts").is_dir()
+        for f in (p / "artifacts").glob("*.md")
+    ):
+        out.append(
+            _nav_section("Artifacts", _nav_link("/brain/artifacts", "Gallery", active))
+        )
+
     skills_items = [_nav_link("/brain/setup", "Setup", active)]
     if (brain / "skills" / "engram" / "SKILL.md").is_file():
         skills_items.append(
@@ -1188,6 +1199,82 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         crumbs = [("brain", "/brain"), ("Setup", "/brain/setup")]
         return HTMLResponse(_shell(brain, "Setup", body, crumbs, "/brain/setup"))
 
+    @mcp.custom_route("/brain/artifacts", ["GET"])
+    @guard
+    async def artifacts_gallery(request: Request) -> Response:
+        def collect() -> list[dict]:
+            rows: list[dict] = []
+            proot = brain / "projects"
+            if not proot.is_dir():
+                return rows
+            for pdir in sorted(proot.iterdir()):
+                adir = pdir / "artifacts"
+                if not adir.is_dir():
+                    continue
+                for f in sorted(adir.glob("*.md")):
+                    if f.name == "index.md":
+                        continue
+                    meta, _ = split_frontmatter(_read(f))
+                    srcs = [str(s) for s in (meta.get("sources") or [])]
+                    rows.append(
+                        {
+                            "rel": f.relative_to(brain).as_posix(),
+                            "project": pdir.name,
+                            "title": str(meta.get("title") or f.stem),
+                            "description": str(meta.get("description") or ""),
+                            "timestamp": meta.get("timestamp"),
+                            "n_sources": len(srcs),
+                            "stale": _artifact_is_stale(
+                                brain, meta.get("built_from"), srcs, settings.git_timeout
+                            ),
+                            "shared": bool(meta.get("share")),
+                        }
+                    )
+            rows.sort(key=lambda r: str(r.get("timestamp") or ""), reverse=True)
+            return rows
+
+        rows = await to_thread.run_sync(collect)
+        body: list[str] = [
+            '<section class="masthead">',
+            '<p class="eyebrow">Built from the brain</p>',
+            "<h1>Artifacts</h1>",
+            '<p class="lede">Documents generated from knowledge-base concepts — each one '
+            "knows its sources, its build point, and whether those sources have moved on.</p>",
+            "</section>",
+        ]
+        if not rows:
+            body.append(
+                '<p class="meta">No artifacts yet — build one from the Navigator&rsquo;s '
+                "basket in any claude.ai chat, then save it to the brain.</p>"
+            )
+        else:
+            cards = []
+            for r in rows:
+                badges = [chip(r["project"])]
+                if r["stale"] is True:
+                    badges.append(badge("sources changed", "unread"))
+                elif r["stale"] is False:
+                    badges.append(badge("current", "active"))
+                if r["shared"]:
+                    badges.append(badge("shared", "accent"))
+                if r["timestamp"]:
+                    rel_t, exact = humanize_time(r["timestamp"])
+                    badges.append(f'<span class="meta" title="{esc(exact)}">{esc(rel_t)}</span>')
+                badges.append(f'<span class="meta">{r["n_sources"]} sources</span>')
+                cards.append(
+                    card(
+                        f"/brain/f/{r['rel']}",
+                        r["title"],
+                        r["description"],
+                        "".join(badges),
+                    )
+                )
+            body.append('<div class="cards">' + "".join(cards) + "</div>")
+        crumbs = [("brain", "/brain"), ("Artifacts", "/brain/artifacts")]
+        return HTMLResponse(
+            _shell(brain, "Artifacts", "".join(body), crumbs, "/brain/artifacts")
+        )
+
     @mcp.custom_route("/brain/setup/engram-setup.ps1", ["GET"])
     @guard
     async def setup_script(request: Request) -> Response:
@@ -1318,7 +1405,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             + '<footer class="concept-foot"><p class="meta">'
             "Shared from Hiren&rsquo;s knowledge base.</p></footer>"
         )
-        return HTMLResponse(share_page(title, body))
+        return HTMLResponse(share_page(title, body, str(meta.get("description") or "")))
 
     @mcp.custom_route("/", ["GET"])
     @guard

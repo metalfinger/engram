@@ -72,3 +72,22 @@ async def test_private_routes_stay_guarded(settings: Settings) -> None:
     client = _client(settings)
     for path in ("/brain", "/brain/system", "/brain/activity", "/brain/setup"):
         assert client.get(path).status_code == 403, path
+
+
+async def test_artifacts_gallery_lists_with_badges(settings: Settings) -> None:
+    await _seed_shared_artifact(settings)
+    open_settings = settings.model_copy(update={"dev_no_access": True})
+    resp = _client(open_settings).get("/brain/artifacts")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Artifacts" in html
+    assert "Weekly Status" in html
+    assert "alt" in html  # project chip
+    assert ("current" in html) or ("sources changed" in html)  # staleness badge
+    assert "shared" in html  # share badge (we shared it in seeding)
+
+
+async def test_artifacts_gallery_stays_guarded(settings: Settings) -> None:
+    await _seed_shared_artifact(settings)
+    resp = _client(settings).get("/brain/artifacts")
+    assert resp.status_code == 403

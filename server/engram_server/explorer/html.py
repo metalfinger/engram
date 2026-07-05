@@ -401,13 +401,14 @@ def codebox(text: str) -> str:
     return f'<div class="codebox"><code>{esc(text)}</code></div>'
 
 
-def share_page(title: str, body_html: str) -> str:
+def share_page(title: str, body_html: str, description: str = "") -> str:
     """A standalone, UNGUARDED public page for a shared artifact.
 
     Deliberately minimal: same visual language (shared CSS) but NO topbar, NO sidebar,
     NO search, NO breadcrumbs — nothing that reveals the bundle's structure or offers
     navigation into the private knowledge base. Only the artifact body and a neutral
-    footer. ``body_html`` is trusted (server-built).
+    footer. ``body_html`` is trusted (server-built). ``description`` feeds OG/link
+    previews so shared links look polished in chat apps and socials.
     """
     return f"""<!doctype html>
 <html lang="en">
@@ -415,6 +416,11 @@ def share_page(title: str, body_html: str) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)}</title>
+<meta property="og:title" content="{esc(title)}">
+<meta property="og:description" content="{esc(description)}">
+<meta property="og:type" content="article">
+<meta name="twitter:card" content="summary">
+<meta name="description" content="{esc(description)}">
 <style>{CSS}</style>
 </head>
 <body>
