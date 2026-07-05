@@ -749,7 +749,17 @@ function renderReader(){
         +(meta.description?'<p class="lede">'+esc(meta.description)+'</p>':'')+'</div>'
         +bkBtn(path, meta.title||name)+'</div>'
       +(props?'<div class="props">'+props+'</div>':'')
-      +'<div class="md">'+renderMarkdown(R.content||"")+'</div>');
+      +readerBody(meta, R.content||""));
+}
+// HTML artifacts are experiences, not documents: never dump their source into the
+// reader — link to the rendered page (share URL serves it verbatim).
+function readerBody(meta, content){
+  if(String(meta.format||"")!=="html") return '<div class="md">'+renderMarkdown(content)+'</div>';
+  var body=content.replace(/^---[\s\S]*?---\s*/,"");
+  var open=meta.share
+    ? '<p><a class="act" href="__EXPLORER_URL__/share/'+esc(meta.share)+'" target="_blank" rel="noopener">Open rendered page ↗</a></p>'
+    : '<p class="empty">This is an HTML artifact — Share it (Artifacts tab) to get a rendered, viewable page.</p>';
+  return open+'<div class="md"><details><summary>HTML source ('+body.length+' chars)</summary><pre>'+esc(body.slice(0,20000))+'</pre></details></div>';
 }
 
 // ── SEARCH ──
@@ -877,11 +887,14 @@ function artifactRow(a){
   const stale=(a.stale===true)?'<span class="chip stale">sources changed</span>':"";
   const shared=a.shared?'<span class="chip shared">🔗 shared</span>':"";
   const when=a.timestamp?'<span class="when">'+esc(relTime(a.timestamp))+'</span>':"";
-  const acts=a.shared
+  // HTML artifacts open their rendered page directly (the share URL serves it verbatim)
+  const view=(String(a.format||"")==="html" && a.shared && a.share_url)
+    ? '<a class="act" href="'+esc(a.share_url)+'" target="_blank" rel="noopener">View ↗</a>' : "";
+  const acts=view+(a.shared
     ? (a._confirm
         ? '<button class="arch" data-unshare="'+esc(a.path)+'">Confirm unshare</button>'
         : '<button class="arch" data-unshare="'+esc(a.path)+'">Unshare</button>')
-    : '<button class="act" data-share="'+esc(a.path)+'">Share</button>';
+    : '<button class="act" data-share="'+esc(a.path)+'">Share</button>');
   const box=(a.shared && a.share_url)
     ? '<div class="sharebox"><code class="share-url">'+esc(a.share_url)+'</code></div>' : "";
   return '<div class="artrow">'

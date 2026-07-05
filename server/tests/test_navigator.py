@@ -341,3 +341,17 @@ def test_html_unwraps_sdk_result_envelope():
     assert "function unwrap(" in NAVIGATOR_HTML
     assert 'unwrap(pr.structuredContent' in NAVIGATOR_HTML
     assert "unwrap(r.structuredContent)" in NAVIGATOR_HTML
+
+
+def test_html_artifacts_open_rendered_not_source() -> None:
+    """HTML artifacts are experiences: the reader links to the rendered share page
+    and collapses source; rows get a View link; never renderMarkdown of raw HTML."""
+    from engram_server.navigator import NAVIGATOR_HTML, get_navigator_html
+
+    assert "function readerBody" in NAVIGATOR_HTML
+    assert 'String(meta.format||"")!=="html"' in NAVIGATOR_HTML
+    assert "Open rendered page ↗" in NAVIGATOR_HTML
+    assert "View ↗" in NAVIGATOR_HTML  # artifacts-row direct open
+    rendered = get_navigator_html("https://brain.example")
+    assert "__EXPLORER_URL__" not in rendered
+    assert "https://brain.example/share/" in rendered.replace("'+esc(meta.share)+'", "TOK") or "https://brain.example/share/" in rendered

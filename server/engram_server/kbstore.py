@@ -1064,6 +1064,7 @@ class KBStore:
                         "title": str(meta.get("title") or f.stem),
                         "description": str(meta.get("description") or ""),
                         "timestamp": meta.get("timestamp"),
+                        "format": str(meta.get("format") or "markdown"),
                         "sources": sources,
                         "built_from": built_from,
                         "stale": self._artifact_stale(built_from, sources),
