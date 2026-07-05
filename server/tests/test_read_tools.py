@@ -147,3 +147,20 @@ async def test_search_runs_over_checkout(store: KBStore) -> None:
     assert results
     assert results[0]["path"] == "metalfinger/videos/helix.md"
     assert results[0]["title"] == "Helix"
+
+
+async def test_read_depth1_includes_backlinks(store):
+    target = "---\ntype: spec\ndescription: A spec others cite.\n---\n\nBody with a [link out](../context.md).\n"
+    await store.kb_write("projects/alt/specs/cited.md", target, "add cited spec")
+    citer = (
+        "---\ntype: decision\ndescription: Cites the spec.\n---\n\n"
+        "Implements [the spec](../specs/cited.md).\n"
+    )
+    await store.kb_write("projects/alt/decisions/2026-07-citer.md", citer, "add citing decision")
+
+    r = await store.kb_read("projects/alt/specs/cited.md", depth=1)
+    paths = [b["path"] for b in r["backlinks"]]
+    assert "projects/alt/decisions/2026-07-citer.md" in paths
+    # depth=0 stays lean
+    r0 = await store.kb_read("projects/alt/specs/cited.md")
+    assert "backlinks" not in r0

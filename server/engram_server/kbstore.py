@@ -541,7 +541,37 @@ class KBStore:
         result: dict[str, Any] = {"path": rel, "content": content, "meta": read_meta(abs_path)}
         if depth == 1:
             result["links"] = self._neighbor_links(rel, content)
+            result["backlinks"] = self._backlinks(rel)
         return result
+
+    def _backlinks(self, rel: str) -> list[dict[str, Any]]:
+        """Concepts whose bodies link TO rel (index.md nav links excluded), capped."""
+        base_of = posixpath.dirname
+        out: list[dict[str, Any]] = []
+        for f in sorted(self.root.rglob("*.md")):
+            if ".git" in f.parts or f.name == "index.md":
+                continue
+            src = f.relative_to(self.root).as_posix()
+            if src == rel:
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for m in _MD_LINK_RE.finditer(text):
+                target = m.group(1).split("#", 1)[0]
+                if not target.endswith(".md") or "://" in target:
+                    continue
+                if target.startswith("/"):
+                    resolved = posixpath.normpath(target.lstrip("/"))
+                else:
+                    resolved = posixpath.normpath(posixpath.join(base_of(src), target))
+                if resolved == rel:
+                    out.append({"path": src, "meta": read_meta(f)})
+                    break
+            if len(out) >= _LINK_CAP:
+                break
+        return out
 
     def _neighbor_links(self, rel: str, text: str) -> list[dict[str, Any]]:
         base = posixpath.dirname(rel)
