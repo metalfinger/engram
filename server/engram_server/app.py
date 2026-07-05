@@ -164,9 +164,10 @@ async def kb_read(path: str, depth: int = 0) -> dict[str, Any]:
     """Read one concept file from the KB. Use paths discovered via kb_load's index_tree
     or kb_search — never guess paths. Use depth=1 when you need to know what a
     concept's neighbors are before deciding to read them: it adds the frontmatter of
-    every concept the file links to (one hop; dangling links come back missing: true).
+    every concept the file links to (one hop; dangling links come back missing: true)
+    AND backlinks — every concept that cites this one — so the graph walks both ways.
 
-    Returns {path, content, meta} plus links: [{path, missing, meta}] when depth=1.
+    Returns {path, content, meta} plus links + backlinks when depth=1.
     """
     return await store.kb_read(path, depth)
 
