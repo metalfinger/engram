@@ -30,7 +30,7 @@ Artifacts = `type: artifact` concepts under `projects/<p>/artifacts/` with prove
 2. **v1.2** — skill polish from real-session friction; `kb_inbox` quick-capture.
 3. **v1.3** — OKF visualizer on Netlify (bundle verified conformant; two nits already fixed).
 4. Remaining acceptance nicety: a fresh claude.ai MOBILE session run-through.
-5. Open loop: push this code repo to GitHub (undecided — see `projects/engram/context.md` in the brain).
+5. Code repo: `github.com/metalfinger/engram` (private).
 
 ## Roadmap after v1.x (Hiren, 2026-07-04)
 Build rich MCP Apps (SEP-1865 widgets) for Engram like the Survey MCP's in `D:\Projects\LLM-Communication` (avatar/gallery/runner widgets are the reference pattern). Phase step 1: a study pass over the Survey implementation (widget.py + *_widget.py + tool `meta=` wiring, plus its hard-won rails in tool descriptions) to extract the reusable pattern and lessons. Then run a dedicated brainstorm on which widgets earn their keep (candidates to seed it: project switchboard card, message inbox card, session-close checklist card, brain graph view). Don't start this before v1 acceptance + v1.1 search are done.
