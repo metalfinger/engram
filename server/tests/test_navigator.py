@@ -106,6 +106,75 @@ def test_html_is_self_contained_mcp_app() -> None:
     assert "<script" in NAVIGATOR_HTML
 
 
+# ------------------------------------------- full-suite features (search/inbox/basket)
+
+
+def test_html_all_tabs_present_and_enabled() -> None:
+    # M2 enabled the Search and Inbox tabs — no `disabled`, no leftover "M2" pills.
+    for tab in ("home", "browse", "search", "inbox"):
+        assert f'data-tab="{tab}"' in NAVIGATOR_HTML
+    assert "M2" not in NAVIGATOR_HTML  # placeholders removed now the tabs work
+
+
+def test_html_search_is_debounced() -> None:
+    # 300ms debounce on the search input (plus Enter to fire immediately)
+    assert "setTimeout(runSearch, 300)" in NAVIGATOR_HTML
+    assert "300ms debounce" in NAVIGATOR_HTML
+    assert 'callTool("kb_search"' in NAVIGATOR_HTML
+
+
+def test_html_ui_message_is_array_of_blocks() -> None:
+    # CRITICAL: ui/message content MUST be an ARRAY of blocks — a single object
+    # silently fails to wake the agent. Guard the exact shape.
+    assert 'content:[{type:"text",text:text}]' in NAVIGATOR_HTML
+    assert '"ui/message"' in NAVIGATOR_HTML
+
+
+def test_html_inbox_archives_via_kb_mark_read() -> None:
+    assert 'callTool("kb_mark_read",{message_path:path})' in NAVIGATOR_HTML
+    # act-on-message handoff carries the message path + title
+    assert "Act on this inter-session message from the brain:" in NAVIGATOR_HTML
+
+
+def test_html_inbox_fans_out_only_unread_projects() -> None:
+    # inbox aggregates: kb_projects, then kb_load ONLY for projects with unread > 0
+    assert 'callTool("kb_projects"' in NAVIGATOR_HTML
+    assert "(p.unread_messages|0)>0" in NAVIGATOR_HTML
+
+
+def test_html_basket_persists_in_widget_state() -> None:
+    # widgetState carries the basket (selection survives re-mount)
+    assert "basket:state.basket" in NAVIGATOR_HTML
+    assert "setWidgetState" in NAVIGATOR_HTML
+    # and boot restores it
+    assert "Array.isArray(st.basket)" in NAVIGATOR_HTML
+
+
+def test_html_basket_build_message_shape() -> None:
+    # BUILD asks the agent to build an artifact from exactly the ordered paths
+    assert "Build a " in NAVIGATOR_HTML
+    assert "kb_read each path first" in NAVIGATOR_HTML
+    assert "cite paths at the end" in NAVIGATOR_HTML
+    # all six artifact types incl. Custom
+    for label in (
+        "Status report",
+        "Spec document",
+        "Blog post",
+        "Summary",
+        "Handoff brief",
+        "Custom",
+    ):
+        assert label in NAVIGATOR_HTML
+
+
+def test_html_has_polish_affordances() -> None:
+    # loading skeletons, retry-able errors, toasts, tab badge, reconcile-on-boot
+    assert "skel" in NAVIGATOR_HTML
+    assert "data-retry" in NAVIGATOR_HTML
+    assert "showToast" in NAVIGATOR_HTML
+    assert "tbadge" in NAVIGATOR_HTML
+
+
 # ---------------------------------------------------- app.py wiring (flag on/off)
 #
 # app.py reads settings once at import (lru_cache), so exercising the flag means

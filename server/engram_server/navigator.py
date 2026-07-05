@@ -8,13 +8,21 @@ widget's ``tools/call`` back to the server. The widget talks ONLY over that
 postMessage bridge (plus a ``window.openai`` path for ChatGPT) — it makes zero
 direct network requests, so the resource CSP is deny-by-default (empty arrays).
 
-M1 scope: a HOME view of project cards and a BROWSE/READER view that renders the
-kb_load index tree and reads concept files with a small built-in markdown
-renderer. Search and Inbox tabs are present but disabled (M2).
+Full surface:
+  HOME    project cards from kb_projects.
+  BROWSE  kb_load: context.md summary + collapsible concept tree.
+  READER  kb_read: frontmatter chips + a small built-in markdown renderer;
+          relative .md links navigate in-widget.
+  SEARCH  debounced kb_search with an optional project filter, score bars.
+  INBOX   unread inter-session messages aggregated across projects, with
+          Archive (kb_mark_read) and Act (ui/message handoff to the agent).
+  BASKET  collect concepts from any view, reorder them, and ask the agent to
+          build an artifact (status report / spec / blog / summary / …) from
+          exactly those paths — the differentiator.
 
-Everything here is opt-in behind ``ENGRAM_WIDGET`` (config ``widget``): when the
-flag is off the tool meta is ``None`` and the resource is never registered, so
-the server behaves exactly as before.
+Everything is opt-in behind ``ENGRAM_WIDGET`` (config ``widget``): when the flag
+is off the tool meta is ``None`` and the resource is never registered, so the
+server behaves exactly as before.
 
 Visual language mirrors the transparency explorer (engram_server/explorer/html.py):
 warm paper/ink, one copper accent, hairline borders, small-caps eyebrow labels,
@@ -111,11 +119,18 @@ body {
   margin:0; background:var(--bg); color:var(--fg);
   font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   font-size:14px; line-height:1.55; letter-spacing:-0.003em; -webkit-font-smoothing:antialiased;
+  position:relative;
 }
 a { color:var(--accent-ink); text-decoration:none; }
 a:hover { text-decoration:underline; text-underline-offset:2px; }
+button { font:inherit; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
 .wrap { padding:12px 14px 14px; }
+
+/* view transition (CSS only) */
+@keyframes fade { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+#view { animation:fade .16s ease; }
+@media (prefers-reduced-motion: reduce) { #view { animation:none; } * { transition:none !important; } }
 
 /* eyebrow / small-caps labels */
 .eyebrow { font-size:.66rem; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--accent-ink); margin:0 0 .3rem; }
@@ -123,12 +138,11 @@ a:hover { text-decoration:underline; text-underline-offset:2px; }
 
 /* tab bar */
 .tabs { display:flex; gap:2px; border-bottom:1px solid var(--line); padding:0 6px; background:color-mix(in srgb,var(--bg) 90%,transparent); position:sticky; top:0; z-index:5; }
-.tab { appearance:none; border:0; background:none; font:inherit; font-size:.78rem; font-weight:600; letter-spacing:.02em;
-       color:var(--muted); padding:.5rem .7rem; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
-.tab:hover:not(:disabled) { color:var(--fg); }
+.tab { appearance:none; border:0; background:none; font-size:.78rem; font-weight:600; letter-spacing:.02em;
+       color:var(--muted); padding:.5rem .7rem; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; display:inline-flex; align-items:center; gap:.3rem; }
+.tab:hover { color:var(--fg); }
 .tab.active { color:var(--accent-ink); border-bottom-color:var(--accent); }
-.tab:disabled { color:var(--faint); cursor:default; }
-.tab .m2 { font-size:.58rem; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); border:1px solid var(--line-2); border-radius:4px; padding:0 .25rem; margin-left:.3rem; vertical-align:middle; }
+.tbadge { background:var(--accent); color:var(--accent-fg); font-size:.6rem; font-weight:700; min-width:1.05rem; height:1.05rem; padding:0 .3rem; border-radius:999px; display:none; place-items:center; }
 
 h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15rem; font-weight:700; }
 .lede { color:var(--muted); font-size:.85rem; margin:.15rem 0 0; }
@@ -137,7 +151,7 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(13rem,1fr)); gap:.6rem; margin:.9rem 0 .3rem; }
 .card { display:flex; flex-direction:column; gap:.3rem; padding:.7rem .8rem; text-align:left; cursor:pointer;
         background:var(--surface); color:var(--fg); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow);
-        font:inherit; transition:border-color .12s ease, transform .12s ease; }
+        transition:border-color .12s ease, transform .12s ease; }
 .card:hover { border-color:var(--accent-line); transform:translateY(-1px); }
 .card-head { display:flex; align-items:center; gap:.4rem; }
 .card-head h3 { margin:0; font-size:.95rem; font-weight:650; letter-spacing:-0.01em; }
@@ -155,6 +169,9 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .badge.unread { background:var(--accent); color:var(--accent-fg); }
 .chip { background:var(--inset); color:var(--muted); border:1px solid var(--line); }
 .chip.tag::before { content:"#"; color:var(--faint); }
+.chip.proj { color:var(--accent-ink); border-color:var(--accent-line); background:var(--accent-soft); }
+.chip.prio-high { background:color-mix(in srgb,var(--red) 15%,transparent); color:var(--red); border-color:transparent; }
+.chip.dim { opacity:.5; }
 .chip .k { color:var(--faint); text-transform:uppercase; letter-spacing:.05em; font-size:.9em; }
 .chips { display:flex; flex-wrap:wrap; gap:.35rem; margin:.5rem 0 0; }
 .when { font-size:.7rem; color:var(--faint); font-variant-numeric:tabular-nums; }
@@ -163,13 +180,13 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .stamp { flex:0 0 auto; width:1.5rem; height:1.5rem; border-radius:7px; display:grid; place-items:center;
          background:var(--accent-soft); border:1px solid var(--accent-line); font-size:.9rem; }
 
-/* browse header */
+/* browse header + crumbs */
 .bhead { display:flex; align-items:center; gap:.5rem; margin:.2rem 0 .1rem; }
-.back { appearance:none; border:1px solid var(--line-2); background:var(--surface); color:var(--muted); font:inherit;
+.back, .refresh { border:1px solid var(--line-2); background:var(--surface); color:var(--muted);
         font-size:.74rem; font-weight:600; padding:.2rem .5rem; border-radius:7px; cursor:pointer; }
-.back:hover { border-color:var(--accent-line); color:var(--accent-ink); }
+.back:hover, .refresh:hover { border-color:var(--accent-line); color:var(--accent-ink); }
 .crumbs { font-size:.72rem; color:var(--muted); margin:.1rem 0 .7rem; display:flex; flex-wrap:wrap; gap:.1rem; align-items:center; }
-.crumbs button { appearance:none; border:0; background:none; font:inherit; font-size:inherit; color:var(--muted); cursor:pointer; padding:0; }
+.crumbs button { border:0; background:none; font-size:inherit; color:var(--muted); cursor:pointer; padding:0; }
 .crumbs button:hover { color:var(--accent-ink); text-decoration:underline; }
 .crumbs .sep { color:var(--faint); margin:0 .3rem; }
 .crumbs .cur { color:var(--fg); }
@@ -181,7 +198,6 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 
 /* tree */
 .tree { margin:.5rem 0 0; }
-.tnode { margin:0; }
 .tnode > summary { display:flex; align-items:center; gap:.35rem; padding:.28rem .35rem; border-radius:6px; cursor:pointer;
                    font-size:.83rem; font-weight:600; color:var(--fg); list-style:none; }
 .tnode > summary::-webkit-details-marker { display:none; }
@@ -189,16 +205,24 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .tnode[open] > summary::before { transform:rotate(90deg); }
 .tnode > summary:hover { background:var(--surface-2); }
 .tnode .kids { margin:.05rem 0 .3rem .85rem; padding-left:.5rem; border-left:1px solid var(--line); }
-.frow { display:flex; align-items:baseline; gap:.4rem; padding:.28rem .4rem; border-radius:6px; cursor:pointer; width:100%; text-align:left;
-        appearance:none; border:0; background:none; font:inherit; color:var(--fg); }
+.frow { display:flex; align-items:baseline; gap:.4rem; padding:.28rem .4rem; border-radius:6px; }
+.frow .open { flex:1 1 auto; display:flex; align-items:baseline; gap:.4rem; cursor:pointer; min-width:0; }
 .frow:hover { background:var(--surface-2); }
 .frow .glyph { color:var(--faint); font-size:.85rem; flex:0 0 auto; }
 .frow .ft { font-size:.83rem; font-weight:550; }
 .frow .fd { font-size:.75rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
+/* basket toggle on rows */
+.bk-toggle { flex:0 0 auto; width:1.35rem; height:1.35rem; border-radius:6px; border:1px solid var(--line-2);
+             background:var(--surface); color:var(--muted); font-size:.8rem; line-height:1; cursor:pointer; display:grid; place-items:center; }
+.bk-toggle:hover { border-color:var(--accent-line); color:var(--accent-ink); }
+.bk-toggle.on { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+
 /* reader */
 .props { display:flex; flex-wrap:wrap; gap:.35rem; margin:.6rem 0 .9rem; }
 .statusv { display:inline-flex; align-items:center; gap:.35rem; text-transform:capitalize; }
+.rhead { display:flex; align-items:flex-start; gap:.5rem; }
+.rhead .rh-main { min-width:0; flex:1 1 auto; }
 
 /* markdown body */
 .md { font-size:.87rem; }
@@ -218,27 +242,104 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .md a.mdlink { border-bottom:1px dotted var(--accent-line); }
 .md strong { font-weight:650; }
 
-.empty { color:var(--faint); font-size:.82rem; font-style:italic; padding:1.2rem 0; }
-.err { color:var(--red); font-size:.82rem; padding:.8rem 0; }
-.spin { color:var(--muted); font-size:.82rem; padding:1.2rem 0; }
+/* search */
+.searchbar { display:flex; gap:.5rem; margin:.7rem 0 .3rem; }
+.sinput { flex:1 1 auto; min-width:0; padding:.45rem .7rem; font-size:.86rem; color:var(--fg);
+          background:var(--surface); border:1px solid var(--line-2); border-radius:8px; outline:none; }
+.sinput:focus { border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-soft); }
+.sselect, .bksel { padding:.45rem .5rem; font-size:.8rem; color:var(--fg); background:var(--surface); border:1px solid var(--line-2); border-radius:8px; }
+.result { display:block; border:1px solid var(--line); border-radius:10px; background:var(--surface);
+          padding:.7rem .85rem; margin:.55rem 0; box-shadow:var(--shadow); cursor:pointer; transition:border-color .12s ease; }
+.result:hover { border-color:var(--accent-line); }
+.result .rtop { display:flex; align-items:flex-start; gap:.5rem; }
+.result h3 { margin:0; font-size:.95rem; font-weight:650; flex:1 1 auto; min-width:0; }
+.result .rpath { font-size:.7rem; color:var(--faint); font-family:ui-monospace,Consolas,monospace; margin:.15rem 0; }
+.result .rpath .sep { margin:0 .2rem; }
+.result p { margin:.3rem 0 .35rem; font-size:.82rem; color:var(--muted); }
+.scorebar { display:flex; align-items:center; gap:.5rem; margin-top:.4rem; }
+.scorebar .track { flex:0 0 7rem; height:.3rem; border-radius:999px; background:var(--surface-2); overflow:hidden; }
+.scorebar .fill { height:100%; background:var(--accent); border-radius:999px; transition:width .3s ease; }
+.scorebar .pct { font-size:.68rem; color:var(--faint); font-variant-numeric:tabular-nums; }
+
+/* inbox */
+.ihead { display:flex; align-items:center; justify-content:space-between; margin:.2rem 0 .6rem; }
+.imsg { border:1px solid var(--line); border-radius:10px; background:var(--surface); box-shadow:var(--shadow); margin:.55rem 0; padding:.2rem .3rem; position:relative; overflow:hidden; }
+.imsg::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--accent); }
+.imsg.expired { opacity:.6; }
+.imsg.expired::before { background:var(--faint); }
+.imsg > summary { list-style:none; cursor:pointer; padding:.55rem .7rem; display:flex; flex-direction:column; gap:.35rem; }
+.imsg > summary::-webkit-details-marker { display:none; }
+.imsg .ititle { font-size:.9rem; font-weight:650; }
+.imsg .ichips { display:flex; flex-wrap:wrap; gap:.3rem; }
+.imsg .ibody { padding:.2rem .8rem .3rem; border-top:1px solid var(--line); margin-top:.1rem; }
+.imsg .iacts { display:flex; gap:.5rem; padding:.2rem .7rem .6rem; }
+.act, .arch { font-size:.75rem; font-weight:600; padding:.32rem .7rem; border-radius:7px; cursor:pointer; border:1px solid var(--line-2); background:var(--surface); color:var(--fg); }
+.act { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+.act:hover { filter:brightness(1.06); }
+.arch:hover { border-color:var(--accent-line); color:var(--accent-ink); }
+
+/* basket footer bar */
+.basket { position:sticky; bottom:0; z-index:6; background:color-mix(in srgb,var(--surface) 96%,var(--accent) 4%);
+          border-top:1px solid var(--accent-line); padding:0; max-height:0; overflow:hidden; transition:max-height .2s ease; }
+.basket.on { max-height:60vh; padding:.6rem .8rem .7rem; box-shadow:0 -3px 12px rgba(60,40,20,.08); }
+.bkhead { display:flex; align-items:center; justify-content:space-between; margin-bottom:.4rem; }
+.bkclear { font-size:.7rem; font-weight:600; color:var(--muted); background:none; border:0; cursor:pointer; }
+.bkclear:hover { color:var(--red); }
+.bkchips { display:flex; flex-direction:column; gap:.3rem; max-height:9rem; overflow-y:auto; margin-bottom:.5rem; }
+.bkchip { display:flex; align-items:center; gap:.25rem; font-size:.78rem; background:var(--inset); border:1px solid var(--line); border-radius:7px; padding:.2rem .35rem; }
+.bkchip .bkt { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bkchip button { border:0; background:none; cursor:pointer; color:var(--muted); font-size:.7rem; padding:0 .15rem; line-height:1; }
+.bkchip button:hover { color:var(--accent-ink); }
+.bkchip .bkx:hover { color:var(--red); }
+.bkbuild { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+.bkcustom { flex:1 1 8rem; min-width:0; padding:.4rem .5rem; font-size:.8rem; background:var(--surface); border:1px solid var(--line-2); border-radius:8px; color:var(--fg); }
+.build { flex:0 0 auto; background:var(--accent); color:var(--accent-fg); font-weight:650; font-size:.82rem; border:1px solid var(--accent); border-radius:8px; padding:.42rem .9rem; cursor:pointer; }
+.build:hover { filter:brightness(1.06); }
+
+/* toasts */
+#toasts { position:absolute; top:.4rem; left:0; right:0; display:flex; flex-direction:column; align-items:center; gap:.35rem; z-index:20; pointer-events:none; }
+.toast { pointer-events:auto; display:flex; align-items:center; gap:.6rem; background:var(--fg); color:var(--bg);
+         font-size:.8rem; font-weight:500; padding:.4rem .75rem; border-radius:8px; box-shadow:0 3px 12px rgba(0,0,0,.25);
+         opacity:0; transform:translateY(-6px); transition:opacity .2s ease, transform .2s ease; max-width:90%; }
+.toast.on { opacity:1; transform:none; }
+.toast-retry { background:var(--accent); color:var(--accent-fg); border:0; border-radius:6px; font-size:.72rem; font-weight:700; padding:.2rem .5rem; cursor:pointer; }
+
+/* skeletons + states */
+.skel { position:relative; overflow:hidden; background:var(--surface-2); border-radius:9px; }
+.skel::after { content:""; position:absolute; inset:0; transform:translateX(-100%);
+               background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--surface) 60%,transparent),transparent); animation:shimmer 1.2s infinite; }
+@keyframes shimmer { 100% { transform:translateX(100%); } }
+.skgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(13rem,1fr)); gap:.6rem; margin:.9rem 0; }
+.skel-card { height:5.2rem; } .skel-row { height:3.1rem; margin:.55rem 0; }
+.sklist { margin:.7rem 0; }
+.empty { color:var(--faint); font-size:.82rem; font-style:italic; padding:1.2rem .2rem; }
+.errbox { display:flex; align-items:center; gap:.7rem; color:var(--red); font-size:.82rem; padding:.9rem 0; }
+.retry { background:var(--accent); color:var(--accent-fg); border:0; border-radius:7px; font-weight:600; font-size:.75rem; padding:.3rem .7rem; cursor:pointer; }
 </style></head>
 <body>
 <nav class="tabs" id="tabs">
-  <button class="tab" id="tab-home" data-tab="home">Home</button>
-  <button class="tab" id="tab-browse" data-tab="browse">Browse</button>
-  <button class="tab" id="tab-search" data-tab="search" disabled>Search<span class="m2">M2</span></button>
-  <button class="tab" id="tab-inbox" data-tab="inbox" disabled>Inbox<span class="m2">M2</span></button>
+  <button class="tab" data-tab="home">Home</button>
+  <button class="tab" data-tab="browse">Browse</button>
+  <button class="tab" data-tab="search">Search</button>
+  <button class="tab" data-tab="inbox">Inbox<span class="tbadge" id="ib-badge"></span></button>
 </nav>
-<div class="wrap"><div id="view"><div class="spin">Loading…</div></div></div>
+<div id="toasts"></div>
+<div class="wrap"><div id="view"><div class="skgrid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div></div></div>
+<div class="basket" id="basket"></div>
 <script>
 "use strict";
 const $=(id)=>document.getElementById(id);
 const view=$("view");
 
-// ── unified in-widget state. widgetState persists ONLY {view, projectId, path};
-// on boot we re-fetch from the tools regardless — the git repo is the truth, a
-// stale restored payload is not. ──
-let state={ view:"home", projects:null, load:null, projectId:null, readPath:null, read:null };
+// ── unified in-widget state. widgetState persists ONLY {view, projectId, path,
+// basket}; on boot we re-fetch content from the tools regardless — the git repo
+// is the truth, a restored payload is just a pointer. ──
+let state={
+  view:"home", projects:null, load:null, projectId:null, readPath:null, read:null,
+  searchQuery:"", searchProject:null, searchResults:null, searchStatus:null,
+  inbox:null, inboxStatus:null,
+  basket:[]   // [{path, title}] — ordered
+};
 let booted=false, busy=false;
 
 // ─────────────────────────────── height ───────────────────────────────
@@ -290,8 +391,16 @@ async function callTool(name,args){
   if(window.openai && window.openai.callTool){ return normalize(await window.openai.callTool(name,args||{})); }
   return normalize(await rpcReq("tools/call",{name,arguments:args||{}}));
 }
+// re-engage the agent. content MUST be an ARRAY of blocks — a single object
+// silently fails to wake Claude (hard-won from the Survey widget). Falls back to
+// ChatGPT's sendFollowUpMessage.
+async function askAgent(text){
+  try{ await rpcReq("ui/message",{role:"user",content:[{type:"text",text:text}]},6000); return true; }catch(e){}
+  try{ if(window.openai && typeof window.openai.sendFollowUpMessage==="function"){ window.openai.sendFollowUpMessage({prompt:text}); return true; } }catch(e){}
+  return false;
+}
 function persist(){ try{ if(window.openai && typeof window.openai.setWidgetState==="function")
-  window.openai.setWidgetState({view:state.view, projectId:state.projectId, path:state.readPath}); }catch(e){} }
+  window.openai.setWidgetState({view:state.view, projectId:state.projectId, path:state.readPath, basket:state.basket}); }catch(e){} }
 
 // ─────────────────────────── helpers ──────────────────────────
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -308,30 +417,43 @@ function relTime(d){ if(!d) return ""; const t=Date.parse((""+d).length<=10?d+"T
   const days=Math.floor((Date.now()-t)/86400000);
   if(days<=0) return "today"; if(days===1) return "yesterday"; if(days<7) return days+" days ago";
   if(days<30) return Math.floor(days/7)+"w ago"; if(days<365) return Math.floor(days/30)+"mo ago"; return Math.floor(days/365)+"y ago"; }
-// POSIX path resolve, matching kbstore's normpath(join(base, rel)); anchors stripped.
 function dirOf(p){ const i=(p||"").lastIndexOf("/"); return i<0?"":p.slice(0,i); }
+// POSIX path resolve, matching kbstore's normpath(join(base, rel)); anchors stripped.
 function resolveRel(baseDir, rel){ rel=(rel||"").split("#")[0];
   const stack = rel.startsWith("/") ? [] : (baseDir?baseDir.split("/").filter(Boolean):[]);
   for(const seg of rel.split("/")){ if(seg===""||seg===".") continue; if(seg==="..") stack.pop(); else stack.push(seg); }
   return stack.join("/"); }
-
 // strip a leading YAML frontmatter block (--- ... ---) so we render the body only
 function stripFrontmatter(src){ src=(src||"").replace(/\r\n/g,"\n");
   if(src.startsWith("---\n")){ const end=src.indexOf("\n---",3); if(end!==-1){ const nl=src.indexOf("\n",end+1); return src.slice(nl===-1?src.length:nl+1); } }
   return src; }
+
+// skeleton + state helpers
+function skelRows(n){ let s=""; for(let i=0;i<(n||4);i++) s+='<div class="skel skel-row"></div>'; return '<div class="sklist">'+s+'</div>'; }
+function skelCards(n){ let s=""; for(let i=0;i<(n||6);i++) s+='<div class="skel skel-card"></div>'; return '<div class="skgrid">'+s+'</div>'; }
+function errBlock(msg, retryKey){ return '<div class="errbox"><span>'+esc(msg)+'</span><button class="retry" data-retry="'+esc(retryKey)+'">Retry</button></div>'; }
+function showToast(msg, retryFn){
+  const host=$("toasts"); if(!host) return;
+  const t=document.createElement("div"); t.className="toast";
+  const sp=document.createElement("span"); sp.textContent=msg; t.appendChild(sp);
+  if(retryFn){ const b=document.createElement("button"); b.className="toast-retry"; b.textContent="Retry"; b.onclick=()=>{ t.remove(); retryFn(); }; t.appendChild(b); }
+  host.appendChild(t); requestAnimationFrame(()=>t.classList.add("on"));
+  setTimeout(()=>{ t.classList.remove("on"); setTimeout(()=>t.remove(),300); }, retryFn?6000:3200);
+}
 
 // ─────────────────── small markdown renderer ───────────────────
 // Escapes HTML first, then applies a safe subset: headings, bold/italic, inline
 // + fenced code, lists (nested), links, blockquote, hr. Relative .md links become
 // in-widget navigation; http(s) links open in a new tab.
 function mdInline(s){
-  const codes=[];
-  s=s.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return ""+(codes.length-1)+""; });
-  s=s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,(m,txt,url)=>linkHtml(txt,url));
-  s=s.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>").replace(/__([^_]+)__/g,"<strong>$1</strong>");
-  s=s.replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g,"$1<em>$2</em>").replace(/(^|[^_\w])_(?!\s)([^_]+?)_(?!\w)/g,"$1<em>$2</em>");
-  s=s.replace(/(\d+)/g,(m,i)=>"<code>"+codes[+i]+"</code>");
-  return s;
+  // split on inline-code spans so bold/italic never reach inside code
+  return s.split(/(`[^`]+`)/g).map(p=>{
+    if(p.length>1 && p[0]==="`" && p[p.length-1]==="`") return "<code>"+p.slice(1,-1)+"</code>";
+    p=p.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,(m,txt,url)=>linkHtml(txt,url));
+    p=p.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>").replace(/__([^_]+)__/g,"<strong>$1</strong>");
+    p=p.replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g,"$1<em>$2</em>").replace(/(^|[^_\w])_(?!\s)([^_]+?)_(?!\w)/g,"$1<em>$2</em>");
+    return p;
+  }).join("");
 }
 function linkHtml(txt,url){ // txt & url arrive already HTML-escaped
   if(/^https?:/i.test(url)) return '<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>';
@@ -342,35 +464,29 @@ function linkHtml(txt,url){ // txt & url arrive already HTML-escaped
 function renderMarkdown(src){
   const lines=esc(stripFrontmatter(src)).split("\n");
   let html="", i=0;
-  const flushList=(items)=>items;
   while(i<lines.length){
     let line=lines[i];
     if(/^\s*$/.test(line)){ i++; continue; }
-    // fenced code
     let fence=line.match(/^\s*```(.*)$/);
     if(fence){ i++; let buf=[]; while(i<lines.length && !/^\s*```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; } i++;
       html+="<pre><code>"+buf.join("\n")+"</code></pre>"; continue; }
-    // hr
     if(/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)){ html+="<hr>"; i++; continue; }
-    // heading
     let h=line.match(/^\s*(#{1,6})\s+(.*)$/);
     if(h){ const n=h[1].length; html+="<h"+n+">"+mdInline(h[2].trim())+"</h"+n+">"; i++; continue; }
-    // blockquote — note the source is already HTML-escaped, so '>' is now '&gt;'
+    // blockquote — the source is already HTML-escaped, so '>' is now '&gt;'
     if(/^\s*&gt;\s?/.test(line)){ let buf=[]; while(i<lines.length && /^\s*&gt;\s?/.test(lines[i])){ buf.push(lines[i].replace(/^\s*&gt;\s?/,"")); i++; }
       html+="<blockquote>"+mdInline(buf.join(" "))+"</blockquote>"; continue; }
-    // list (ordered/unordered, nested by indent)
     if(/^\s*([-*+]|\d+\.)\s+/.test(line)){ let items=[]; while(i<lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])){
         const m=lines[i].match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
         items.push({indent:m[1].replace(/\t/g,"  ").length, ordered:/\d/.test(m[2]), text:m[3]}); i++; }
       html+=buildList(items); continue; }
-    // paragraph
     let buf=[]; while(i<lines.length && !/^\s*$/.test(lines[i]) && !/^\s*(#{1,6}\s|&gt;|```|([-*+]|\d+\.)\s|([-*_])(\s*\3){2,}\s*$)/.test(lines[i])){ buf.push(lines[i]); i++; }
     html+="<p>"+mdInline(buf.join(" ").trim())+"</p>";
   }
   return html;
 }
 function buildList(items){ // indent-stack nesting
-  let out="", stack=[]; // each: {indent, ordered}
+  let out="", stack=[];
   for(const it of items){
     while(stack.length && it.indent < stack[stack.length-1].indent){ out+=(stack.pop().ordered?"</ol>":"</ul>"); }
     if(!stack.length || it.indent > stack[stack.length-1].indent){ out+=(it.ordered?"<ol>":"<ul>"); stack.push({indent:it.indent,ordered:it.ordered}); }
@@ -380,15 +496,76 @@ function buildList(items){ // indent-stack nesting
   return out;
 }
 
+// ─────────────────────── basket (the differentiator) ──────────────────────
+const ARTIFACT_TYPES=[
+  {v:"status-report", t:"Status report"},
+  {v:"spec", t:"Spec document"},
+  {v:"blog", t:"Blog post"},
+  {v:"summary", t:"Summary"},
+  {v:"handoff", t:"Handoff brief"},
+  {v:"custom", t:"Custom…"}
+];
+function inBasket(path){ return state.basket.some(x=>x.path===path); }
+function bkBtn(path,title){ const on=inBasket(path);
+  return '<button class="bk-toggle'+(on?" on":"")+'" data-bk-path="'+esc(path)+'" data-bk-title="'+esc(title||"")+'" title="'+(on?"In basket":"Add to basket")+'" aria-label="Add to basket">'+(on?"✓":"＋")+'</button>'; }
+function toggleBasket(path, title){
+  const i=state.basket.findIndex(x=>x.path===path); const added=(i<0);
+  if(added) state.basket.push({path, title:title||path.split("/").pop()}); else state.basket.splice(i,1);
+  document.querySelectorAll("[data-bk-path]").forEach(el=>{ if(el.getAttribute("data-bk-path")===path){ el.classList.toggle("on",added); el.textContent=added?"✓":"＋"; el.title=added?"In basket":"Add to basket"; } });
+  persist(); renderBasket();
+}
+function moveBasket(i,d){ const j=i+d; if(j<0||j>=state.basket.length) return; const a=state.basket; const t=a[i]; a[i]=a[j]; a[j]=t; persist(); renderBasket(); }
+function clearBasket(){ state.basket=[]; document.querySelectorAll("[data-bk-path]").forEach(el=>{ el.classList.remove("on"); el.textContent="＋"; el.title="Add to basket"; }); persist(); renderBasket(); }
+async function buildArtifact(){
+  if(!state.basket.length) return;
+  const sel=$("bk-type"); const v=sel?sel.value:"summary";
+  const paths=state.basket.map((b,i)=>(i+1)+". "+b.path).join("\n");
+  let msg;
+  if(v==="custom"){ const ci=$("bk-custom"); const instr=(ci&&ci.value.trim())||"Write a useful document";
+    msg=instr+"\n\nUse ONLY these knowledge-base concepts, as an artifact — kb_read each path first, use only their content, cite paths at the end:\n"+paths;
+  } else { const t=(ARTIFACT_TYPES.find(x=>x.v===v)||{t:"summary"}).t.toLowerCase();
+    msg="Build a "+t+" as an artifact from these knowledge-base concepts — kb_read each path first, use only their content, cite paths at the end:\n"+paths;
+  }
+  const ok=await askAgent(msg);
+  showToast(ok?"Sent to Claude — building your artifact":"Couldn't reach Claude — try again", ok?null:buildArtifact);
+}
+function renderBasket(){
+  const bar=$("basket"); if(!bar) return;
+  updateTabBadges();
+  if(!state.basket.length){ bar.classList.remove("on"); bar.innerHTML=""; scheduleHeight(); return; }
+  const chips=state.basket.map((b,i)=>
+    '<span class="bkchip"><button class="bkup" data-mv="'+i+',-1" title="Move up" aria-label="Move up">▲</button>'
+    +'<button class="bkdn" data-mv="'+i+',1" title="Move down" aria-label="Move down">▼</button>'
+    +'<span class="bkt" title="'+esc(b.path)+'">'+esc(b.title||b.path.split("/").pop())+'</span>'
+    +'<button class="bkx" data-rm="'+esc(b.path)+'" title="Remove" aria-label="Remove">×</button></span>').join("");
+  const opts=ARTIFACT_TYPES.map(t=>'<option value="'+t.v+'">'+esc(t.t)+'</option>').join("");
+  bar.innerHTML='<div class="bkhead"><span class="eyebrow" style="margin:0">Basket · '+state.basket.length+'</span>'
+    +'<button class="bkclear" id="bk-clear">Clear all</button></div>'
+    +'<div class="bkchips">'+chips+'</div>'
+    +'<div class="bkbuild"><select id="bk-type" class="bksel" aria-label="Artifact type">'+opts+'</select>'
+    +'<input id="bk-custom" class="bkcustom" placeholder="Custom instruction…" hidden>'
+    +'<button class="build" id="bk-build">Build artifact</button></div>';
+  bar.classList.add("on");
+  $("bk-clear").onclick=clearBasket;
+  $("bk-build").onclick=buildArtifact;
+  const sel=$("bk-type"); sel.onchange=()=>{ $("bk-custom").hidden=(sel.value!=="custom"); scheduleHeight(); };
+  bar.querySelectorAll("[data-mv]").forEach(b=>b.onclick=()=>{ const p=b.getAttribute("data-mv").split(","); moveBasket(+p[0],+p[1]); });
+  bar.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>toggleBasket(b.getAttribute("data-rm"),null));
+  scheduleHeight();
+}
+
 // ─────────────────────────── views ──────────────────────────
-function setActiveTab(){ document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===state.view || (state.view==="reader"&&t.dataset.tab==="browse"))); }
-function show(html){ view.innerHTML=html; setActiveTab(); scheduleHeight(); }
+function unreadCount(){ if(state.inbox) return state.inbox.length; return (state.projects||[]).reduce((n,p)=>n+(p.unread_messages|0),0); }
+function updateTabBadges(){ const n=unreadCount(); const el=$("ib-badge"); if(el){ el.textContent=n>0?n:""; el.style.display=n>0?"inline-grid":"none"; } }
+function setActiveTab(){ const map={reader:"browse"}; const cur=map[state.view]||state.view;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===cur)); }
+function show(html){ view.innerHTML=html; setActiveTab(); updateTabBadges(); scheduleHeight(); }
 
 function renderHome(){
   state.view="home"; persist(); setActiveTab();
   const ps=state.projects||[];
   let cards = ps.length ? ps.map(p=>{
-    const unread = (p.unread_messages|0);
+    const unread=(p.unread_messages|0);
     return '<button class="card" data-proj="'+esc(p.id)+'">'
       +'<div class="card-head"><span class="dot '+statusDot(p.status)+'"></span><h3>'+esc(p.title||p.id)+'</h3></div>'
       +(p.description?'<p>'+esc(p.description)+'</p>':'')
@@ -400,24 +577,20 @@ function renderHome(){
   show('<p class="eyebrow">Knowledge Base</p><h1>brain</h1>'
       +'<p class="lede">Pick a project to browse its context, concepts, and log.</p>'
       +'<div class="cards">'+cards+'</div>');
-  view.querySelectorAll("[data-proj]").forEach(b=>b.onclick=()=>openProject(b.dataset.proj));
 }
 
 function treeHtml(node, depth){
-  let out="";
   const files=(node.files||[]).map(f=>
-    '<button class="frow" data-path="'+esc(f.path)+'">'
-      +'<span class="glyph">◦</span>'
-      +'<span class="ft">'+esc(f.title||f.name)+'</span>'
+    '<div class="frow"><span class="open" data-open-path="'+esc(f.path)+'">'
+      +'<span class="glyph">◦</span><span class="ft">'+esc(f.title||f.name)+'</span>'
       +(f.description?'<span class="fd">— '+esc(f.description)+'</span>':'')
-    +'</button>').join("");
+    +'</span>'+bkBtn(f.path, f.title||f.name)+'</div>').join("");
   const dirs=(node.dirs||[]).map(d=>
     '<details class="tnode"'+(depth<1?" open":"")+'>'
       +'<summary>'+esc(d.title||d.name)+'</summary>'
       +'<div class="kids">'+treeHtml(d,depth+1)+'</div>'
     +'</details>').join("");
-  out=dirs+files;
-  return out || '<div class="empty">Empty.</div>';
+  return (dirs+files) || '<div class="empty">Empty.</div>';
 }
 
 function renderBrowse(){
@@ -428,91 +601,213 @@ function renderBrowse(){
   let ctx="";
   if(L.context_md){ const body=stripFrontmatter(L.context_md).split("\n").slice(0,40).join("\n");
     ctx='<div class="ctx fade"><div class="md">'+renderMarkdown(body)+'</div></div>'; }
-  show('<div class="bhead"><button class="back" id="tohome">‹ Home</button>'
+  show('<div class="bhead"><button class="back" data-nav="home">‹ Home</button>'
         +'<span class="stamp">'+glyph("project")+'</span>'
         +'<div><p class="eyebrow" style="margin:0">Project</p><h1 style="font-size:1.1rem">'+esc(title)+'</h1></div></div>'
       +ctx
       +'<p class="section-label">Concepts</p><div class="tree">'+treeHtml(tree,0)+'</div>');
-  $("tohome").onclick=()=>renderHome();
-  view.querySelectorAll("[data-path]").forEach(b=>b.onclick=()=>openFile(b.dataset.path));
 }
 
 function renderReader(){
   state.view="reader"; persist(); setActiveTab();
   const R=state.read; if(!R){ renderBrowse(); return; }
-  const meta=R.meta||{}; const path=R.path||state.readPath||"";
-  const name=path.split("/").pop();
+  const meta=R.meta||{}; const path=R.path||state.readPath||""; const name=path.split("/").pop();
   let props="";
   if(meta.type) props+='<span class="chip"><span class="k">type</span> '+esc(meta.type)+'</span>';
   if(meta.status) props+='<span class="chip"><span class="statusv"><span class="dot '+statusDot(meta.status)+'"></span>'+esc(meta.status)+'</span></span>';
   if(meta.confidence) props+='<span class="chip"><span class="k">conf</span> '+esc(meta.confidence)+'</span>';
   const tags=Array.isArray(meta.tags)?meta.tags:(meta.tags?[meta.tags]:[]);
   props+=tags.map(t=>'<span class="chip tag">'+esc(t)+'</span>').join("");
-  const crumbs='<button id="rback">‹ back</button><span class="sep">/</span>'
-      +'<button id="rhome">'+esc((state.load&&(state.load.index_tree&&state.load.index_tree.title))||state.projectId||"project")+'</button>'
+  const projLabel=(state.load&&state.load.index_tree&&state.load.index_tree.title)||state.projectId||"project";
+  const crumbs='<button data-nav="browse">‹ back</button><span class="sep">/</span>'
+      +'<button data-nav="browse">'+esc(projLabel)+'</button>'
       +'<span class="sep">/</span><span class="cur">'+esc(meta.title||name)+'</span>';
   show('<div class="crumbs">'+crumbs+'</div>'
-      +'<span class="stamp" style="float:left;margin:.1rem .5rem .2rem 0">'+glyph(meta.type)+'</span>'
-      +'<h1>'+esc(meta.title||name)+'</h1>'
-      +(meta.description?'<p class="lede">'+esc(meta.description)+'</p>':'')
-      +'<div style="clear:both"></div>'
+      +'<div class="rhead"><span class="stamp">'+glyph(meta.type)+'</span>'
+        +'<div class="rh-main"><h1>'+esc(meta.title||name)+'</h1>'
+        +(meta.description?'<p class="lede">'+esc(meta.description)+'</p>':'')+'</div>'
+        +bkBtn(path, meta.title||name)+'</div>'
       +(props?'<div class="props">'+props+'</div>':'')
-      +'<div class="md" id="mdbody">'+renderMarkdown(R.content||"")+'</div>');
-  $("rback").onclick=()=>renderBrowse();
-  $("rhome").onclick=()=>renderBrowse();
-  // in-widget navigation for relative .md links (resolve against THIS file's dir)
-  view.querySelectorAll("a.mdlink").forEach(a=>a.onclick=(e)=>{ e.preventDefault();
-    const rel=a.getAttribute("data-rel"); const target=resolveRel(dirOf(path), rel); if(target) openFile(target); });
+      +'<div class="md">'+renderMarkdown(R.content||"")+'</div>');
 }
 
-// ─────────────────────── async actions ──────────────────────
-async function loadHome(){ show('<div class="spin">Loading projects…</div>');
-  try{ const d=await callTool("kb_projects",{}); if(Array.isArray(d)){ state.projects=d; renderHome(); } else show('<div class="err">Could not load projects.</div>'); }
-  catch(e){ show('<div class="err">Could not load projects.</div>'); } }
-async function openProject(id){ if(busy) return; busy=true; state.projectId=id; show('<div class="spin">Loading '+esc(id)+'…</div>');
-  try{ const d=await callTool("kb_load",{project:id}); if(d && d.index_tree){ state.load=d; renderBrowse(); } else show('<div class="err">Could not load project.</div>'); }
-  catch(e){ show('<div class="err">Could not load project.</div>'); } finally{ busy=false; } }
-async function openFile(path){ if(busy) return; busy=true; state.readPath=path; show('<div class="spin">Reading…</div>');
-  try{ const d=await callTool("kb_read",{path:path}); if(d && d.content!=null){ state.read=d; renderReader(); } else show('<div class="err">Could not read '+esc(path)+'.</div>'); }
-  catch(e){ show('<div class="err">Could not read file.</div>'); } finally{ busy=false; } }
+// ── SEARCH ──
+let _searchTimer=0;
+function onSearchInput(v){ state.searchQuery=v; if(_searchTimer) clearTimeout(_searchTimer);
+  _searchTimer=setTimeout(runSearch, 300); }   // 300ms debounce
+function onSearchEnter(){ if(_searchTimer) clearTimeout(_searchTimer); runSearch(); }
+async function runSearch(){
+  const q=(state.searchQuery||"").trim();
+  if(!q){ state.searchResults=null; state.searchStatus=null; renderSearchBody(); return; }
+  state.searchStatus="loading"; renderSearchBody();
+  try{
+    const args={query:q, limit:12}; if(state.searchProject) args.project=state.searchProject;
+    const d=await callTool("kb_search", args);
+    if(d && d.error) throw new Error(d.error);
+    state.searchResults=Array.isArray(d)?d:[]; state.searchStatus="ok";
+  }catch(e){ state.searchStatus="error"; }
+  renderSearchBody();
+}
+function renderSearch(){
+  state.view="search"; persist(); setActiveTab();
+  const projOpts='<option value="">All projects</option>'+(state.projects||[]).map(p=>
+    '<option value="'+esc(p.id)+'"'+(state.searchProject===p.id?" selected":"")+'>'+esc(p.title||p.id)+'</option>').join("");
+  show('<p class="eyebrow">Search</p>'
+    +'<div class="searchbar"><input id="sq" class="sinput" type="search" placeholder="Search the brain…" value="'+esc(state.searchQuery||"")+'" autocomplete="off">'
+    +'<select id="sproj" class="sselect" aria-label="Project filter">'+projOpts+'</select></div>'
+    +'<div id="sresults"></div>');
+  const sq=$("sq"); sq.oninput=()=>onSearchInput(sq.value); sq.onkeydown=(e)=>{ if(e.key==="Enter") onSearchEnter(); };
+  const sp=$("sproj"); sp.onchange=()=>{ state.searchProject=sp.value||null; runSearch(); };
+  renderSearchBody();
+  try{ sq.focus(); }catch(e){}
+}
+function renderSearchBody(){
+  const host=$("sresults"); if(!host) return;
+  if(state.searchStatus==="loading"){ host.innerHTML=skelRows(4); scheduleHeight(); return; }
+  if(state.searchStatus==="error"){ host.innerHTML=errBlock("Search failed.","search"); scheduleHeight(); return; }
+  if(!state.searchResults){ host.innerHTML='<div class="empty">Type to search titles, descriptions, tags, headings, and body.</div>'; scheduleHeight(); return; }
+  if(!state.searchResults.length){ host.innerHTML='<div class="empty">No matches for “'+esc((state.searchQuery||"").trim())+'”.</div>'; scheduleHeight(); return; }
+  const maxScore=Math.max(1, ...state.searchResults.map(r=>+r.score||0));
+  host.innerHTML=state.searchResults.map(r=>{
+    const parts=(r.path||"").split("/"); const nm=parts[parts.length-1];
+    const crumb=parts.map(esc).join('<span class="sep">/</span>');
+    const pct=Math.round(Math.max(0,Math.min(1,(+r.score||0)/maxScore))*100);
+    return '<div class="result" data-open-path="'+esc(r.path)+'">'
+      +'<div class="rtop"><h3>'+esc(r.title||nm)+'</h3>'+bkBtn(r.path, r.title||nm)+'</div>'
+      +'<div class="rpath">'+crumb+'</div>'
+      +(r.description?'<p>'+esc(r.description)+'</p>':'')
+      +(r.matched_heading?'<span class="chip">§ '+esc(r.matched_heading)+'</span>':'')
+      +'<div class="scorebar"><div class="track"><div class="fill" style="width:'+pct+'%"></div></div><span class="pct">'+pct+'%</span></div>'
+    +'</div>';
+  }).join("");
+  scheduleHeight();
+}
+
+// ── INBOX ──
+async function loadInbox(force){
+  if(state.inbox && !force){ renderInbox(); return; }
+  state.inboxStatus="loading"; renderInbox();
+  try{
+    let ps=state.projects; if(!Array.isArray(ps)){ ps=await callTool("kb_projects",{}); if(Array.isArray(ps)) state.projects=ps; }
+    const withUnread=(state.projects||[]).filter(p=>(p.unread_messages|0)>0);
+    const rows=[];
+    for(const p of withUnread){
+      const L=await callTool("kb_load",{project:p.id});   // only projects with unread — cheap fan-out
+      if(L && Array.isArray(L.unread_messages)){
+        for(const m of L.unread_messages){ rows.push(Object.assign({}, m, {project:p.id, projectTitle:p.title||p.id})); }
+      }
+    }
+    // high priority first, then unexpired before expired
+    rows.sort((a,b)=>((b.priority==="high")-(a.priority==="high")) || ((a.expired?1:0)-(b.expired?1:0)));
+    state.inbox=rows; state.inboxStatus="ok"; renderInbox();
+  }catch(e){ state.inboxStatus="error"; renderInbox(); }
+}
+function inboxRow(m){
+  const chips='<span class="chip proj">'+esc(m.projectTitle||m.project)+'</span>'
+    +(m.to&&m.to!=="any"?'<span class="chip"><span class="k">to</span> '+esc(m.to)+'</span>':'')
+    +(m.priority&&m.priority!=="normal"?'<span class="chip prio-'+esc(m.priority)+'">'+esc(m.priority)+'</span>':'')
+    +(m.expires?'<span class="chip'+(m.expired?" dim":"")+'"><span class="k">exp</span> '+esc(m.expires)+'</span>':'');
+  return '<details class="imsg'+(m.expired?" expired":"")+'">'
+    +'<summary><span class="ititle">'+esc(m.title||"(untitled)")+'</span><span class="ichips">'+chips+'</span></summary>'
+    +'<div class="ibody md">'+renderMarkdown(m.body||"")+'</div>'
+    +'<div class="iacts"><button class="act" data-act="'+esc(m.path)+'">Act on it</button>'
+    +'<button class="arch" data-arch="'+esc(m.path)+'">Archive</button></div>'
+    +'</details>';
+}
+function renderInbox(){
+  state.view="inbox"; persist(); setActiveTab();
+  let body;
+  if(state.inboxStatus==="loading"){ body=skelRows(3); }
+  else if(state.inboxStatus==="error"){ body=errBlock("Couldn't load the inbox.","inbox"); }
+  else { const rows=state.inbox||[];
+    body = rows.length ? rows.map(inboxRow).join("")
+      : '<div class="empty">Inbox zero — no unread messages across your projects.</div>'; }
+  show('<div class="ihead"><p class="eyebrow" style="margin:0">Inbox</p><button class="refresh" id="ib-refresh">⟳ Refresh</button></div>'+body);
+  const rf=$("ib-refresh"); if(rf) rf.onclick=()=>loadInbox(true);
+}
+async function archiveMsg(path){
+  const idx=(state.inbox||[]).findIndex(m=>m.path===path); if(idx<0) return;
+  const removed=state.inbox[idx];
+  state.inbox.splice(idx,1); renderInbox();   // optimistic removal
+  try{ const r=await callTool("kb_mark_read",{message_path:path}); if(r&&r.error) throw new Error(r.error); showToast("Archived."); }
+  catch(e){ state.inbox.splice(idx,0,removed); renderInbox(); showToast("Couldn't archive — try again", ()=>archiveMsg(path)); }   // rollback
+}
+async function actMsg(path){
+  const m=(state.inbox||[]).find(x=>x.path===path); if(!m) return;
+  const text="Act on this inter-session message from the brain: "+path+" — "+(m.title||"")+"\n"+(m.body||"");
+  const ok=await askAgent(text);
+  showToast(ok?"Handed to Claude":"Couldn't reach Claude — try again", ok?null:()=>actMsg(path));
+}
+
+// ─────────────────────── async loaders ──────────────────────
+async function loadHome(){ show(skelCards(6));
+  try{ const d=await callTool("kb_projects",{}); if(Array.isArray(d)){ state.projects=d; renderHome(); } else show(errBlock("Could not load projects.","home")); }
+  catch(e){ show(errBlock("Could not load projects.","home")); } }
+async function openProject(id){ if(busy) return; busy=true; state.projectId=id; show(skelRows(5));
+  try{ const d=await callTool("kb_load",{project:id}); if(d && d.index_tree){ state.load=d; renderBrowse(); } else show(errBlock("Could not load project.","project")); }
+  catch(e){ show(errBlock("Could not load project.","project")); } finally{ busy=false; } }
+async function openFile(path){ if(busy) return; busy=true; state.readPath=path; show(skelRows(6));
+  try{ const d=await callTool("kb_read",{path:path}); if(d && d.content!=null){ state.read=d; renderReader(); } else show(errBlock("Could not read "+esc(path)+".","read")); }
+  catch(e){ show(errBlock("Could not read file.","read")); } finally{ busy=false; } }
 
 // ─────────────────── seeding & reconcile ─────────────────
-// The widget mounts because kb_projects / kb_load (/ kb_search) was called; the
-// host pushes that result in. Shape it into the right view. kb_load output wins
-// (has index_tree); a project array -> HOME; a search array (M2) -> HOME fallback.
+// The widget mounts because a tagged tool was called; the host pushes that
+// result in. Shape it into the right view.
 function seedFrom(data){
   if(!data) return;
   booted=true;
   if(data.index_tree){ state.load=data; state.projectId=data.project||state.projectId; renderBrowse(); return; }
   if(Array.isArray(data)){
     if(data.length && data[0] && data[0].id!==undefined){ state.projects=data; renderHome(); return; }
-    // search results (path/score) — the Search view is M2; fall back to Home.
-    loadHome(); return;
+    if(data.length && data[0] && data[0].path!==undefined && data[0].score!==undefined){ state.searchResults=data; state.searchStatus="ok"; renderSearch(); return; }
+    loadHome(); return;   // empty/unknown array
   }
   if(data.content!==undefined){ state.read=data; state.readPath=data.path; renderReader(); return; }
-  // unknown -> home
   loadHome();
 }
 
+// ─────────────────── delegated clicks (survive re-renders) ─────────────────
+document.addEventListener("click",(e)=>{
+  const bk=e.target.closest("[data-bk-path]"); if(bk){ e.preventDefault(); toggleBasket(bk.getAttribute("data-bk-path"), bk.getAttribute("data-bk-title")); return; }
+  const op=e.target.closest("[data-open-path]"); if(op){ e.preventDefault(); openFile(op.getAttribute("data-open-path")); return; }
+  const ml=e.target.closest("a.mdlink"); if(ml){ e.preventDefault(); const t=resolveRel(dirOf(state.readPath||""), ml.getAttribute("data-rel")); if(t) openFile(t); return; }
+  const pc=e.target.closest("[data-proj]"); if(pc){ openProject(pc.getAttribute("data-proj")); return; }
+  const nav=e.target.closest("[data-nav]"); if(nav){ goTab(nav.getAttribute("data-nav")); return; }
+  const rt=e.target.closest("[data-retry]"); if(rt){ const w=rt.getAttribute("data-retry");
+    if(w==="home") loadHome(); else if(w==="search") runSearch(); else if(w==="inbox") loadInbox(true);
+    else if(w==="project") openProject(state.projectId); else if(w==="read") openFile(state.readPath); return; }
+  const ar=e.target.closest("[data-arch]"); if(ar){ archiveMsg(ar.getAttribute("data-arch")); return; }
+  const ac=e.target.closest("[data-act]"); if(ac){ actMsg(ac.getAttribute("data-act")); return; }
+});
+
 // tabs
-document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ if(t.disabled) return;
-  if(t.dataset.tab==="home"){ if(state.projects) renderHome(); else loadHome(); }
-  else if(t.dataset.tab==="browse"){ if(state.load) renderBrowse(); else if(state.projects) renderHome(); else loadHome(); } });
+function goTab(t){
+  if(t==="home"){ if(state.projects) renderHome(); else loadHome(); }
+  else if(t==="browse"){ if(state.load) renderBrowse(); else if(state.projects) renderHome(); else loadHome(); }
+  else if(t==="search"){ renderSearch(); }
+  else if(t==="inbox"){ loadInbox(false); }
+}
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>goTab(t.dataset.tab));
 
 // ─────────────────────────── boot ──────────────────────────
 (async function init(){
+  // restore persisted basket + pointer first (content is re-fetched below)
+  let st=null; try{ st=window.openai && window.openai.widgetState; }catch(e){}
+  if(st && Array.isArray(st.basket)) state.basket=st.basket;
+  renderBasket();
   // ChatGPT hands the tool output synchronously at mount.
   try{ if(window.openai && window.openai.toolOutput){ seedFrom(normalize(window.openai.toolOutput)); } }catch(e){}
   // ui/initialize handshake. NOTE: params MUST carry appInfo (the client-info
   // field named that way) — the other spelling silently breaks tools/call on claude.ai.
   try{ await rpcReq("ui/initialize",{appCapabilities:{availableDisplayModes:["inline"]},appInfo:{name:"engram-navigator",version:"1.0.0"},protocolVersion:"2026-01-26"});
        rpcNote("ui/notifications/initialized",{}); }catch(e){}
-  // Reconcile: if a widgetState was restored and no push seeded us, re-fetch from
-  // the tools (the git repo is truth; widgetState is just a pointer).
+  // Reconcile: if a push already seeded us, keep it; otherwise re-fetch from the
+  // tools (the git repo is truth; widgetState is just a pointer).
   if(!booted){
-    let st=null; try{ st=window.openai && window.openai.widgetState; }catch(e){}
     if(st && st.view==="reader" && st.projectId && st.path){ await openProject(st.projectId); await openFile(st.path); }
     else if(st && st.view==="browse" && st.projectId){ await openProject(st.projectId); }
+    else if(st && st.view==="search"){ if(!state.projects){ try{ const d=await callTool("kb_projects",{}); if(Array.isArray(d)) state.projects=d; }catch(e){} } renderSearch(); }
+    else if(st && st.view==="inbox"){ await loadInbox(false); }
     else { await loadHome(); }
   }
   reportHeight();
