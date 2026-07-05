@@ -68,6 +68,18 @@ proves itself, record it in
 sessions inherit the pattern. Restructuring is allowed too: move/split concepts
 when a project outgrows its shape (git mv in Claude Code), and say so in the log.
 
+## Artifacts — documents built from knowledge
+
+When you build a document the user values (report, spec, brief, post), OFFER to save it:
+`kb_write` to `projects/<p>/artifacts/YYYY-MM-<slug>.md` with frontmatter `type: artifact`,
+`sources:` (the exact concept paths used) and `instruction:` (what it was built to be) —
+the server stamps `built_from` provenance. Saved artifacts appear in the Navigator's
+Artifacts tab and the explorer gallery, report staleness when their sources change, and
+are REUSABLE: read them as sources, or rebuild them from their manifest (the
+rebuild_artifact prompt) — saving over the same path keeps versions in git.
+`kb_share_artifact` mints a PUBLIC revocable link (warn the user: anyone with the URL
+reads that document; sources stay private). `kb_unshare_artifact` revokes.
+
 ## Writing conventions
 
 - **Link the graph.** Every concept links its related concepts — its decision,
