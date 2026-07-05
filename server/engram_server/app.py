@@ -201,7 +201,11 @@ async def kb_write(path: str, content: str, message: str, description: str = "")
     are repo-relative POSIX, e.g. 'projects/alt/decisions/2026-07-search-engine.md'.
     Reserved: index.md and log.md are unwritable here (indexes are server-maintained;
     use kb_append_log for the log), and messages/ only via kb_leave_message.
-    context.md IS writable — session close updates it. `message` is the git commit
+    context.md IS writable — session close updates it. HTML artifacts built in chat
+    (side-panel documents) are saved VERBATIM: frontmatter with type: artifact,
+    format: html, and sources, then the COMPLETE HTML document as the body — the
+    share link then serves the real interactive page, and updating an artifact never
+    loses its existing share token. `message` is the git commit
     message. If the write fails on a conflict, re-read the file, merge intent
     manually, and retry — never overwrite blind.
 

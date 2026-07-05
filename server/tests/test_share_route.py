@@ -91,3 +91,41 @@ async def test_artifacts_gallery_stays_guarded(settings: Settings) -> None:
     await _seed_shared_artifact(settings)
     resp = _client(settings).get("/brain/artifacts")
     assert resp.status_code == 403
+
+
+HTML_ARTIFACT = (
+    "---\ntype: artifact\ntitle: Interactive Brief\ndescription: A full HTML experience.\n"
+    "format: html\nsources:\n  - projects/alt/context.md\n---\n\n"
+    "<!DOCTYPE html>\n<html><head><style>body{background:#000}</style></head>"
+    "<body><canvas id=viz></canvas><script>console.log('hi')</script></body></html>\n"
+)
+
+
+async def test_share_route_serves_html_artifact_verbatim_sandboxed(settings: Settings) -> None:
+    store = KBStore(settings)
+    await store.start()
+    path = "projects/alt/artifacts/2026-07-interactive.md"
+    await store.kb_write(path, HTML_ARTIFACT, "save html artifact")
+    token = (await store.kb_share_artifact(path))["share_url"].rsplit("/", 1)[-1]
+
+    resp = _client(settings).get(f"/share/{token}")
+    assert resp.status_code == 200
+    # the REAL page, verbatim — not a markdown rendering of it
+    assert resp.text.strip().startswith("<!DOCTYPE html>")
+    assert "<canvas id=viz>" in resp.text
+    assert "Shared from Hiren" not in resp.text  # no wrapper shell
+    # sandboxed: unique origin, no cookie/storage access from shared content
+    assert "sandbox" in resp.headers.get("content-security-policy", "")
+
+
+async def test_artifact_update_preserves_share_token(settings: Settings) -> None:
+    store = KBStore(settings)
+    await store.start()
+    path = "projects/alt/artifacts/2026-07-keeper.md"
+    await store.kb_write(path, SHARED_ARTIFACT, "save v1")
+    token = (await store.kb_share_artifact(path))["share_url"].rsplit("/", 1)[-1]
+    # re-save WITHOUT the share field (a chat session won't know about it)
+    await store.kb_write(path, SHARED_ARTIFACT.replace("on track", "on track v2"), "save v2")
+    resp = _client(settings).get(f"/share/{token}")
+    assert resp.status_code == 200
+    assert "on track v2" in resp.text

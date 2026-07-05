@@ -1047,6 +1047,19 @@ def _render_status_wall(brain: Path, today: dt.date) -> str:
 # ---------------------------------------------------------------- routes
 
 
+def _unfence_html(body: str) -> str:
+    """The full HTML document from an html-format artifact body: either bare
+    (starts with a doctype/tag) or wrapped in a single ```html fenced block."""
+    text = body.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[-1].strip().startswith("```"):
+            text = "\n".join(lines[1:-1])
+        else:
+            text = "\n".join(lines[1:])
+    return text
+
+
 def register(mcp: FastMCP, settings: Settings) -> None:
     """Register all explorer GET routes, every one behind the Access guard."""
     guard = make_guard(settings)
@@ -1326,11 +1339,33 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                 _artifact_is_stale, brain, meta.get("built_from"), srcs, settings.git_timeout
             )
             provenance = _artifact_provenance(meta, stale, settings.explorer_url)
+        if str(meta.get("format") or "") == "html":
+            # Don't inject a stored HTML document into the explorer's own DOM —
+            # link to the rendered page (its share URL) and show source collapsed.
+            share_tok = str(meta.get("share") or "")
+            if share_tok:
+                open_link = (
+                    f'<p><a class="btn" href="/share/{esc(share_tok)}" target="_blank" '
+                    'rel="noopener">Open rendered page ↗</a></p>'
+                )
+            else:
+                open_link = (
+                    '<p class="meta">This is an HTML artifact — share it '
+                    "(kb_share_artifact) to get a rendered, sendable page.</p>"
+                )
+            src = _unfence_html(body_md)
+            body_html = (
+                open_link
+                + f'<details><summary>HTML source ({len(src):,} chars)</summary>'
+                + f'<div class="md"><pre><code>{esc(src[:20000])}</code></pre></div></details>'
+            )
+        else:
+            body_html = f'<div class="md">{render_markdown(body_md, rel)}</div>'
         body_parts = [
             *head_parts,
             properties_panel(meta, _today_utc()),
             provenance,
-            f'<div class="md">{render_markdown(body_md, rel)}</div>',
+            body_html,
             _concept_footer(target, rel, brain),
         ]
         leaf = title if meta.get("title") else None
@@ -1608,6 +1643,18 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             return PlainTextResponse("Not found", status_code=404)
         _target, meta, body_md = found
         title = str(meta.get("title") or "Shared document")
+        if str(meta.get("format") or "") == "html":
+            # An HTML artifact IS the page (saved verbatim from a chat side panel).
+            # Serve it raw, sandboxed: unique origin, so it can never read this
+            # host's cookies/storage; inline script/style still run.
+            html_doc = _unfence_html(body_md)
+            return HTMLResponse(
+                html_doc,
+                headers={
+                    "Content-Security-Policy": "sandbox allow-scripts allow-popups",
+                    "X-Robots-Tag": "noindex",
+                },
+            )
         is_wall = (
             str(meta.get("type") or "") == "live-view"
             and str(meta.get("view") or "") == "status-wall"

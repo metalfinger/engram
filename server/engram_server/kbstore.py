@@ -767,12 +767,23 @@ class KBStore:
             )
             # Artifact provenance: stamp built_from = current HEAD when absent, so the
             # saved document records exactly which bundle state it was built against.
+            # Also carry a live share token forward across updates the writer didn't
+            # know about — re-saving an artifact must never silently kill its public link.
             is_artifact = str(meta.get("type") or "") == "artifact"
-            if is_artifact and not meta.get("built_from"):
+            inherited_share = ""
+            if is_artifact and not meta.get("share") and abs_path.exists():
+                try:
+                    inherited_share = str(read_meta(abs_path).get("share") or "")
+                except Exception:  # noqa: BLE001 — unreadable old file: nothing to inherit
+                    inherited_share = ""
+            if is_artifact and (not meta.get("built_from") or inherited_share):
                 doc = split(normalized)
                 assert doc is not None  # validate_concept guaranteed a frontmatter fence
                 meta = normalize_meta(doc.meta)
-                meta["built_from"] = self.repo.head_sha()
+                if not meta.get("built_from"):
+                    meta["built_from"] = self.repo.head_sha()
+                if inherited_share:
+                    meta["share"] = inherited_share
                 normalized = serialize(Doc(meta=meta, body=doc.body))
             # An artifact's provenance lives in its `sources:` list, not body links —
             # a non-empty sources list counts as "links to something", so don't nag.
