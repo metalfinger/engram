@@ -8,6 +8,7 @@ a quiet archival reading room for the brain bundle.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from html import escape as _escape
 
@@ -470,6 +471,7 @@ def page(
         placeholder="Search the brain…" aria-label="Search the brain" autocomplete="off">
     </form>
     <nav class="topnav">
+      <a href="/brain/graph">Graph</a>
       <a href="/brain/system">System</a>
       <a href="/brain/activity">Activity</a>
     </nav>
@@ -485,3 +487,179 @@ def page(
 </body>
 </html>
 """
+
+
+# ---------------------------------------------------------------- interactive graph
+
+# Full-bleed graph-only styling, layered on top of the shared CSS tokens so the
+# canvas reads the same light/dark copper palette (colors are pulled at runtime
+# from the CSS custom properties on :root).
+GRAPH_CSS = """\
+.graphwrap {
+  position: fixed; left: 0; right: 0; top: 3rem; bottom: 0; overflow: hidden; background: var(--bg);
+}
+.graphwrap canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+.gtip {
+  position: absolute; pointer-events: none; display: none; z-index: 6; max-width: 17rem;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: 8px;
+  padding: .4rem .6rem; font-size: .82rem; color: var(--fg); box-shadow: 0 4px 18px rgba(0,0,0,.2);
+}
+.gtip b { display: block; font-weight: 650; letter-spacing: -0.01em; }
+.gtip span { color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; }
+.glegend {
+  position: absolute; left: 1rem; bottom: 1rem; z-index: 5; max-width: 62%;
+  display: flex; flex-wrap: wrap; gap: .55rem; font-size: .76rem; color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--line); border-radius: 10px; padding: .5rem .7rem; box-shadow: var(--shadow);
+}
+.glegend .gl { display: inline-flex; align-items: center; gap: .35rem; }
+.glegend .gl i { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.ghint {
+  position: absolute; right: 1rem; top: 1rem; z-index: 5; font-size: .72rem; color: var(--faint);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border: 1px solid var(--line); padding: .3rem .55rem; border-radius: 8px;
+}
+@media (max-width: 52rem) { .ghint { display: none; } .glegend { max-width: 90%; } }
+"""
+
+# Vanilla, zero-dependency force-directed layout. __DATA__ / __GLYPHS__ are
+# substituted by graph_page(); no external requests, no libraries.
+GRAPH_JS = """\
+(function(){
+  var DATA = __DATA__, GLYPHS = __GLYPHS__;
+  var canvas = document.getElementById('graph');
+  if(!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var tip = document.getElementById('gtip');
+  var cs = getComputedStyle(document.documentElement);
+  function cssVar(n){ return (cs.getPropertyValue(n)||'').trim() || '#888888'; }
+  var TYPEVAR = {decision:'--accent',spec:'--blue',reference:'--violet',note:'--amber',person:'--green',client:'--green',message:'--red',runbook:'--accent-ink',video:'--violet',idea:'--amber',meeting:'--blue',snippet:'--muted',project:'--accent',artifact:'--accent-ink','live-view':'--green'};
+  function colorFor(t){ return cssVar(TYPEVAR[t] || '--muted'); }
+  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+
+  var nodes = DATA.nodes.map(function(n){ return {id:n.id,title:n.title,type:n.type,x:0,y:0,vx:0,vy:0,deg:0}; });
+  var byId = {}; nodes.forEach(function(n){ byId[n.id]=n; });
+  var edges = DATA.edges.filter(function(e){ return byId[e.source]&&byId[e.target]; })
+                        .map(function(e){ return {s:byId[e.source],t:byId[e.target]}; });
+  edges.forEach(function(e){ e.s.deg++; e.t.deg++; });
+  var nbr = {}; nodes.forEach(function(n){ nbr[n.id]=new Set(); });
+  edges.forEach(function(e){ nbr[e.s.id].add(e.t.id); nbr[e.t.id].add(e.s.id); });
+
+  var W=0,H=0,dpr=Math.min(window.devicePixelRatio||1,2);
+  function resize(){ W=canvas.clientWidth; H=canvas.clientHeight; canvas.width=Math.max(1,W*dpr); canvas.height=Math.max(1,H*dpr); ctx.setTransform(dpr,0,0,dpr,0,0); }
+  resize();
+  var N = nodes.length || 1;
+  nodes.forEach(function(n,i){ var a=i/N*Math.PI*2, rr=Math.min(W,H)*0.30+40; n.x=Math.cos(a)*rr*(0.5+Math.random()*0.4); n.y=Math.sin(a)*rr*(0.5+Math.random()*0.4); });
+
+  var view={x:W/2,y:H/2,k:1}, alpha=1, raf=null, hoverId=null;
+  function radius(n){ return 5+Math.sqrt(n.deg)*3.2; }
+
+  function step(){
+    var i,j;
+    for(i=0;i<nodes.length;i++){ var g=nodes[i]; g.vx+=(0-g.x)*0.0022*alpha; g.vy+=(0-g.y)*0.0022*alpha; }
+    for(i=0;i<nodes.length;i++){
+      for(j=i+1;j<nodes.length;j++){
+        var a=nodes[i], b=nodes[j], dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy; if(d2<0.01)d2=0.01;
+        var d=Math.sqrt(d2), rep=1600*alpha/d2, fx=dx/d*rep, fy=dy/d*rep;
+        a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
+      }
+    }
+    var L=72;
+    for(var k=0;k<edges.length;k++){
+      var e=edges[k], ex=e.t.x-e.s.x, ey=e.t.y-e.s.y, ed=Math.sqrt(ex*ex+ey*ey)||0.01;
+      var f=(ed-L)*0.035*alpha, ax=ex/ed*f, ay=ey/ed*f;
+      e.s.vx+=ax; e.s.vy+=ay; e.t.vx-=ax; e.t.vy-=ay;
+    }
+    for(i=0;i<nodes.length;i++){ var m=nodes[i]; m.x+=m.vx*0.5; m.y+=m.vy*0.5; m.vx*=0.86; m.vy*=0.86; }
+    alpha*=0.985;
+  }
+
+  function toScreen(n){ return {x:n.x*view.k+view.x, y:n.y*view.k+view.y}; }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H); ctx.lineWidth=1;
+    for(var k=0;k<edges.length;k++){
+      var e=edges[k], a=toScreen(e.s), b=toScreen(e.t), act=hoverId&&(e.s.id===hoverId||e.t.id===hoverId);
+      ctx.strokeStyle = act ? cssVar('--accent') : cssVar('--line-2');
+      ctx.globalAlpha = hoverId ? (act?0.95:0.12) : 0.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    for(var i=0;i<nodes.length;i++){
+      var n=nodes[i], p=toScreen(n), r=radius(n), near=hoverId&&(n.id===hoverId||nbr[hoverId].has(n.id));
+      ctx.globalAlpha = (hoverId && !near) ? 0.25 : 1;
+      ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2);
+      ctx.fillStyle=colorFor(n.type); ctx.fill();
+      ctx.lineWidth = (n.id===hoverId)?2.5:1; ctx.strokeStyle=cssVar('--surface'); ctx.stroke();
+      if(view.k>0.55 || near){
+        ctx.globalAlpha=(hoverId && !near)?0.15:0.92;
+        ctx.fillStyle=cssVar('--fg'); ctx.font='11px system-ui,-apple-system,sans-serif'; ctx.textAlign='center';
+        var t=n.title.length>24?n.title.slice(0,23)+'\\u2026':n.title;
+        ctx.fillText(t, p.x, p.y+r+11);
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function tick(){ step(); draw(); raf=(alpha>0.03)?requestAnimationFrame(tick):null; }
+  function pick(sx,sy){ var best=null,bd=1e9; for(var i=0;i<nodes.length;i++){ var n=nodes[i],p=toScreen(n),r=radius(n)+5,dx=sx-p.x,dy=sy-p.y,d=dx*dx+dy*dy; if(d<r*r && d<bd){bd=d;best=n;} } return best; }
+
+  var dragging=false, moved=0, lastX=0, lastY=0;
+  canvas.addEventListener('pointerdown', function(e){ dragging=true; moved=0; lastX=e.clientX; lastY=e.clientY; try{canvas.setPointerCapture(e.pointerId);}catch(_){} });
+  canvas.addEventListener('pointermove', function(e){
+    var rect=canvas.getBoundingClientRect(), sx=e.clientX-rect.left, sy=e.clientY-rect.top;
+    if(dragging){ var dx=e.clientX-lastX, dy=e.clientY-lastY; moved+=Math.abs(dx)+Math.abs(dy); view.x+=dx; view.y+=dy; lastX=e.clientX; lastY=e.clientY; if(tip)tip.style.display='none'; if(!raf)draw(); return; }
+    var hit=pick(sx,sy), nh=hit?hit.id:null;
+    if(nh!==hoverId){ hoverId=nh; if(!raf)draw(); }
+    if(hit && tip){ tip.style.display='block'; tip.style.left=(sx+14)+'px'; tip.style.top=(sy+12)+'px'; tip.innerHTML='<b>'+esc(hit.title)+'</b>'+(hit.type?'<span>'+esc(hit.type)+'</span>':''); canvas.style.cursor='pointer'; }
+    else { if(tip)tip.style.display='none'; canvas.style.cursor='grab'; }
+  });
+  function endDrag(e){ if(!dragging)return; dragging=false; if(moved<5){ var rect=canvas.getBoundingClientRect(), hit=pick(e.clientX-rect.left,e.clientY-rect.top); if(hit){ window.location.href='/brain/f/'+hit.id; } } }
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointerleave', function(){ if(tip)tip.style.display='none'; if(hoverId){hoverId=null; if(!raf)draw();} });
+  canvas.addEventListener('wheel', function(e){ e.preventDefault(); var rect=canvas.getBoundingClientRect(), sx=e.clientX-rect.left, sy=e.clientY-rect.top, f=Math.exp(-e.deltaY*0.0012), k2=Math.max(0.2,Math.min(4,view.k*f)), wx=(sx-view.x)/view.k, wy=(sy-view.y)/view.k; view.k=k2; view.x=sx-wx*view.k; view.y=sy-wy*view.k; if(!raf)draw(); }, {passive:false});
+  window.addEventListener('resize', function(){ resize(); if(!raf)draw(); });
+
+  var legend=document.getElementById('glegend');
+  if(legend){
+    var types={}; nodes.forEach(function(n){ types[n.type||'other']=true; });
+    legend.innerHTML = Object.keys(types).sort().map(function(t){ var g=GLYPHS[t]?GLYPHS[t]+' ':''; return '<span class="gl"><i style="background:'+colorFor(t)+'"></i>'+esc(g+t)+'</span>'; }).join('');
+  }
+  tick();
+})();
+"""
+
+
+def graph_page(data: dict, glyphs: dict) -> str:
+    """A full-bleed interactive concept-graph page (its own minimal shell).
+
+    ``data`` is ``{"nodes": [...], "edges": [...]}``; ``glyphs`` maps a type to its
+    Unicode legend glyph. The force-directed layout is inline vanilla JS with the
+    node/edge data embedded directly — no fetch, no libraries, no external requests.
+    """
+    blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    gly = json.dumps(glyphs, ensure_ascii=False).replace("</", "<\\/")
+    script = GRAPH_JS.replace("__DATA__", blob).replace("__GLYPHS__", gly)
+    return (
+        '<!doctype html>\n<html lang="en">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>Graph — brain</title>\n"
+        "<style>" + CSS + GRAPH_CSS + "</style>\n</head>\n<body>\n"
+        '<header class="topbar"><div class="topbar-inner">'
+        '<a class="wordmark" href="/brain"><span class="mark">◗</span>brain</a>'
+        '<span class="search" aria-hidden="true"></span>'
+        '<nav class="topnav">'
+        '<a href="/brain">Overview</a>'
+        '<a href="/brain/graph" class="active" aria-current="page">Graph</a>'
+        '<a href="/brain/system">System</a>'
+        '<a href="/brain/activity">Activity</a>'
+        "</nav></div></header>\n"
+        '<div class="graphwrap">'
+        '<canvas id="graph" aria-label="Concept graph"></canvas>'
+        '<div id="gtip" class="gtip"></div>'
+        '<div id="glegend" class="glegend"></div>'
+        '<div class="ghint">drag to pan · scroll to zoom · click a node to open</div>'
+        "</div>\n"
+        "<script>" + script + "</script>\n</body>\n</html>\n"
+    )

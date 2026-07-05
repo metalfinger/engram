@@ -17,18 +17,29 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from anyio import to_thread
-from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from engram_server.errors import KBError
 from engram_server.explorer.access import make_guard
 from engram_server.explorer.format import (
+    TYPE_GLYPHS,
     humanize_time,
     is_expired,
     properties_panel,
     score_bar,
     stamp,
 )
-from engram_server.explorer.html import badge, button, card, chip, codebox, esc, page, share_page
+from engram_server.explorer.html import (
+    badge,
+    button,
+    card,
+    chip,
+    codebox,
+    esc,
+    graph_page,
+    page,
+    share_page,
+)
 from engram_server.explorer.render import (
     render_markdown,
     render_markdown_public,
@@ -561,12 +572,13 @@ def _artifact_provenance(meta: dict, stale: bool | None, explorer_url: str) -> s
 
 
 def _find_shared_artifact(brain: Path, token: str) -> tuple[Path, dict, str] | None:
-    """Locate the artifact whose frontmatter ``share`` equals ``token``.
+    """Locate the shareable file whose frontmatter ``share`` equals ``token``.
 
     Lookup is by full scan of projects/*/artifacts/*.md and constant-time token
     comparison — never by any path derived from caller input (traversal-proof). No
     early return, so a hit late in the scan is not distinguishable by timing. Returns
-    (path, meta, body) or None; the scan skips index.md and non-artifact files.
+    (path, meta, body) or None; the scan skips index.md and only accepts files whose
+    type is ``artifact`` or ``live-view`` (a live data-bound status wall).
     """
     projects_dir = brain / "projects"
     if not projects_dir.is_dir():
@@ -583,7 +595,7 @@ def _find_shared_artifact(brain: Path, token: str) -> tuple[Path, dict, str] | N
                 meta, body = split_frontmatter(_read(f))
             except (OSError, UnicodeDecodeError):
                 continue
-            if str(meta.get("type") or "") != "artifact":
+            if str(meta.get("type") or "") not in ("artifact", "live-view"):
                 continue
             share = meta.get("share")
             if isinstance(share, str) and secrets.compare_digest(share, token):
@@ -815,6 +827,7 @@ def _sidebar(brain: Path, active: str) -> str:
         skills_items.append(
             _nav_link("/brain/f/skills/engram/SKILL.md", "Engram Protocol", active)
         )
+    skills_items.append(_nav_link("/brain/graph", "Graph", active))
     skills_items.append(_nav_link("/brain/system", "System & Tools", active))
     out.append(_nav_section("Skills", "".join(skills_items)))
 
@@ -869,6 +882,168 @@ def _git_log(brain: Path, timeout: float) -> list[tuple[str, str, str, str]]:
     return rows
 
 
+# ---------------------------------------------------------------- graph
+
+
+def _graph_group(rel: str) -> str:
+    """The cluster a concept belongs to: the project name under projects/, else
+    the first path segment (self, metalfinger, library, skills, ...)."""
+    parts = rel.split("/")
+    if parts[0] == "projects" and len(parts) > 1:
+        return parts[1]
+    return parts[0] if parts else ""
+
+
+def _graph_data(brain: Path) -> dict:
+    """Build the concept graph: every non-index .md is a node, every relative body
+    link between two nodes is an edge.
+
+    Nodes carry ``{id, title, type, project, links_out, links_in}``; ``id`` is the
+    repo-relative POSIX path. Link resolution mirrors ``_backlinks`` (external/anchor
+    links ignored, .git and index.md excluded). Pure — no git, no request state.
+    """
+    metas: dict[str, tuple[dict, str]] = {}
+    for path in sorted(brain.rglob("*.md")):
+        rel = path.relative_to(brain).as_posix()
+        parts = rel.split("/")
+        if ".git" in parts or path.name == "index.md":
+            continue
+        try:
+            text = _read(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        meta, _body = split_frontmatter(text)
+        metas[rel] = (meta, text)
+
+    node_ids = set(metas)
+    edges: list[dict] = []
+    out_count: dict[str, int] = {}
+    in_count: dict[str, int] = {}
+    for rel, (_meta, text) in metas.items():
+        cur_dir = posixpath.dirname(rel)
+        seen: set[str] = set()
+        for m in _MD_LINK_RE.finditer(text):
+            raw = m.group(1).split()[0] if m.group(1).split() else ""
+            link = raw.split("#", 1)[0]
+            if not link or link.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            joined = link.lstrip("/") if link.startswith("/") else posixpath.join(cur_dir, link)
+            tgt = posixpath.normpath(joined)
+            if tgt == rel or tgt not in node_ids or tgt in seen:
+                continue
+            seen.add(tgt)
+            edges.append({"source": rel, "target": tgt})
+            out_count[rel] = out_count.get(rel, 0) + 1
+            in_count[tgt] = in_count.get(tgt, 0) + 1
+
+    nodes: list[dict] = []
+    for rel in sorted(node_ids):
+        meta, _text = metas[rel]
+        nodes.append(
+            {
+                "id": rel,
+                "title": str(meta.get("title") or Path(rel).stem),
+                "type": str(meta.get("type") or ""),
+                "project": _graph_group(rel),
+                "links_out": out_count.get(rel, 0),
+                "links_in": in_count.get(rel, 0),
+            }
+        )
+    return {"nodes": nodes, "edges": edges}
+
+
+def _git_head(brain: Path, timeout: float) -> str | None:
+    """The current HEAD sha (for caching), or None when git/checkout is unavailable.
+
+    SYNC subprocess — callers run it in a worker thread.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(brain),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+# ---------------------------------------------------------------- live status wall
+
+
+def _current_phase_line(pdir: Path) -> str:
+    """The first content line under a project context.md's 'Current Phase' section.
+
+    Any heading level matches ('# Current Phase' / '## Current Phase'); the section
+    ends at the next heading. Returns '' when the section or its content is absent.
+    """
+    ctx = pdir / "context.md"
+    if not ctx.is_file():
+        return ""
+    _meta, body = split_frontmatter(_read(ctx))
+    in_phase = False
+    for line in body.split("\n"):
+        s = line.strip()
+        if s.startswith("#"):
+            if in_phase:
+                break
+            in_phase = s.lstrip("#").strip().lower() == "current phase"
+            continue
+        if in_phase and s:
+            return s
+    return ""
+
+
+def _render_status_wall(brain: Path, today: dt.date) -> str:
+    """A public, link-free live status wall: one card per project with its current
+    phase, unread count, last-log date, and decision/spec counts, plus a
+    'rendered just now' footer stamped with the request time.
+
+    Contains NO ``/brain/f`` links and NO source paths — safe for the public share
+    page. Rendered server-side at request time, so it is always current.
+    """
+    cards: list[str] = []
+    for p in _project_summaries(brain):
+        pid = p["id"]
+        pdir = brain / "metalfinger" if pid == "metalfinger" else brain / "projects" / pid
+        phase = _current_phase_line(pdir)
+        n_dec = _count_concepts(pdir / "decisions")
+        n_spec = _count_concepts(pdir / "specs")
+        foot: list[str] = []
+        if p["status"]:
+            foot.append(badge(str(p["status"]), str(p["status"])))
+        if p["unread"]:
+            foot.append(badge(f"{p['unread']} unread", "unread"))
+        if p["last_log"]:
+            foot.append(f'<span class="badge date">{esc(p["last_log"])}</span>')
+        if n_dec:
+            foot.append(chip(f"{n_dec} decisions"))
+        if n_spec:
+            foot.append(chip(f"{n_spec} specs"))
+        phase_html = (
+            f"<p>{esc(phase)}</p>" if phase else '<p class="empty">No current phase noted.</p>'
+        )
+        cards.append(
+            '<div class="card">'
+            f'<div class="card-head"><h3>{esc(p["title"])}</h3></div>'
+            f"{phase_html}"
+            f'<div class="card-foot">{"".join(foot)}</div>'
+            "</div>"
+        )
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        f'<div class="cards">{"".join(cards)}</div>'
+        '<footer class="concept-foot"><p class="meta">'
+        f"live — rendered just now · {esc(now)}</p></footer>"
+    )
+
+
 # ---------------------------------------------------------------- routes
 
 
@@ -876,6 +1051,18 @@ def register(mcp: FastMCP, settings: Settings) -> None:
     """Register all explorer GET routes, every one behind the Access guard."""
     guard = make_guard(settings)
     brain = settings.brain_path
+    _graph_cache: dict[str, dict] = {}
+
+    async def _graph_payload() -> dict:
+        """The concept graph, cached by HEAD sha (rebuilt only when the bundle moves)."""
+        sha = await to_thread.run_sync(_git_head, brain, settings.git_timeout)
+        if sha and sha in _graph_cache:
+            return _graph_cache[sha]
+        data = await to_thread.run_sync(_graph_data, brain)
+        if sha:
+            _graph_cache.clear()
+            _graph_cache[sha] = data
+        return data
 
     @mcp.custom_route("/brain", ["GET"])
     @guard
@@ -1115,6 +1302,22 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             ]
         else:
             head_parts = [f"<h1>{esc(title)}</h1>"]
+        if (
+            str(meta.get("type") or "") == "live-view"
+            and str(meta.get("view") or "") == "status-wall"
+        ):
+            wall = await to_thread.run_sync(_render_status_wall, brain, _today_utc())
+            note = (
+                '<div class="props"><div class="prop"><span class="prop-v plain">'
+                "This is a live view — it renders current project status at request time. "
+                "Share it (its frontmatter <code>share:</code> token) for a client-facing, "
+                "always-current page.</span></div></div>"
+            )
+            leaf = title if meta.get("title") else None
+            body_parts = [*head_parts, note, wall, _concept_footer(target, rel, brain)]
+            return HTMLResponse(
+                _shell(brain, title, "\n".join(body_parts), _crumbs_for(rel, leaf), f"/brain/f/{rel}")
+            )
         provenance = ""
         if str(meta.get("type") or "") == "artifact":
             raw_sources = meta.get("sources")
@@ -1216,6 +1419,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                         continue
                     meta, _ = split_frontmatter(_read(f))
                     srcs = [str(s) for s in (meta.get("sources") or [])]
+                    is_live = str(meta.get("type") or "") == "live-view"
                     rows.append(
                         {
                             "rel": f.relative_to(brain).as_posix(),
@@ -1224,10 +1428,11 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                             "description": str(meta.get("description") or ""),
                             "timestamp": meta.get("timestamp"),
                             "n_sources": len(srcs),
-                            "stale": _artifact_is_stale(
+                            "stale": None if is_live else _artifact_is_stale(
                                 brain, meta.get("built_from"), srcs, settings.git_timeout
                             ),
                             "shared": bool(meta.get("share")),
+                            "is_live": is_live,
                         }
                     )
             rows.sort(key=lambda r: str(r.get("timestamp") or ""), reverse=True)
@@ -1251,6 +1456,8 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             cards = []
             for r in rows:
                 badges = [chip(r["project"])]
+                if r["is_live"]:
+                    badges.append(badge("live", "active"))
                 if r["stale"] is True:
                     badges.append(badge("sources changed", "unread"))
                 elif r["stale"] is False:
@@ -1260,7 +1467,8 @@ def register(mcp: FastMCP, settings: Settings) -> None:
                 if r["timestamp"]:
                     rel_t, exact = humanize_time(r["timestamp"])
                     badges.append(f'<span class="meta" title="{esc(exact)}">{esc(rel_t)}</span>')
-                badges.append(f'<span class="meta">{r["n_sources"]} sources</span>')
+                if not r["is_live"]:
+                    badges.append(f'<span class="meta">{r["n_sources"]} sources</span>')
                 cards.append(
                     card(
                         f"/brain/f/{r['rel']}",
@@ -1374,6 +1582,17 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             _shell(brain, "Activity", "\n".join(parts), crumbs, "/brain/activity")
         )
 
+    @mcp.custom_route("/brain/graph.json", ["GET"])
+    @guard
+    async def graph_json(request: Request) -> Response:
+        return JSONResponse(await _graph_payload())
+
+    @mcp.custom_route("/brain/graph", ["GET"])
+    @guard
+    async def graph_view(request: Request) -> Response:
+        data = await _graph_payload()
+        return HTMLResponse(graph_page(data, dict(TYPE_GLYPHS)))
+
     @mcp.custom_route("/share/{token}", ["GET"])
     async def share_view(request: Request) -> Response:
         # DELIBERATELY UNGUARDED — the ONLY content route without the Cloudflare Access
@@ -1389,22 +1608,31 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             return PlainTextResponse("Not found", status_code=404)
         _target, meta, body_md = found
         title = str(meta.get("title") or "Shared document")
+        is_wall = (
+            str(meta.get("type") or "") == "live-view"
+            and str(meta.get("view") or "") == "status-wall"
+        )
+        eyebrow = "Live status" if is_wall else "Shared document"
         head = [
             '<div class="page-head">',
             stamp(meta.get("type") or "artifact"),
-            f'<div><p class="eyebrow">Shared document</p><h1>{esc(title)}</h1></div>',
+            f'<div><p class="eyebrow">{eyebrow}</p><h1>{esc(title)}</h1></div>',
             "</div>",
         ]
-        ts = meta.get("timestamp")
-        if ts:
-            _reltime, exact = humanize_time(ts)
-            head.append(f'<p class="meta">{esc(exact)}</p>')
-        body = (
-            "".join(head)
-            + f'<div class="md">{render_markdown_public(body_md)}</div>'
-            + '<footer class="concept-foot"><p class="meta">'
-            "Shared from Hiren&rsquo;s knowledge base.</p></footer>"
-        )
+        if is_wall:
+            wall = await to_thread.run_sync(_render_status_wall, brain, _today_utc())
+            body = "".join(head) + wall
+        else:
+            ts = meta.get("timestamp")
+            if ts:
+                _reltime, exact = humanize_time(ts)
+                head.append(f'<p class="meta">{esc(exact)}</p>')
+            body = (
+                "".join(head)
+                + f'<div class="md">{render_markdown_public(body_md)}</div>'
+                + '<footer class="concept-foot"><p class="meta">'
+                "Shared from Hiren&rsquo;s knowledge base.</p></footer>"
+            )
         return HTMLResponse(share_page(title, body, str(meta.get("description") or "")))
 
     @mcp.custom_route("/", ["GET"])

@@ -25,6 +25,8 @@ TYPE_GLYPHS = {
     "meeting": "🗓",
     "snippet": "✂",
     "note": "📝",
+    "artifact": "📄",
+    "live-view": "📡",
 }
 _DEFAULT_GLYPH = "◆"
 
