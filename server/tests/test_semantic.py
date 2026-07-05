@@ -60,6 +60,9 @@ class FakeQdrant:
         for p in points:
             self.points[collection_name][p.id] = (p.vector, p.payload)
 
+    def create_payload_index(self, collection_name, field_name, field_schema=None):
+        return None  # cloud requires keyword indexes for filtered fields; no-op in the fake
+
     def delete(self, collection_name: str, points_selector) -> None:
         cond = points_selector.must[0]
         key, val = cond.key, cond.match.value
@@ -67,14 +70,17 @@ class FakeQdrant:
         for pid in drop:
             del self.points[collection_name][pid]
 
-    def search(self, collection_name, query_vector, query_filter=None, limit=10, with_payload=True):
+    # Mirror the REAL qdrant-client >= 1.12 API: query_points (returns .points).
+    # There is deliberately NO .search() here — the old fake had one and it hid a
+    # removed-API crash in production.
+    def query_points(self, collection_name, query, query_filter=None, limit=10, with_payload=True):
         out = []
         for _pid, (vec, pl) in self.points[collection_name].items():
             if query_filter is not None and not self._match(query_filter, pl):
                 continue
-            out.append(SimpleNamespace(score=_cosine(query_vector, vec), payload=pl))
+            out.append(SimpleNamespace(score=_cosine(query, vec), payload=pl))
         out.sort(key=lambda h: h.score, reverse=True)
-        return out[:limit]
+        return SimpleNamespace(points=out[:limit])
 
     @staticmethod
     def _match(query_filter, payload) -> bool:

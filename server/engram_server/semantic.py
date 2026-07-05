@@ -164,6 +164,18 @@ class SemanticIndex:
                         size=self._dimension(), distance=qm.Distance.COSINE
                     ),
                 )
+            # Qdrant Cloud requires a payload index for every filtered field
+            # (delete-by-path on upsert; project/type filters at search time) —
+            # without these, filtered requests 400. Idempotent per field.
+            for field in ("path", "project", "type"):
+                try:
+                    client.create_payload_index(
+                        collection_name=self.collection,
+                        field_name=field,
+                        field_schema=qm.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception:  # noqa: BLE001 — already-exists is fine
+                    pass
             self._collection_ready = True
             return True
         except Exception as exc:  # noqa: BLE001 — backend must never crash a tool
@@ -291,13 +303,14 @@ class SemanticIndex:
             if type:
                 conditions.append(qm.FieldCondition(key="type", match=qm.MatchValue(value=type)))
             query_filter = qm.Filter(must=conditions) if conditions else None
-            hits = self._client().search(
+            # qdrant-client >= 1.12 removed .search(); query_points is the API.
+            hits = self._client().query_points(
                 collection_name=self.collection,
-                query_vector=qvec,
+                query=qvec,
                 query_filter=query_filter,
                 limit=max(1, limit) * 4,
                 with_payload=True,
-            )
+            ).points
             best: dict[str, dict[str, Any]] = {}
             for hit in hits:
                 payload = dict(hit.payload or {})
