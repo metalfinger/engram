@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     qdrant_collection: str = "engram-brain"
     embed_model: str = "BAAI/bge-small-en-v1.5"
 
+    # Semantic near-duplicate detection: kb_write warning + the nightly
+    # similar-pairs sweep. Cosine floor — bge-small near-dupes usually score > 0.8.
+    dupe_threshold: float = 0.80
+
     # in-process scheduler (nightly reconcile + morning briefing). ENGRAM_SCHEDULER=0
     # kills both; times are local-clock HH:MM.
     scheduler_enabled: bool = Field(

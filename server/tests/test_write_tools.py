@@ -338,3 +338,27 @@ async def test_write_emits_mutation_log_line(store, caplog):
         )
     lines = [r.getMessage() for r in caplog.records if "kb_mutation" in r.getMessage()]
     assert any("tool=kb_write" in m and res["sha"][:12] in m for m in lines)
+
+
+async def test_new_concept_warns_on_semantic_near_duplicate(store):
+    from types import SimpleNamespace
+
+    store.semantic = SimpleNamespace(
+        search=lambda q, limit=3: [
+            {"path": "projects/alt/specs/existing-thing.md", "score": 0.91}
+        ]
+    )
+    content = "---\ntype: idea\ndescription: A very similar thought.\n---\n\nSee [ctx](../context.md).\n"
+    r = await store.kb_write("projects/alt/ideas/similar-thing.md", content, "add similar")
+    assert any("duplicate" in w and "existing-thing.md" in w for w in r["warnings"])
+
+    # below threshold -> silent; artifacts exempt entirely
+    store.semantic = SimpleNamespace(
+        search=lambda q, limit=3: [{"path": "projects/alt/specs/existing-thing.md", "score": 0.55}]
+    )
+    r2 = await store.kb_write(
+        "projects/alt/ideas/different-thing.md",
+        "---\ntype: idea\ndescription: Something else.\n---\n\nSee [ctx](../context.md).\n",
+        "add different",
+    )
+    assert not any("duplicate" in w for w in r2["warnings"])

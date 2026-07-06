@@ -800,6 +800,7 @@ class KBStore:
                     "relative markdown links to the concepts it relates to."
                 )
             state["warnings"] = warnings
+            state["meta"] = meta
             created = not abs_path.exists()
             state["created"] = created
             if not created and _read_text_retry(abs_path) == normalized:
@@ -818,6 +819,15 @@ class KBStore:
         self._log_mutation("kb_write", [rel], sha, pushed)
         if not state["no_change"]:
             self._schedule_index(upserts=[rel])
+        # Fresh knowledge only: warn when a NEW concept semantically duplicates an
+        # existing one, so the brain consolidates instead of fragmenting. Runs after
+        # the commit (the write itself is never blocked); failure-soft.
+        if state["created"] and not state["no_change"]:
+            dupe = await to_thread.run_sync(
+                lambda: self._near_duplicate(rel, state.get("meta") or {})
+            )
+            if dupe:
+                state["warnings"].append(dupe)
         return {
             "path": rel,
             "created": state["created"] and not state["no_change"],
@@ -827,6 +837,33 @@ class KBStore:
             "warnings": state["warnings"],
             "indexes_updated": state["indexes"],
         }
+
+    _DUPE_EXEMPT_TYPES = ("artifact", "report", "inbox", "message")
+
+    def _near_duplicate(self, rel: str, meta: dict[str, Any]) -> str | None:
+        """A teaching warning when a new concept closely matches an existing one
+        (semantic engine only; None when unavailable, exempt-typed, or no match)."""
+        if self.semantic is None:
+            return None
+        if str(meta.get("type") or "") in self._DUPE_EXEMPT_TYPES:
+            return None
+        query = f"{meta.get('title') or ''}. {meta.get('description') or ''}".strip(". ")
+        if not query:
+            return None
+        try:
+            hits = self.semantic.search(query, limit=3) or []
+        except Exception:  # noqa: BLE001 — advisory only, never break a write
+            return None
+        for hit in hits:
+            path = str(hit.get("path") or "")
+            score = float(hit.get("score") or 0.0)
+            if path and path != rel and score >= self.settings.dupe_threshold:
+                return (
+                    f"Possibly a duplicate of existing concept '{path}' "
+                    f"(similarity {score:.2f}) — consider updating that concept "
+                    "instead of keeping both, or link them explicitly."
+                )
+        return None
 
     async def kb_append_log(self, project: str, entry: str) -> dict[str, Any]:
         """Prepend a dated entry to the project's log.md (newest first; history never edited).

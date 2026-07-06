@@ -157,7 +157,45 @@ def _section(title: str, items: list[str]) -> str:
     return f"## {title} ({len(items)})\n\n{lines}\n"
 
 
-def _render_report(scan: dict[str, Any], timestamp: str, semantic_summary: dict | None) -> str:
+_PAIR_EXEMPT_TYPES = ("artifact", "report", "inbox", "message", "recipe")
+
+
+def _similar_pairs(root: Path, idx: Any, threshold: float) -> list[tuple[str, str, float]]:
+    """Concept pairs whose title+description embed within ``threshold`` of each other —
+    duplicates or contradictions worth a human look. Failure-soft per query."""
+    pairs: dict[frozenset[str], float] = {}
+    for f in sorted(root.rglob("*.md")):
+        rel = f.relative_to(root).as_posix()
+        if ".git" in f.parts or _is_index(rel) or _is_log(rel) or _in_messages(rel):
+            continue
+        meta = read_meta(f)
+        if str(meta.get("type") or "") in _PAIR_EXEMPT_TYPES:
+            continue
+        query = f"{meta.get('title') or ''}. {meta.get('description') or ''}".strip(". ")
+        if not query:
+            continue
+        try:
+            hits = idx.search(query, limit=2) or []
+        except Exception:  # noqa: BLE001 — advisory sweep, never fail the reconcile
+            continue
+        for hit in hits:
+            other = str(hit.get("path") or "")
+            score = float(hit.get("score") or 0.0)
+            if other and other != rel and score >= threshold:
+                key = frozenset((rel, other))
+                pairs[key] = max(pairs.get(key, 0.0), score)
+    out = [(sorted(k)[0], sorted(k)[1], v) for k, v in pairs.items()]
+    out.sort(key=lambda p: p[2], reverse=True)
+    return out
+
+
+def _render_report(
+    scan: dict[str, Any],
+    timestamp: str,
+    semantic_summary: dict | None,
+    similar_pairs: list[tuple[str, str, float]] | None = None,
+) -> str:
+    similar_pairs = similar_pairs or []
     dangling_lines = [
         f"{_rel_link(d['source'])} -> `{d['target']}` (missing)" for d in scan["dangling_links"]
     ]
@@ -170,6 +208,13 @@ def _render_report(scan: dict[str, Any], timestamp: str, semantic_summary: dict 
             _section("Dangling links", dangling_lines),
             _section("Orphan concepts (no inbound links)", [_rel_link(p) for p in scan["orphans"]]),
             _section("Dead knowledge (orphan + unsourced by any artifact)", [_rel_link(p) for p in scan["dead"]]),
+            _section(
+                "Similar pairs (possible duplicates or contradictions — review)",
+                [
+                    f"{_rel_link(a)} ↔ {_rel_link(b)} (similarity {s:.2f})"
+                    for a, b, s in similar_pairs
+                ],
+            ),
         ]
     )
     if semantic_summary is not None:
@@ -219,16 +264,22 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         except GitError as exc:
             log.warning("reconcile: index repair commit failed: %s", exc)
 
-    # 4. Re-embed the whole bundle when semantic is live.
+    # 4. Re-embed the whole bundle when semantic is live, then sweep for
+    # near-duplicate concept pairs (possible duplicates or contradictions).
     semantic_summary = None
+    similar_pairs: list[tuple[str, str, float]] = []
     if semantic_index is not None:
         semantic_summary = await to_thread.run_sync(lambda: semantic_index.full_reindex(store.root))
+        threshold = float(getattr(store.settings, "dupe_threshold", 0.80))
+        similar_pairs = await to_thread.run_sync(
+            lambda: _similar_pairs(store.root, semantic_index, threshold)
+        )
 
     # 5. Write the report back (its own commit).
     from datetime import datetime, timezone
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    md = _render_report(scan, timestamp, semantic_summary)
+    md = _render_report(scan, timestamp, semantic_summary, similar_pairs)
     try:
         await store.kb_write(_REPORT_PATH, md, "reconcile: brain health report")
     except GitError as exc:
@@ -241,6 +292,7 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         "dangling_links": len(scan["dangling_links"]),
         "orphans": len(scan["orphans"]),
         "dead": len(scan["dead"]),
+        "similar_pairs": len(similar_pairs),
         "report_path": _REPORT_PATH,
     }
     log.info("reconcile: %s", summary)

@@ -386,6 +386,21 @@ def daily_briefing() -> str:
 
 
 @mcp.prompt()
+def ask_brain(question: str = "") -> str:
+    """Answer a question FROM the knowledge base with cited sources — search, read, synthesize."""
+    q = f"'{question}'" if question else "the question I ask next"
+    return (
+        f"Answer {q} FROM MY KNOWLEDGE BASE, not from general knowledge. Method: "
+        "kb_search it (semantic — try a second phrasing if the first comes back thin); "
+        "kb_read the top 2-4 hits, depth=1 on whichever looks central and follow ONE "
+        "more link only if it clearly completes the answer; then synthesize a direct, "
+        "concise answer. CITE the exact concept paths you used at the end. If the brain "
+        "genuinely doesn't contain the answer, say so plainly — and once we settle the "
+        "answer in conversation, offer to kb_write it so next time it does."
+    )
+
+
+@mcp.prompt()
 def close_session(project: str = "") -> str:
     """Close out the current work session properly — log entry, context update, handoff."""
     target = f"the '{project}' project" if project else "the project we worked on this session"

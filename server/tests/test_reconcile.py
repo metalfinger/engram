@@ -100,3 +100,36 @@ async def test_run_reconcile_calls_semantic_reindex(store: KBStore) -> None:
     summary = await run_reconcile(store, semantic_index=FakeSem())
     assert calls["root"] == store.root
     assert summary["report_path"] == "library/reports/brain-health.md"
+
+
+async def test_reconcile_reports_similar_pairs(store):
+    """The nightly sweep surfaces near-duplicate concept pairs in brain-health."""
+    from types import SimpleNamespace
+
+    a = "---\ntype: idea\ntitle: Grafana Dashboards\ndescription: Monitoring boards.\n---\n\nSee [ctx](../context.md).\n"
+    b = "---\ntype: idea\ntitle: Grafana Boards\ndescription: Boards for monitoring.\n---\n\nSee [ctx](../context.md).\n"
+    await store.kb_write("projects/alt/ideas/grafana-dashboards.md", a, "a")
+    await store.kb_write("projects/alt/ideas/grafana-boards.md", b, "b")
+
+    def fake_search(query, limit=2):
+        if "Grafana" in query:
+            other = (
+                "projects/alt/ideas/grafana-boards.md"
+                if "Dashboards" in query
+                else "projects/alt/ideas/grafana-dashboards.md"
+            )
+            return [{"path": other, "score": 0.93}]
+        return []
+
+    fake_idx = SimpleNamespace(
+        full_reindex=lambda root: {"indexed": 2, "failed": 0, "skipped": 0},
+        search=fake_search,
+    )
+    from engram_server.reconcile import run_reconcile
+
+    summary = await run_reconcile(store, fake_idx)
+    assert summary["similar_pairs"] == 1
+    report = (store.root / "library/reports/brain-health.md").read_text(encoding="utf-8")
+    assert "Similar pairs" in report
+    assert "grafana-boards.md" in report and "grafana-dashboards.md" in report
+    assert "0.93" in report

@@ -50,3 +50,11 @@ def test_rebuild_artifact_is_a_recipe_runner() -> None:
     assert "CURRENT" in text
     assert "WHAT CHANGED" in text
     assert "SAME path" in text  # git-versioned living documents
+
+
+def test_ask_brain_rails() -> None:
+    text = _prompt_text("ask_brain", {"question": "why oauth"})
+    assert "FROM MY KNOWLEDGE BASE" in text
+    assert "kb_search" in text and "kb_read" in text
+    assert "CITE" in text
+    assert "kb_write" in text  # offer to persist a settled answer
