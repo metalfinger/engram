@@ -351,7 +351,9 @@ def test_html_artifacts_open_rendered_not_source() -> None:
     assert "function readerBody" in NAVIGATOR_HTML
     assert 'String(meta.format||"")!=="html"' in NAVIGATOR_HTML
     assert "Open rendered page ↗" in NAVIGATOR_HTML
-    assert "View ↗" in NAVIGATOR_HTML  # artifacts-row direct open
+    assert "data-view-url" in NAVIGATOR_HTML  # artifacts-row open w/ popup fallback
+    assert "function viewArtifact" in NAVIGATOR_HTML
+    assert "Link sent to chat" in NAVIGATOR_HTML
     rendered = get_navigator_html("https://brain.example")
     assert "__EXPLORER_URL__" not in rendered
     assert "https://brain.example/share/" in rendered.replace("'+esc(meta.share)+'", "TOK") or "https://brain.example/share/" in rendered

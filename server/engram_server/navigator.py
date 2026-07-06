@@ -889,7 +889,7 @@ function artifactRow(a){
   const when=a.timestamp?'<span class="when">'+esc(relTime(a.timestamp))+'</span>':"";
   // HTML artifacts open their rendered page directly (the share URL serves it verbatim)
   const view=(String(a.format||"")==="html" && a.shared && a.share_url)
-    ? '<a class="act" href="'+esc(a.share_url)+'" target="_blank" rel="noopener">View ↗</a>' : "";
+    ? '<button class="act" data-view-url="'+esc(a.share_url)+'">View ↗</button>' : "";
   const acts=view+(a.shared
     ? (a._confirm
         ? '<button class="arch" data-unshare="'+esc(a.path)+'">Confirm unshare</button>'
@@ -1037,7 +1037,19 @@ document.addEventListener("click",(e)=>{
   const ac=e.target.closest("[data-act]"); if(ac){ actMsg(ac.getAttribute("data-act")); return; }
   const sh=e.target.closest("[data-share]"); if(sh){ e.preventDefault(); shareArtifact(sh.getAttribute("data-share")); return; }
   const un=e.target.closest("[data-unshare]"); if(un){ e.preventDefault(); unshareArtifact(un.getAttribute("data-unshare")); return; }
+  const vw=e.target.closest("[data-view-url]"); if(vw){ e.preventDefault(); viewArtifact(vw.getAttribute("data-view-url")); return; }
 });
+
+// Some hosts (claude.ai) swallow popup navigation from the sandboxed iframe —
+// try window.open first; when blocked, hand the link to the agent so it lands
+// in chat where links are always tappable.
+async function viewArtifact(url){
+  let w=null;
+  try{ w=window.open(url, "_blank", "noopener"); }catch(e){ w=null; }
+  if(w) return;
+  const ok=await askAgent("Please show me this artifact link so I can tap it (just present the link, nothing else): "+url);
+  showToast(ok ? "Link sent to chat — tap it there" : "Popup blocked — copy the URL below the row");
+}
 
 // tabs
 function goTab(t){
