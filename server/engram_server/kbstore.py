@@ -644,7 +644,8 @@ class KBStore:
         return result
 
     def _backlinks(self, rel: str) -> list[dict[str, Any]]:
-        """Concepts whose bodies link TO rel (index.md nav links excluded), capped."""
+        """Concepts whose bodies link TO rel, PLUS artifacts that list rel as a
+        provenance source (via: "sources") — the graph walks both edge kinds."""
         base_of = posixpath.dirname
         out: list[dict[str, Any]] = []
         for f in sorted(self.root.rglob("*.md")):
@@ -652,6 +653,13 @@ class KBStore:
                 continue
             src = f.relative_to(self.root).as_posix()
             if src == rel:
+                continue
+            meta = read_meta(f)
+            srcs = meta.get("sources")
+            if isinstance(srcs, list) and rel in [str(s) for s in srcs]:
+                out.append({"path": src, "meta": meta, "via": "sources"})
+                if len(out) >= _LINK_CAP:
+                    break
                 continue
             try:
                 text = _read_text_retry(f)
@@ -666,7 +674,7 @@ class KBStore:
                 else:
                     resolved = posixpath.normpath(posixpath.join(base_of(src), target))
                 if resolved == rel:
-                    out.append({"path": src, "meta": read_meta(f)})
+                    out.append({"path": src, "meta": meta, "via": "link"})
                     break
             if len(out) >= _LINK_CAP:
                 break

@@ -361,6 +361,12 @@ def _backlinks(brain: Path, target_rel: str) -> list[tuple[str, str]]:
         rel = path.relative_to(brain).as_posix()
         if ".git" in rel.split("/") or path.name == "index.md" or rel == target_rel:
             continue
+        # Provenance edges count: an artifact that lists target_rel as a source
+        # references it as surely as a body link does.
+        srcs = split_frontmatter(_read(path))[0].get("sources") if path.is_file() else None
+        if isinstance(srcs, list) and target_rel in [str(s) for s in srcs]:
+            out.append((rel, _file_title(path)))
+            continue
         try:
             text = _read(path)
         except (OSError, UnicodeDecodeError):
@@ -935,6 +941,17 @@ def _graph_data(brain: Path) -> dict:
             edges.append({"source": rel, "target": tgt})
             out_count[rel] = out_count.get(rel, 0) + 1
             in_count[tgt] = in_count.get(tgt, 0) + 1
+        # Provenance edges: artifact -> each source it was built from.
+        srcs = _meta.get("sources")
+        if isinstance(srcs, list):
+            for s in srcs:
+                tgt = posixpath.normpath(str(s))
+                if tgt == rel or tgt not in node_ids or tgt in seen:
+                    continue
+                seen.add(tgt)
+                edges.append({"source": rel, "target": tgt, "kind": "sources"})
+                out_count[rel] = out_count.get(rel, 0) + 1
+                in_count[tgt] = in_count.get(tgt, 0) + 1
 
     nodes: list[dict] = []
     for rel in sorted(node_ids):

@@ -133,3 +133,21 @@ async def test_reconcile_reports_similar_pairs(store):
     assert "Similar pairs" in report
     assert "grafana-boards.md" in report and "grafana-dashboards.md" in report
     assert "0.93" in report
+
+
+async def test_outputs_exempt_from_orphans_and_dead(store):
+    """Artifacts/reports are outputs — provenance measures them, not inbound links."""
+    art = (
+        "---\ntype: artifact\ntitle: Some Brief\ndescription: d\n"
+        "sources:\n  - projects/alt/context.md\n---\n\nBody.\n"
+    )
+    await store.kb_write("projects/alt/artifacts/2026-07-some-brief.md", art, "add artifact")
+    orphan = "---\ntype: idea\ntitle: Truly Alone\ndescription: d\n---\n\nNo links at all here.\n"
+    await store.kb_write("projects/alt/ideas/truly-alone.md", orphan, "add orphan")
+
+    from engram_server.reconcile import run_reconcile
+
+    summary = await run_reconcile(store, None)
+    report = (store.root / "library/reports/brain-health.md").read_text(encoding="utf-8")
+    assert "some-brief.md" not in report          # artifact exempt
+    assert "truly-alone.md" in report             # real orphan still flagged

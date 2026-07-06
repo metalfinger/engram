@@ -97,13 +97,17 @@ def _scan(root: Path) -> dict[str, Any]:
                 if resolved not in existing:
                     dangling.append({"source": rel, "target": resolved})
 
-        # Artifact sources feed dead-knowledge exemption.
+        # Artifact sources feed dead-knowledge exemption — and a manifest that
+        # names a missing file is a dangling reference like any broken link.
         if "/artifacts/" in rel and not _is_index(rel):
             meta = read_meta(f)
             if str(meta.get("type") or "") == "artifact":
                 srcs = meta.get("sources")
                 if isinstance(srcs, list):
-                    artifact_sources.update(str(s) for s in srcs)
+                    for s in (str(x) for x in srcs):
+                        artifact_sources.add(s)
+                        if s not in existing:
+                            dangling.append({"source": rel, "target": f"{s} (manifest source)"})
 
     # Index membership: a regular concept must be linked from its parent index.md.
     for rel in concept_files:
@@ -122,13 +126,18 @@ def _scan(root: Path) -> dict[str, Any]:
         if not linked:
             index_repairs.append(rel)
 
-    # Orphans + dead knowledge: concepts nobody's body links to.
+    # Orphans + dead knowledge: concepts nobody's body links to. Outputs are
+    # exempt — artifacts/reports/recipes carry provenance instead of inbound
+    # links, and inbox notes are pre-triage by definition; flagging them is noise.
+    _output_types = ("artifact", "report", "recipe", "inbox")
     orphans: list[str] = []
     dead: list[str] = []
     for rel in concept_files:
         if _is_anchor(rel) or _in_messages(rel):
             continue
         if inbound.get(rel, 0) > 0:
+            continue
+        if str(read_meta(root / rel).get("type") or "") in _output_types:
             continue
         orphans.append(rel)
         if rel not in artifact_sources:
