@@ -757,7 +757,7 @@ function readerBody(meta, content){
   if(String(meta.format||"")!=="html") return '<div class="md">'+renderMarkdown(content)+'</div>';
   var body=content.replace(/^---[\s\S]*?---\s*/,"");
   var open=meta.share
-    ? '<p><a class="act" href="__EXPLORER_URL__/share/'+esc(meta.share)+'" target="_blank" rel="noopener">Open rendered page ↗</a></p>'
+    ? '<p><button class="act" data-view-url="__EXPLORER_URL__/share/'+esc(meta.share)+'">Open rendered page ↗</button></p>'
     : '<p class="empty">This is an HTML artifact — Share it (Artifacts tab) to get a rendered, viewable page.</p>';
   return open+'<div class="md"><details><summary>HTML source ('+body.length+' chars)</summary><pre>'+esc(body.slice(0,20000))+'</pre></details></div>';
 }
@@ -1022,6 +1022,10 @@ function seedFrom(data){
 
 // ─────────────────── delegated clicks (survive re-renders) ─────────────────
 document.addEventListener("click",(e)=>{
+  // EVERY external-opening anchor (Graph link, markdown http links, anything
+  // target=_blank) goes through the popup-or-hand-to-chat fallback: no button
+  // in this widget may silently do nothing on a popup-blocking host.
+  const xa=e.target.closest('a[target="_blank"]'); if(xa && xa.href){ e.preventDefault(); viewArtifact(xa.href); return; }
   const bk=e.target.closest("[data-bk-path]"); if(bk){ e.preventDefault(); toggleBasket(bk.getAttribute("data-bk-path"), bk.getAttribute("data-bk-title")); return; }
   const op=e.target.closest("[data-open-path]"); if(op){ e.preventDefault(); openFile(op.getAttribute("data-open-path")); return; }
   const ml=e.target.closest("a.mdlink"); if(ml){ e.preventDefault(); const t=resolveRel(dirOf(state.readPath||""), ml.getAttribute("data-rel")); if(t) openFile(t); return; }

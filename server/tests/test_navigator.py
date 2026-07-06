@@ -357,3 +357,13 @@ def test_html_artifacts_open_rendered_not_source() -> None:
     rendered = get_navigator_html("https://brain.example")
     assert "__EXPLORER_URL__" not in rendered
     assert "https://brain.example/share/" in rendered.replace("'+esc(meta.share)+'", "TOK") or "https://brain.example/share/" in rendered
+
+
+def test_every_external_open_has_popup_fallback() -> None:
+    """No dead buttons: reader Open-rendered is a data-view-url button, and a
+    blanket interceptor routes ALL target=_blank anchors through viewArtifact."""
+    from engram_server.navigator import NAVIGATOR_HTML
+
+    assert "Open rendered page ↗</button>" in NAVIGATOR_HTML  # button, not bare anchor
+    assert "a[target=\"_blank\"]" in NAVIGATOR_HTML.replace("'", '"') or 'a[target="_blank"]' in NAVIGATOR_HTML
+    assert "viewArtifact(xa.href)" in NAVIGATOR_HTML
