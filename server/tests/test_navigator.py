@@ -282,21 +282,53 @@ def test_html_save_as_recipe_message_shape() -> None:
 
 
 def test_html_run_recipe_message_shape() -> None:
-    # recipes list best-effort via kb_search(type:"recipe"); a per-row Run rebuilds
-    assert 'callTool("kb_search",{query:"recipe", type:"recipe", limit:25})' in NAVIGATOR_HTML
+    # recipes list via the real kb_recipes tool; a per-row Run rebuilds
+    assert 'callTool("kb_recipes"' in NAVIGATOR_HTML
     assert "data-run-recipe" in NAVIGATOR_HTML
     assert "Run the recipe " in NAVIGATOR_HTML
     assert "build per its instruction as a proper ARTIFACT" in NAVIGATOR_HTML
 
 
+def test_html_recipes_use_kb_recipes_not_search_hack() -> None:
+    # CHANGE 1: recipes come from the dedicated kb_recipes tool; the old
+    # kb_search(query:"recipe", type:"recipe") beta hack is gone entirely.
+    assert 'callTool("kb_recipes",{})' in NAVIGATOR_HTML
+    assert 'query:"recipe", type:"recipe"' not in NAVIGATOR_HTML
+    # the "beta" chip on the recipes section is removed (real tool now)
+    assert 'class="chip beta"' not in NAVIGATOR_HTML
+    assert "chip beta" not in NAVIGATOR_HTML
+
+
+def test_html_recipe_rows_show_instruction_and_source_count() -> None:
+    # kb_recipes carries real `instruction` + `sources`, so rows surface them
+    assert "r.instruction" in NAVIGATOR_HTML
+    assert "r.sources" in NAVIGATOR_HTML
+    assert 'class="artmeta"' in NAVIGATOR_HTML  # truncated instruction line
+    assert '<span class="k">src</span>' in NAVIGATOR_HTML  # source-count chip
+
+
 def test_html_artifacts_filter_row() -> None:
-    # [ All | Artifacts | Recipes ] filter (buttons built from this key list),
-    # with the recipes section flagged beta
+    # [ All | Artifacts | Recipes ] filter (buttons built from this key list)
     assert 'class="filterrow"' in NAVIGATOR_HTML
     assert 'data-filter="' in NAVIGATOR_HTML
     assert '["all","artifacts","recipes"]' in NAVIGATOR_HTML
     assert "function setFilter(" in NAVIGATOR_HTML
-    assert 'class="chip beta"' in NAVIGATOR_HTML
+
+
+def test_html_artifacts_and_recipes_group_by_project() -> None:
+    # CHANGE 2: rows group under a per-project section-label sub-header (id + count)
+    # when >1 project is present, and fall back to a flat list at <=1 project. The
+    # same groupByProject helper renders both the Artifacts and Recipes sections.
+    assert "function groupByProject(" in NAVIGATOR_HTML
+    # flat-list guard when a single (or no) project owns the rows
+    assert "if(order.length<=1) return rows.map(rowFn).join" in NAVIGATOR_HTML
+    # project sub-header carries the project id and a count
+    assert 'class="section-label pgroup"' in NAVIGATOR_HTML
+    assert 'class="pgcount"' in NAVIGATOR_HTML
+    assert "byProj[pj].length" in NAVIGATOR_HTML
+    # both sections route through the grouping helper
+    assert "groupByProject(rows, artifactRow)" in NAVIGATOR_HTML
+    assert "groupByProject(rows, recipeRow)" in NAVIGATOR_HTML
 
 
 def test_html_quick_capture_uses_kb_inbox_with_fallback() -> None:

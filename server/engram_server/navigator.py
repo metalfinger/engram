@@ -177,7 +177,6 @@ button { font:inherit; }
 .fbtn { appearance:none; border:1px solid var(--line-2); background:var(--surface); color:var(--muted); font-size:.74rem; font-weight:600; padding:.28rem .6rem; border-radius:999px; cursor:pointer; }
 .fbtn:hover { border-color:var(--accent-line); color:var(--accent-ink); }
 .fbtn.on { background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent-line); }
-.chip.beta { background:color-mix(in srgb,var(--violet) 16%,transparent); color:var(--violet); border-color:transparent; text-transform:uppercase; letter-spacing:.06em; font-size:.6rem; }
 .save-recipe { flex:0 0 auto; background:var(--surface); color:var(--accent-ink); font-weight:600; font-size:.82rem; border:1px solid var(--accent-line); border-radius:8px; padding:.42rem .8rem; cursor:pointer; }
 .save-recipe:hover { background:var(--accent-soft); }
 
@@ -334,6 +333,10 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .chip.stale { background:color-mix(in srgb,var(--amber) 16%,transparent); color:var(--amber); border-color:transparent; }
 .sharebox { margin-top:.5rem; border:1px solid var(--line-2); border-radius:8px; background:var(--code-bg); overflow-x:auto; }
 .sharebox .share-url { display:block; padding:.45rem .6rem; font-family:ui-monospace,Consolas,monospace; font-size:.74rem; white-space:pre; color:var(--fg); -webkit-user-select:all; user-select:all; }
+.artrow .artmeta { font-size:.75rem; color:var(--muted); margin:.15rem 0 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* project sub-header (grouped artifacts / recipes) */
+.section-label.pgroup { margin-top:1rem; }
+.section-label .pgcount { color:var(--faint); font-weight:600; font-variant-numeric:tabular-nums; }
 
 /* basket footer bar */
 .basket { position:sticky; bottom:0; z-index:6; background:color-mix(in srgb,var(--surface) 96%,var(--accent) 4%);
@@ -935,15 +938,15 @@ function artifactRow(a){
     +box
   +'</div>';
 }
-// RECIPES: best-effort listing. kb_artifacts scans artifacts/ only; recipes live
-// in recipes/, so we surface them via kb_search(type:"recipe") until a dedicated
-// kb_recipes tool exists — hence the "beta" chip. Tap opens the Reader; Run hands
-// the recipe back to the agent to rebuild from its current sources.
+// RECIPES: listed via the dedicated kb_recipes tool (type: recipe concepts under
+// projects/*/recipes/, sorted newest-first) — sources + instruction are real fields
+// now, so rows can show them. Tap opens the Reader; Run hands the recipe back to the
+// agent to rebuild from its current sources.
 async function loadRecipes(force){
   if(state.recipes && !force){ renderArtifacts(); return; }
   state.recipesStatus="loading"; renderArtifacts();
   try{
-    const d=await callTool("kb_search",{query:"recipe", type:"recipe", limit:25});
+    const d=await callTool("kb_recipes",{});
     if(d && d.error) throw new Error(d.error);
     state.recipes=Array.isArray(d)?d:[]; state.recipesStatus="ok";
   }catch(e){ state.recipesStatus="error"; state.recipes=state.recipes||[]; }
@@ -951,11 +954,16 @@ async function loadRecipes(force){
 }
 function recipeRow(r){
   const nm=(r.path||"").split("/").pop();
-  const proj=projectOf(r.path)||r.project||"";
+  const proj=r.project||projectOf(r.path)||"";
+  const srcN=Array.isArray(r.sources)?r.sources.length:0;
+  const srcChip=srcN?'<span class="chip"><span class="k">src</span> '+srcN+'</span>':"";
+  const instr=(r.instruction||"").trim();
+  const instrShort=instr.length>120?instr.slice(0,120)+"…":instr;
   return '<div class="artrow">'
     +'<div class="artmain" data-open-path="'+esc(r.path)+'">'
       +'<div class="arthead"><span class="stamp">'+glyph("runbook")+'</span><span class="artt">'+esc(r.title||nm)+'</span></div>'
-      +'<div class="artchips">'+(proj?'<span class="chip proj">'+esc(proj)+'</span>':'')+'</div>'
+      +'<div class="artchips">'+(proj?'<span class="chip proj">'+esc(proj)+'</span>':'')+srcChip+'</div>'
+      +(instrShort?'<p class="artmeta" title="'+esc(instr)+'">'+esc(instrShort)+'</p>':'')
     +'</div>'
     +'<div class="artacts"><button class="act" data-run-recipe="'+esc(r.path)+'">Run</button></div>'
   +'</div>';
@@ -966,18 +974,31 @@ async function runRecipe(path){
   const ok=await askAgent(text);
   showToast(ok?"Sent to Claude — running the recipe":"Couldn't reach Claude — try again", ok?null:()=>runRecipe(path));
 }
+// Group rows by project when MORE THAN ONE project is present: a section-label
+// sub-header (project id + count) then that project's rows. Input arrives
+// newest-first, so a project's FIRST appearance marks its most-recent item —
+// first-seen order already sorts projects newest-first and keeps rows newest-first
+// within each. <=1 project stays a flat list (no grouping chrome).
+function groupByProject(rows, rowFn){
+  const order=[], byProj={};
+  for(const r of rows){ const pj=r.project||projectOf(r.path)||"(unfiled)";
+    if(!byProj[pj]){ byProj[pj]=[]; order.push(pj); } byProj[pj].push(r); }
+  if(order.length<=1) return rows.map(rowFn).join("");
+  return order.map(pj=>'<p class="section-label pgroup">'+esc(pj)+' <span class="pgcount">'+byProj[pj].length+'</span></p>'
+    +byProj[pj].map(rowFn).join("")).join("");
+}
 function artifactsBody(){
   if(state.artifactsStatus==="loading") return skelRows(3);
   if(state.artifactsStatus==="error") return errBlock("Couldn't load artifacts.","artifacts");
   const rows=state.artifacts||[];
-  return rows.length ? rows.map(artifactRow).join("")
+  return rows.length ? groupByProject(rows, artifactRow)
     : '<div class="empty">No artifacts yet — build one from the basket.</div>';
 }
 function recipesBody(){
   if(state.recipesStatus==="loading") return skelRows(2);
   if(state.recipesStatus==="error") return errBlock("Couldn't load recipes.","recipes");
   const rows=state.recipes||[];
-  return rows.length ? rows.map(recipeRow).join("")
+  return rows.length ? groupByProject(rows, recipeRow)
     : '<div class="empty">No recipes found yet — save one from the basket.</div>';
 }
 function setFilter(f){ state.artifactFilter=f;
@@ -992,7 +1013,7 @@ function renderArtifacts(){
     '<button class="fbtn'+(f===k?" on":"")+'" data-filter="'+k+'">'+labels[k]+'</button>').join("")+'</div>';
   let sections="";
   if(f==="all"||f==="artifacts"){ sections+='<p class="section-label">Artifacts</p>'+artifactsBody(); }
-  if(f==="all"||f==="recipes"){ sections+='<p class="section-label">Recipes <span class="chip beta">beta</span></p>'+recipesBody(); }
+  if(f==="all"||f==="recipes"){ sections+='<p class="section-label">Recipes</p>'+recipesBody(); }
   show('<div class="ihead"><p class="eyebrow" style="margin:0">Artifacts</p><button class="refresh" id="art-refresh">⟳ Refresh</button></div>'
     +filterRow+sections);
   const rf=$("art-refresh"); if(rf) rf.onclick=()=>{ loadArtifacts(true); if(f!=="artifacts") loadRecipes(true); };
