@@ -24,6 +24,7 @@ from .config import Settings
 from .errors import GitError, KBError
 from .frontmatter import Doc, normalize_meta, read_meta, serialize, split, validate_concept
 from .gitops import GitRepo
+from .importers import parse_export
 from .indexer import ensure_indexed
 from .search import query_variants as _query_variants
 from .search import rrf_fuse as _rrf_fuse
@@ -1092,6 +1093,15 @@ class KBStore:
                     by_path[wr["path"]] = wr
             fused.sort(key=lambda r: r["score"], reverse=True)
 
+        # Optional cross-encoder rerank of the fused candidates (opt-in). Reranks the
+        # whole candidate pool before truncating to limit; fully failure-soft — a
+        # reranker error returns the un-reranked fused order unchanged.
+        if self.settings.rerank_enabled and self.semantic is not None and len(fused) > 1:
+            index = self.semantic
+            reranked = await to_thread.run_sync(lambda: index.rerank(query, fused))
+            if reranked:
+                fused = reranked
+
         return fused[:limit]
 
     # ------------------------------------------------------------------ writes
@@ -1174,6 +1184,12 @@ class KBStore:
             state["warnings"] = warnings
             state["meta"] = meta
             state["superseded"] = superseded
+            # Stash the artifact body + sources for a post-commit rebuild-guard check
+            # (embedding runs off the git lock, failure-soft, never blocks the write).
+            if is_artifact and has_sources:
+                drift_doc = split(normalized)
+                if drift_doc is not None:
+                    state["drift"] = (drift_doc.body, [str(s) for s in sources])
             created = not abs_path.exists()
             state["created"] = created
             main_unchanged = not created and _read_text_retry(abs_path) == normalized
@@ -1205,6 +1221,15 @@ class KBStore:
             )
             if dupe:
                 state["warnings"].append(dupe)
+        # Artifact rebuild-guard: warn (never block) when a saved artifact's body has
+        # drifted from the sources it claims to be built on. Runs after the commit; soft.
+        if not state["no_change"] and state.get("drift"):
+            body, srcs = state["drift"]
+            drift_warning = await to_thread.run_sync(
+                lambda: self._artifact_drift_warning(body, srcs)
+            )
+            if drift_warning:
+                state["warnings"].append(drift_warning)
         return {
             "path": rel,
             "created": state["created"] and not state["no_change"],
@@ -1241,6 +1266,24 @@ class KBStore:
                     f"(similarity {score:.2f}) — consider updating that concept "
                     "instead of keeping both, or link them explicitly."
                 )
+        return None
+
+    def _artifact_drift_warning(self, body: str, sources: list[str]) -> str | None:
+        """Advisory rebuild-guard warning when an artifact's body diverged from its
+        sources (semantic engine only; None when unavailable or above threshold)."""
+        if self.semantic is None:
+            return None
+        try:
+            similarity = self.semantic.centroid_drift(body, sources)
+        except Exception:  # noqa: BLE001 — advisory only, never break a write
+            return None
+        if similarity is None:
+            return None
+        if similarity < self.settings.artifact_drift_threshold:
+            return (
+                f"this artifact diverged from its sources (similarity {similarity:.2f}) — "
+                "it may contain content not grounded in them; review."
+            )
         return None
 
     # ------------------------------------------------------------------ supersession
@@ -1673,6 +1716,95 @@ class KBStore:
         self._log_mutation("kb_inbox", [state["path"]], sha, pushed)
         self._schedule_index(upserts=[state["path"]])
         return {"path": state["path"], "sha": sha, "pushed": pushed}
+
+    # ------------------------------------------------------------------ importers
+
+    async def kb_import(
+        self, source: str, payload: str, dry_run: bool = True
+    ) -> dict[str, Any]:
+        """Backfill the brain from a ChatGPT/Claude export. dry_run (default) parses and
+        returns proposals WITHOUT writing; dry_run=False files each proposal into
+        inbox/imports/ as a type: imported-conversation concept (skipping paths that
+        already exist), in one commit.
+
+        Returns {source, proposed: [{path, title, timestamp, message_count, truncated}],
+        imported: [paths], skipped: [paths]}."""
+        src = (source or "").strip().lower()
+        if src not in ("chatgpt", "claude"):
+            raise KBError(
+                f"Unknown import source {source!r} — supported sources are 'chatgpt' and 'claude'."
+            )
+        if not payload or not payload.strip():
+            raise KBError(
+                "Empty import payload — paste the exported conversations JSON "
+                "(ChatGPT or Claude conversations.json)."
+            )
+        proposals = await to_thread.run_sync(lambda: parse_export(src, payload))
+        proposed_summary = [
+            {
+                "path": p["suggested_path"],
+                "title": p["title"],
+                "timestamp": p["timestamp"],
+                "message_count": p["message_count"],
+                "truncated": p["truncated"],
+            }
+            for p in proposals
+        ]
+        if dry_run or not proposals:
+            return {
+                "source": src,
+                "proposed": proposed_summary,
+                "imported": [],
+                "skipped": [],
+            }
+
+        state: dict[str, Any] = {"imported": [], "skipped": []}
+
+        def _mutate() -> list[str]:
+            paths: list[str] = []
+            for p in proposals:
+                _abs, rel = self._resolve(p["suggested_path"])
+                if _abs.exists():
+                    state["skipped"].append(rel)
+                    continue
+                description = f"Imported {p['source']} conversation ({p['message_count']} turns)."
+                meta: dict[str, Any] = {
+                    "type": "imported-conversation",
+                    "title": p["title"],
+                    "description": description,
+                    "timestamp": p["timestamp"] or _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "source": p["source"],
+                    "status": "untriaged",
+                    "message_count": p["message_count"],
+                }
+                text = serialize(Doc(meta=meta, body=p["body"]))
+                normalized, meta, _warnings = validate_concept(
+                    text, rel_path=rel, description_arg=description
+                )
+                _write_text(_abs, normalized)
+                paths.append(rel)
+                paths.extend(
+                    ensure_indexed(
+                        self.root, rel, str(meta.get("title") or ""), str(meta.get("description") or "")
+                    )
+                )
+                state["imported"].append(rel)
+            return paths
+
+        sha, pushed = await self._locked_commit(
+            _mutate, f"kb: import {len(proposals)} conversations from {src}"
+        )
+        self._log_mutation("kb_import", state["imported"], sha, pushed)
+        if state["imported"]:
+            self._schedule_index(upserts=list(state["imported"]))
+        return {
+            "source": src,
+            "proposed": proposed_summary,
+            "imported": state["imported"],
+            "skipped": state["skipped"],
+            "sha": sha,
+            "pushed": pushed,
+        }
 
     # ------------------------------------------------------------------ artifacts
 

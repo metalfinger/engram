@@ -26,6 +26,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
 from engram_server.config import Settings, get_settings
+from engram_server.doctor import run_doctor
 from engram_server.errors import GitError
 from engram_server.explorer import register as register_explorer
 from engram_server.kbstore import KBStore
@@ -372,6 +373,40 @@ async def kb_inbox(text: str) -> dict[str, Any]:
     Returns {path, sha, pushed}.
     """
     return await store.kb_inbox(text)
+
+
+@mcp.tool()
+async def kb_import(source: str, payload: str, dry_run: bool = True) -> dict[str, Any]:
+    """Backfill the brain from a ChatGPT or Claude data export — paste/point at the
+    exported conversations JSON. `source` is 'chatgpt' or 'claude'. Defaults to a DRY
+    RUN: it parses the export and returns what WOULD be imported (one proposal per
+    conversation) WITHOUT writing anything, so you can show the user the set first. Call
+    again with dry_run=false to actually file them into inbox/imports/ as
+    type: imported-conversation concepts (paths that already exist are skipped) for later
+    triage into proper concepts. SIZE CAVEAT: exports can be large — for a big history,
+    summarize what you'd import and confirm before a non-dry-run rather than dumping
+    everything; each conversation body is capped and marked truncated when it overflows.
+
+    Returns {source, proposed: [{path, title, timestamp, message_count, truncated}],
+    imported: [paths], skipped: [paths]}.
+    """
+    return await store.kb_import(source, payload, dry_run)
+
+
+@mcp.tool()
+async def kb_doctor() -> dict[str, Any]:
+    """Run a round-trip HEALTH self-test of this brain deployment and report pass/warn/fail.
+    Use when the user asks "is my brain healthy?", suspects the server is misconfigured,
+    or after a deploy. Non-mutating: checks the git checkout answers, projects read, the
+    OKF write/read/delete pipeline is sound (in a throwaway temp dir — no commit), the
+    semantic backend is reachable or cleanly text-only, the OAuth store loads, the
+    scheduler config is sane, and reports counts (concepts, artifacts, unread, orphans).
+    This is the plumbing check; the nightly reconcile's brain-health report is the content
+    audit — mention that for orphan/dead-knowledge detail.
+
+    Returns {status, checks: [{name, status, detail}], counts, head}.
+    """
+    return await run_doctor(settings, store)
 
 
 @mcp.tool()

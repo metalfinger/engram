@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     # similar-pairs sweep. Cosine floor — bge-small near-dupes usually score > 0.8.
     dupe_threshold: float = 0.80
 
+    # Artifact rebuild-guard (hallucination check for living documents): on a
+    # type: artifact write that lists sources, kb_write compares the artifact body's
+    # embedding centroid to its sources' centroid and warns (never blocks) when the
+    # cosine falls below this floor — a low score means the document drifted from
+    # what it claims to be built on.
+    artifact_drift_threshold: float = 0.5
+
+    # Cross-encoder rerank of kb_search results (opt-in; OFF by default — it adds
+    # latency and a one-time model download). When on and the semantic backend is
+    # live, the fused top-k is reranked and the blended score is
+    # 0.7*fused_norm + 0.3*sigmoid(ce) so an absolute magnitude survives for abstention.
+    rerank_enabled: bool = False
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+
     # in-process scheduler (nightly reconcile + morning briefing). ENGRAM_SCHEDULER=0
     # kills both; times are local-clock HH:MM.
     scheduler_enabled: bool = Field(

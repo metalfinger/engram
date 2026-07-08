@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import posixpath
 import uuid
 from dataclasses import dataclass, field
@@ -42,11 +43,12 @@ class Chunk:
 
 @dataclass
 class _FakeControls:
-    """Test seam: unit tests set .client and .embedder to fakes so no network/model
-    download happens. Production leaves both None and the lazy factories run."""
+    """Test seam: unit tests set .client, .embedder, and .reranker to fakes so no
+    network/model download happens. Production leaves them None and the lazy factories run."""
 
     client: Any = None
     embedder: Any = None
+    reranker: Any = None
     dim: int | None = None
     calls: list[tuple[str, Any]] = field(default_factory=list)
 
@@ -54,6 +56,34 @@ class _FakeControls:
 def _sha(text: str) -> str:
     """Content fingerprint of one chunk's embeddable text — the incremental key."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length vectors; 0.0 when either is degenerate."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _centroid(vectors: list[list[float]]) -> list[float] | None:
+    """Element-wise mean of equal-length vectors, or None when empty/ragged."""
+    vectors = [v for v in vectors if v]
+    if not vectors:
+        return None
+    dim = len(vectors[0])
+    if any(len(v) != dim for v in vectors):
+        return None
+    return [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically-stable logistic squashing of a raw cross-encoder score into (0, 1)."""
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
 
 
 def _project_of(path: str) -> str | None:
@@ -143,6 +173,17 @@ class SemanticIndex:
     def _embed(self, texts: list[str]) -> list[list[float]]:
         vectors = self._embedder().embed(texts)
         return [list(map(float, v)) for v in vectors]
+
+    def _reranker(self) -> Any:
+        if self._ctl.reranker is None:
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+            log.info(
+                "semantic: loading rerank model %s (first use may download)",
+                self.settings.rerank_model,
+            )
+            self._ctl.reranker = TextCrossEncoder(model_name=self.settings.rerank_model)
+        return self._ctl.reranker
 
     def _dimension(self) -> int:
         if self._ctl.dim is None:
@@ -422,6 +463,79 @@ class SemanticIndex:
         except Exception as exc:  # noqa: BLE001
             log.warning("semantic: search(%r) failed: %s", query, exc)
             return None
+
+    # ------------------------------------------------------------------ rebuild-guard
+
+    def centroid_drift(self, result_text: str, source_paths: list[str]) -> float | None:
+        """Cosine of a result's embedding centroid vs its sources' centroid.
+
+        The result centroid is the mean of ``result_text``'s embedded chunks; the
+        sources' centroid is the mean of every source path's ALREADY-INDEXED chunk
+        vectors (fetched from the store, so no re-embedding of source bodies). A low
+        similarity means the result diverged from what it claims to be built on — a
+        cheap rebuild/hallucination guard for artifacts.
+
+        Returns the similarity in [0, 1], or None when the backend is unavailable,
+        there are no sources, or no source has any indexed vectors. Failure-soft."""
+        if not result_text or not result_text.strip() or not source_paths:
+            return None
+        if not self.ensure_collection():
+            return None
+        try:
+            pieces = [c.text for c in _split_sections(result_text) if c.text.strip()]
+            if not pieces:
+                pieces = _cap(result_text.strip())
+            if not pieces:
+                return None
+            result_centroid = _centroid(self._embed(pieces))
+            if result_centroid is None:
+                return None
+            source_vectors: list[list[float]] = []
+            for path in source_paths:
+                for _pid, (vec, _payload) in self._existing_points(str(path)).items():
+                    if vec:
+                        source_vectors.append(list(vec))
+            source_centroid = _centroid(source_vectors)
+            if source_centroid is None:
+                return None
+            return round(_cosine(result_centroid, source_centroid), 4)
+        except Exception as exc:  # noqa: BLE001 — advisory only, never crash a write
+            log.warning("semantic: centroid_drift failed: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------ rerank
+
+    def rerank(self, query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Cross-encoder rerank of already-fused results. Blends the reranker score with
+        the incoming fused score (0.7*fused_norm + 0.3*sigmoid(ce)) so an absolute
+        magnitude survives for abstention, stamps ``reranked: True``, and re-sorts.
+
+        Failure-soft: fewer than two results, or ANY reranker error, returns the input
+        list unchanged (no ``reranked`` flag) so a downed reranker degrades to fusion."""
+        if not results or len(results) < 2:
+            return results
+        try:
+            documents = [
+                (f"{r.get('title') or ''} {r.get('description') or ''}".strip() or str(r.get("path") or ""))
+                for r in results
+            ]
+            ce_scores = list(self._reranker().rerank(query, documents))
+            if len(ce_scores) != len(results):
+                return results
+            fmax = max((float(r.get("score") or 0.0) for r in results), default=0.0) or 1.0
+            reranked: list[dict[str, Any]] = []
+            for r, ce in zip(results, ce_scores):
+                fused_norm = float(r.get("score") or 0.0) / fmax
+                blended = 0.7 * fused_norm + 0.3 * _sigmoid(float(ce))
+                new = dict(r)
+                new["score"] = round(blended, 4)
+                new["reranked"] = True
+                reranked.append(new)
+            reranked.sort(key=lambda r: r["score"], reverse=True)
+            return reranked
+        except Exception as exc:  # noqa: BLE001 — rerank is optional polish, never fatal
+            log.warning("semantic: rerank(%r) failed, returning fused order: %s", query, exc)
+            return results
 
     # ------------------------------------------------------------------ reindex
 
