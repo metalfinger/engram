@@ -421,6 +421,7 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
     and library/), and updates the denormalized project field inside the moved tree —
     one commit. New id must be kebab-case and unused. metalfinger cannot be renamed.
     After renaming, refer to the project by its new id (kb_load, kb_search filters).
+    For a SINGLE concept (not a whole project), use kb_move instead.
 
     Returns {old, new, links_rewritten, sha, pushed}.
     """
