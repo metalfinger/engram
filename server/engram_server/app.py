@@ -256,7 +256,10 @@ async def kb_edit(
 @mcp.tool()
 async def kb_move(old_path: str, new_path: str) -> dict[str, Any]:
     """Rename/relocate a single concept, rewriting every link to it bundle-wide — use
-    kb_rename_project for whole projects. Moves one concept file from old_path to new_path
+    kb_rename_project for whole projects. Reach for this when the user wants ONE file to
+    live somewhere else or be named differently ('move that decision under specs/',
+    'rename this concept'), or when reorganizing a project's shape. Moves one concept file
+    from old_path to new_path
     (both repo-relative POSIX .md paths; new_path must be free) and keeps the graph intact:
     it re-bases the moved file's own relative links, rewrites every relative markdown link
     ANYWHERE in the bundle that pointed at it, updates both the old and new parent index.md,
@@ -448,16 +451,24 @@ async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
 
 @mcp.tool(meta=_nav_meta)
 async def kb_recipes(project: str | None = None) -> list[dict[str, Any]]:
-    """List saved recipes — reusable build instructions (sources + instruction) you can
-    re-run anytime with the rebuild flow to regenerate a fresh artifact from current
-    knowledge. Filter by project. Recipes are created by saving one from the Navigator
-    basket or kb_write of a type: recipe concept."""
+    """List saved recipes — reusable build instructions (ordered sources + an instruction)
+    that regenerate a fresh artifact from the CURRENT brain. Call when the user asks about
+    their recipes, saved report templates, or 'what can I rebuild'. Reach for kb_recipes,
+    NOT kb_artifacts, when they want the reusable BUILD SPEC rather than an already-built
+    document: a recipe is the instruction you re-run (run one with the rebuild_artifact
+    prompt), an artifact is the output a build produced. Optional `project` filters to one
+    project id. Recipes are created by saving one from the Navigator basket or kb_write of a
+    type: recipe concept.
+
+    Returns [{path, project, title, description, timestamp, sources, instruction}], newest first."""
     return await store.kb_recipes(project)
 
 
 @mcp.tool()
 async def kb_share_artifact(path: str, allow_secrets: bool = False) -> dict[str, Any]:
     """Create a PUBLIC, revocable share link for a saved artifact (type: artifact concept).
+    Use when the user says to share, publish, or 'get me a link to' an artifact so someone
+    without sign-in can read it (revoke later with kb_unshare_artifact).
     WARNING: this makes THIS document readable by anyone who has the URL — no sign-in, no
     Access gate. Only the artifact's rendered body is exposed; its source paths and the
     rest of the knowledge base stay private. Confirm with the user before sharing anything
