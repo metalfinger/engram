@@ -176,11 +176,26 @@ a.chip:hover { border-color: var(--accent-line); color: var(--accent-ink); text-
 .badge.active { background: transparent; color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent); }
 .badge.done { background: transparent; color: var(--blue); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 40%, transparent); }
 .badge.superseded, .badge.archived, .badge.tentative { background: var(--surface-2); color: var(--amber); }
+.badge.conf-superseded { background: var(--surface-2); color: var(--muted); text-decoration: line-through; text-decoration-color: var(--amber); }
 .badge.settled { background: transparent; color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent); }
 .badge.priority-high { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
 .badge.bot { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
 .badge.date { font-variant-numeric: tabular-nums; }
 .badges { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0 0; }
+
+/* ---------- supersession callout ---------- */
+.supersede-banner {
+  display: flex; align-items: baseline; gap: .5rem; margin: 1.1rem 0 1.4rem;
+  padding: .6rem .85rem; border-radius: 9px; font-size: .9rem; font-weight: 550;
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 42%, transparent);
+  border-left: 3px solid var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.supersede-banner .ss-glyph { flex: 0 0 auto; font-size: 1rem; }
+.supersede-banner .ss-text { flex: 1 1 auto; }
+.supersede-banner .ss-asof { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.supersede-banner a.chip { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+.supersede-banner a.chip:hover { border-color: var(--amber); color: var(--amber); }
+.supersedes-line { font-size: .85rem; color: var(--muted); margin: .9rem 0 1.2rem; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 
 /* ---------- cards ---------- */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr)); gap: .9rem; margin: 1.2rem 0 2rem; }
@@ -514,6 +529,7 @@ GRAPH_CSS = """\
 }
 .glegend .gl { display: inline-flex; align-items: center; gap: .35rem; }
 .glegend .gl i { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.glegend .gl i.dash { width: 1rem; height: 0; border-radius: 0; border-top: 2px dashed var(--amber); background: none !important; align-self: center; }
 .ghint {
   position: absolute; right: 1rem; top: 1rem; z-index: 5; font-size: .72rem; color: var(--faint);
   background: color-mix(in srgb, var(--surface) 85%, transparent);
@@ -537,10 +553,10 @@ GRAPH_JS = """\
   function colorFor(t){ return cssVar(TYPEVAR[t] || '--muted'); }
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
-  var nodes = DATA.nodes.map(function(n){ return {id:n.id,title:n.title,type:n.type,x:0,y:0,vx:0,vy:0,deg:0}; });
+  var nodes = DATA.nodes.map(function(n){ return {id:n.id,title:n.title,type:n.type,superseded:!!n.superseded,x:0,y:0,vx:0,vy:0,deg:0}; });
   var byId = {}; nodes.forEach(function(n){ byId[n.id]=n; });
   var edges = DATA.edges.filter(function(e){ return byId[e.source]&&byId[e.target]; })
-                        .map(function(e){ return {s:byId[e.source],t:byId[e.target]}; });
+                        .map(function(e){ return {s:byId[e.source],t:byId[e.target],kind:e.kind||""}; });
   edges.forEach(function(e){ e.s.deg++; e.t.deg++; });
   var nbr = {}; nodes.forEach(function(n){ nbr[n.id]=new Set(); });
   edges.forEach(function(e){ nbr[e.s.id].add(e.t.id); nbr[e.t.id].add(e.s.id); });
@@ -579,18 +595,28 @@ GRAPH_JS = """\
   function draw(){
     ctx.clearRect(0,0,W,H); ctx.lineWidth=1;
     for(var k=0;k<edges.length;k++){
-      var e=edges[k], a=toScreen(e.s), b=toScreen(e.t), act=hoverId&&(e.s.id===hoverId||e.t.id===hoverId);
-      ctx.strokeStyle = act ? cssVar('--accent') : cssVar('--line-2');
-      ctx.globalAlpha = hoverId ? (act?0.95:0.12) : 0.5;
+      var e=edges[k], a=toScreen(e.s), b=toScreen(e.t), act=hoverId&&(e.s.id===hoverId||e.t.id===hoverId), sup=e.kind==="supersedes";
+      ctx.setLineDash(sup?[5,4]:[]);
+      ctx.lineWidth = sup?1.4:1;
+      ctx.strokeStyle = act ? cssVar('--accent') : (sup ? cssVar('--amber') : cssVar('--line-2'));
+      ctx.globalAlpha = hoverId ? (act?0.95:0.12) : (sup?0.8:0.5);
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      if(sup){ // arrowhead at the superseded (target) end, offset by its radius
+        var dx=b.x-a.x, dy=b.y-a.y, dd=Math.sqrt(dx*dx+dy*dy)||1, ux=dx/dd, uy=dy/dd, tr=radius(e.t)+2, tx=b.x-ux*tr, ty=b.y-uy*tr, ah=6;
+        ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(tx,ty);
+        ctx.lineTo(tx-ux*ah-uy*ah*0.6, ty-uy*ah+ux*ah*0.6); ctx.lineTo(tx-ux*ah+uy*ah*0.6, ty-uy*ah-ux*ah*0.6);
+        ctx.closePath(); ctx.fillStyle=act?cssVar('--accent'):cssVar('--amber'); ctx.fill();
+      }
     }
-    ctx.globalAlpha=1;
+    ctx.globalAlpha=1; ctx.lineWidth=1; ctx.setLineDash([]);
     for(var i=0;i<nodes.length;i++){
       var n=nodes[i], p=toScreen(n), r=radius(n), near=hoverId&&(n.id===hoverId||nbr[hoverId].has(n.id));
-      ctx.globalAlpha = (hoverId && !near) ? 0.25 : 1;
+      ctx.globalAlpha = (hoverId && !near) ? 0.25 : (n.superseded ? 0.45 : 1);
       ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2);
       ctx.fillStyle=colorFor(n.type); ctx.fill();
-      ctx.lineWidth = (n.id===hoverId)?2.5:1; ctx.strokeStyle=cssVar('--surface'); ctx.stroke();
+      ctx.lineWidth = (n.id===hoverId)?2.5:1;
+      if(n.superseded){ ctx.setLineDash([2,2]); ctx.strokeStyle=cssVar('--amber'); } else { ctx.setLineDash([]); ctx.strokeStyle=cssVar('--surface'); }
+      ctx.stroke(); ctx.setLineDash([]);
       if(view.k>0.55 || near){
         ctx.globalAlpha=(hoverId && !near)?0.15:0.92;
         ctx.fillStyle=cssVar('--fg'); ctx.font='11px system-ui,-apple-system,sans-serif'; ctx.textAlign='center';
@@ -623,7 +649,9 @@ GRAPH_JS = """\
   var legend=document.getElementById('glegend');
   if(legend){
     var types={}; nodes.forEach(function(n){ types[n.type||'other']=true; });
-    legend.innerHTML = Object.keys(types).sort().map(function(t){ var g=GLYPHS[t]?GLYPHS[t]+' ':''; return '<span class="gl"><i style="background:'+colorFor(t)+'"></i>'+esc(g+t)+'</span>'; }).join('');
+    var html = Object.keys(types).sort().map(function(t){ var g=GLYPHS[t]?GLYPHS[t]+' ':''; return '<span class="gl"><i style="background:'+colorFor(t)+'"></i>'+esc(g+t)+'</span>'; }).join('');
+    if(edges.some(function(e){ return e.kind==="supersedes"; })){ html += '<span class="gl"><i class="dash" style="background:'+cssVar('--amber')+'"></i>⚠ supersedes →</span>'; }
+    legend.innerHTML = html;
   }
   tick();
 })();

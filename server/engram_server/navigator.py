@@ -208,6 +208,9 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .chip.tag::before { content:"#"; color:var(--faint); }
 .chip.proj { color:var(--accent-ink); border-color:var(--accent-line); background:var(--accent-soft); }
 .chip.prio-high { background:color-mix(in srgb,var(--red) 15%,transparent); color:var(--red); border-color:transparent; }
+.chip.supersede { background:color-mix(in srgb,var(--amber) 16%,transparent); color:var(--amber); border-color:color-mix(in srgb,var(--amber) 35%,transparent); cursor:pointer; }
+.chip.supersede:hover { border-color:var(--amber); }
+.chip.supersedes-chip { cursor:pointer; }
 .chip.dim { opacity:.5; }
 .chip .k { color:var(--faint); text-transform:uppercase; letter-spacing:.05em; font-size:.9em; }
 .chips { display:flex; flex-wrap:wrap; gap:.35rem; margin:.5rem 0 0; }
@@ -260,6 +263,11 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .statusv { display:inline-flex; align-items:center; gap:.35rem; text-transform:capitalize; }
 .rhead { display:flex; align-items:flex-start; gap:.5rem; }
 .rhead .rh-main { min-width:0; flex:1 1 auto; }
+.rhead.superseded .rh-main h1 { color:var(--muted); text-decoration:line-through; text-decoration-color:var(--amber); }
+.supersede-note { display:flex; align-items:baseline; gap:.4rem; margin:.6rem 0 .3rem; padding:.5rem .7rem; border-radius:8px;
+  font-size:.82rem; font-weight:550; color:var(--amber); border:1px solid color-mix(in srgb,var(--amber) 40%,transparent);
+  border-left:3px solid var(--amber); background:color-mix(in srgb,var(--amber) 12%,transparent); }
+.supersede-note .snl { color:var(--amber); font-weight:650; text-decoration:underline; cursor:pointer; }
 
 /* markdown body */
 .md { font-size:.87rem; }
@@ -729,14 +737,34 @@ function renderBrowse(){
       +'<p class="section-label">Concepts</p><div class="tree">'+treeHtml(tree,0)+'</div>');
 }
 
+// supersession is legible in the reader: a "superseded by →" chip (and a "supersedes"
+// chip) linking via the in-widget open flow, plus a muted, struck title + an amber
+// note banner when this concept has been replaced. Fields render defensively (absent
+// = nothing); each accepts a single path or a list.
+function asPaths(v){ if(Array.isArray(v)) return v.map(x=>String(x)); return (v==null||v==="")?[]:[String(v)]; }
+function supersedeChips(meta){
+  let s="";
+  asPaths(meta.superseded_by).forEach(p=>{ s+='<span class="chip supersede" data-open-path="'+esc(p)+'" title="Superseded by '+esc(p)+'">superseded by → '+esc(p.split("/").pop())+'</span>'; });
+  asPaths(meta.supersedes).forEach(p=>{ s+='<span class="chip supersedes-chip" data-open-path="'+esc(p)+'" title="Supersedes '+esc(p)+'">supersedes '+esc(p.split("/").pop())+'</span>'; });
+  return s;
+}
+function supersedeNote(meta){
+  const by=asPaths(meta.superseded_by); if(!by.length) return "";
+  const links=by.map(p=>'<span class="snl" data-open-path="'+esc(p)+'">'+esc(p.split("/").pop())+'</span>').join(", ");
+  const asof=meta.valid_until?' <span class="when">as of '+esc(meta.valid_until)+'</span>':"";
+  return '<div class="supersede-note"><span aria-hidden="true">⚠</span><span>Superseded by '+links+asof+'</span></div>';
+}
 function renderReader(){
   state.view="reader"; persist(); setActiveTab();
   const R=state.read; if(!R){ renderBrowse(); return; }
   const meta=R.meta||{}; const path=R.path||state.readPath||""; const name=path.split("/").pop();
+  const superseded=(String(meta.confidence||"")==="superseded")||asPaths(meta.superseded_by).length>0;
   let props="";
   if(meta.type) props+='<span class="chip"><span class="k">type</span> '+esc(meta.type)+'</span>';
   if(meta.status) props+='<span class="chip"><span class="statusv"><span class="dot '+statusDot(meta.status)+'"></span>'+esc(meta.status)+'</span></span>';
   if(meta.confidence) props+='<span class="chip"><span class="k">conf</span> '+esc(meta.confidence)+'</span>';
+  if(meta.valid_until) props+='<span class="chip"><span class="k">until</span> '+esc(meta.valid_until)+'</span>';
+  props+=supersedeChips(meta);
   const tags=Array.isArray(meta.tags)?meta.tags:(meta.tags?[meta.tags]:[]);
   props+=tags.map(t=>'<span class="chip tag">'+esc(t)+'</span>').join("");
   const projLabel=(state.load&&state.load.index_tree&&state.load.index_tree.title)||state.projectId||"project";
@@ -744,10 +772,11 @@ function renderReader(){
       +'<button data-nav="browse">'+esc(projLabel)+'</button>'
       +'<span class="sep">/</span><span class="cur">'+esc(meta.title||name)+'</span>';
   show('<div class="crumbs">'+crumbs+'</div>'
-      +'<div class="rhead"><span class="stamp">'+glyph(meta.type)+'</span>'
+      +'<div class="rhead'+(superseded?" superseded":"")+'"><span class="stamp">'+glyph(meta.type)+'</span>'
         +'<div class="rh-main"><h1>'+esc(meta.title||name)+'</h1>'
         +(meta.description?'<p class="lede">'+esc(meta.description)+'</p>':'')+'</div>'
         +bkBtn(path, meta.title||name)+'</div>'
+      +supersedeNote(meta)
       +(props?'<div class="props">'+props+'</div>':'')
       +readerBody(meta, R.content||""));
 }

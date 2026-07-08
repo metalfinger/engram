@@ -28,6 +28,7 @@ from engram_server.explorer.format import (
     properties_panel,
     score_bar,
     stamp,
+    supersession_banner,
 )
 from engram_server.explorer.html import (
     badge,
@@ -438,6 +439,15 @@ def _concept_footer(target: Path, rel: str, brain: Path) -> str:
         f'<a class="chip" href="/brain/f/{esc(rel)}?raw=1" title="raw markdown">raw</a></p>'
     )
     return f'<footer class="concept-foot">{"".join(blocks)}</footer>'
+
+
+def _supersession_banner(meta: dict, brain: Path) -> str:
+    """Supersession callout for a concept page, resolving linked paths to titles.
+
+    Thin filesystem-aware wrapper over the pure ``supersession_banner``: it looks up
+    each ``superseded_by`` / ``supersedes`` target's frontmatter title (basename when
+    the target is missing — ``_file_title`` degrades gracefully)."""
+    return supersession_banner(meta, resolve_title=lambda p: _file_title(brain / p))
 
 
 def _msg_card(f: Path, meta: dict, brain: Path, today: dt.date) -> str:
@@ -953,6 +963,45 @@ def _graph_data(brain: Path) -> dict:
                 out_count[rel] = out_count.get(rel, 0) + 1
                 in_count[tgt] = in_count.get(tgt, 0) + 1
 
+    # Supersession edges: a distinct directional kind (newer -> older). Both frontmatter
+    # sides collapse to the same pair set so a concept carrying `supersedes` and its
+    # target carrying `superseded_by` yield exactly one edge; direction always points
+    # from the superseding concept to the one it replaced.
+    def _paths(v: object) -> list[str]:
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        return [str(x) for x in v] if isinstance(v, (list, tuple)) else []
+
+    def _resolve(cur_dir: str, s: str) -> str | None:
+        """Resolve a supersession path to a node id — accepts a full repo-relative
+        path (the kb_write convention, like sources) OR one relative to the file."""
+        raw = posixpath.normpath(s.lstrip("/"))
+        if raw in node_ids:
+            return raw
+        joined = posixpath.normpath(posixpath.join(cur_dir, s))
+        return joined if joined in node_ids else None
+
+    sup_pairs: set[tuple[str, str]] = set()
+    superseded: set[str] = set()
+    for rel, (meta, _text) in metas.items():
+        cur_dir = posixpath.dirname(rel)
+        for s in _paths(meta.get("supersedes")):
+            tgt = _resolve(cur_dir, s)
+            if tgt and tgt != rel:
+                sup_pairs.add((rel, tgt))
+                superseded.add(tgt)
+        for s in _paths(meta.get("superseded_by")):
+            tgt = _resolve(cur_dir, s)
+            if tgt and tgt != rel:
+                sup_pairs.add((tgt, rel))
+                superseded.add(rel)
+        if str(meta.get("confidence") or "") == "superseded":
+            superseded.add(rel)
+    for newer, older in sorted(sup_pairs):
+        edges.append({"source": newer, "target": older, "kind": "supersedes"})
+        out_count[newer] = out_count.get(newer, 0) + 1
+        in_count[older] = in_count.get(older, 0) + 1
+
     nodes: list[dict] = []
     for rel in sorted(node_ids):
         meta, _text = metas[rel]
@@ -964,6 +1013,7 @@ def _graph_data(brain: Path) -> dict:
                 "project": _graph_group(rel),
                 "links_out": out_count.get(rel, 0),
                 "links_in": in_count.get(rel, 0),
+                "superseded": rel in superseded,
             }
         )
     return {"nodes": nodes, "edges": edges}
@@ -1380,6 +1430,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             body_html = f'<div class="md">{render_markdown(body_md, rel)}</div>'
         body_parts = [
             *head_parts,
+            _supersession_banner(meta, brain),
             properties_panel(meta, _today_utc()),
             provenance,
             body_html,

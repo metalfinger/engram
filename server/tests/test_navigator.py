@@ -359,6 +359,24 @@ def test_html_artifacts_open_rendered_not_source() -> None:
     assert "https://brain.example/share/" in rendered.replace("'+esc(meta.share)+'", "TOK") or "https://brain.example/share/" in rendered
 
 
+def test_html_reader_shows_supersession_chips() -> None:
+    # the reader surfaces supersession from frontmatter (superseded_by / supersedes /
+    # valid_until), rendered defensively and linking via the in-widget open flow.
+    assert "function supersedeChips(" in NAVIGATOR_HTML
+    assert "function supersedeNote(" in NAVIGATOR_HTML
+    assert "superseded by → " in NAVIGATOR_HTML
+    assert "supersedes " in NAVIGATOR_HTML
+    # chips + note links navigate in-widget (data-open-path), never a raw external link
+    assert 'class="chip supersede" data-open-path=' in NAVIGATOR_HTML
+    assert 'class="snl" data-open-path=' in NAVIGATOR_HTML
+    # single-path OR list frontmatter both handled
+    assert "function asPaths(" in NAVIGATOR_HTML
+    # superseded concepts read as historical: muted, struck title
+    assert "rhead.superseded" in NAVIGATOR_HTML
+    # valid_until surfaces as its own chip
+    assert '<span class="k">until</span>' in NAVIGATOR_HTML
+
+
 def test_every_external_open_has_popup_fallback() -> None:
     """No dead buttons: reader Open-rendered is a data-view-url button, and a
     blanket interceptor routes ALL target=_blank anchors through viewArtifact."""

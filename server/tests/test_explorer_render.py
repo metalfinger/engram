@@ -11,6 +11,7 @@ from engram_server.explorer.format import (
     properties_panel,
     score_bar,
     stamp,
+    supersession_banner,
     type_glyph,
 )
 from engram_server.explorer.html import badge, button, card, chip, codebox, page, share_page
@@ -256,6 +257,61 @@ def test_properties_panel_expired_message() -> None:
 
 def test_properties_panel_empty_is_blank() -> None:
     assert properties_panel({}, dt.date(2026, 7, 4)) == ""
+
+
+def test_properties_panel_valid_until_dated_chip() -> None:
+    html = properties_panel({"type": "decision", "valid_until": "2026-07-08"}, dt.date(2026, 7, 4))
+    assert "Valid until" in html
+    assert 'class="badge date"' in html
+    assert "2026-07-08" in html
+
+
+def test_properties_panel_superseded_confidence_is_struck() -> None:
+    # a superseded concept's confidence badge reads as historical (its own class)
+    html = properties_panel({"confidence": "superseded"}, dt.date(2026, 7, 4))
+    assert "conf-superseded" in html
+    # the expiry `superseded` badge class is NOT reused (would strike expiry chips)
+    tentative = properties_panel({"confidence": "tentative"}, dt.date(2026, 7, 4))
+    assert "conf-superseded" not in tentative
+    assert "accent" in tentative
+
+
+# ------------------------------------------------------------ supersession banner
+
+
+def test_supersession_banner_absent_is_blank() -> None:
+    assert supersession_banner({"type": "decision"}) == ""
+
+
+def test_supersession_banner_superseded_by_amber_banner() -> None:
+    meta = {"superseded_by": "projects/alt/decisions/2026-07-new.md", "valid_until": "2026-07-08"}
+    html = supersession_banner(meta, resolve_title=lambda p: "New Decision")
+    assert "supersede-banner" in html
+    assert "Superseded by" in html
+    assert "New Decision" in html  # resolved title, not the raw path
+    assert 'href="/brain/f/projects/alt/decisions/2026-07-new.md"' in html
+    assert "as of 2026-07-08" in html
+
+
+def test_supersession_banner_supersedes_backlink_line() -> None:
+    meta = {"supersedes": "projects/alt/decisions/2026-06-old.md"}
+    html = supersession_banner(meta, resolve_title=lambda p: "Old Decision")
+    assert "supersedes-line" in html
+    assert "Supersedes" in html
+    assert "Old Decision" in html
+    assert 'href="/brain/f/projects/alt/decisions/2026-06-old.md"' in html
+
+
+def test_supersession_banner_default_resolver_is_basename() -> None:
+    html = supersession_banner({"superseded_by": "projects/alt/decisions/2026-07-new.md"})
+    assert ">2026-07-new.md<" in html
+
+
+def test_supersession_banner_accepts_list() -> None:
+    meta = {"supersedes": ["a/one.md", "b/two.md"]}
+    html = supersession_banner(meta, resolve_title=lambda p: p.split("/")[-1])
+    assert 'href="/brain/f/a/one.md"' in html
+    assert 'href="/brain/f/b/two.md"' in html
 
 
 # ------------------------------------------------------------ score_bar

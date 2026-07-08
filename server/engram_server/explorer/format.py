@@ -7,6 +7,8 @@ unit-tested. Routes assemble these into pages.
 from __future__ import annotations
 
 import datetime as dt
+import posixpath
+from collections.abc import Callable
 
 from engram_server.explorer.html import badge, chip, esc
 
@@ -168,7 +170,9 @@ def properties_panel(
         rows.append(_prop("Status", status_value(str(meta["status"]))))
     if meta.get("confidence"):
         conf = str(meta["confidence"])
-        cls = "superseded" if conf == "superseded" else "accent"
+        # A superseded concept reads as historical: a struck, greyed badge (its own
+        # class, so message-expiry chips that also use `superseded` stay untouched).
+        cls = "conf-superseded" if conf == "superseded" else "accent"
         rows.append(_prop("Confidence", badge(conf, cls)))
     if meta.get("project"):
         proj = str(meta["project"])
@@ -184,6 +188,8 @@ def properties_panel(
         if expired:
             exp_html += badge("expired", "priority-high")
         rows.append(_prop("Expires", exp_html))
+    if meta.get("valid_until"):
+        rows.append(_prop("Valid until", badge(str(meta["valid_until"]), "date")))
     tags = meta.get("tags")
     if isinstance(tags, (list, tuple)) and tags:
         rows.append(_prop("Tags", "".join(chip(str(t), cls="tag") for t in tags)))
@@ -194,6 +200,59 @@ def properties_panel(
     if not rows:
         return ""
     return '<div class="props">' + "".join(rows) + "</div>"
+
+
+def _as_paths(value: object) -> list[str]:
+    """Coerce a frontmatter link field (str | list) to a clean list of path strings."""
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _supersede_links(paths: list[str], resolve_title: Callable[[str], str]) -> str:
+    return "".join(
+        f'<a class="chip" href="/brain/f/{esc(p)}" title="{esc(p)}">{esc(resolve_title(p))}</a>'
+        for p in paths
+    )
+
+
+def supersession_banner(
+    meta: dict, *, resolve_title: Callable[[str], str] | None = None
+) -> str:
+    """Legible supersession callout from a concept's frontmatter.
+
+    Renders (defensively — absent fields show nothing):
+      * ``superseded_by`` → a prominent amber banner linking to the newer concept,
+        dated ``as of <valid_until>`` when present.
+      * ``supersedes`` → a quieter line linking back to the concept(s) this replaced.
+
+    ``resolve_title(path) -> str`` humanizes each linked path (a title lookup); it
+    defaults to the path basename so the function stays pure and unit-testable.
+    """
+    resolve = resolve_title or (lambda p: posixpath.basename(p))
+    blocks: list[str] = []
+
+    by = _as_paths(meta.get("superseded_by"))
+    if by:
+        valid_until = meta.get("valid_until")
+        asof = f' <span class="ss-asof">as of {esc(str(valid_until))}</span>' if valid_until else ""
+        blocks.append(
+            '<div class="supersede-banner" role="note">'
+            '<span class="ss-glyph" aria-hidden="true">⚠</span>'
+            '<span class="ss-text">Superseded by '
+            f"{_supersede_links(by, resolve)}{asof}</span></div>"
+        )
+
+    sup = _as_paths(meta.get("supersedes"))
+    if sup:
+        blocks.append(
+            '<div class="supersedes-line">Supersedes '
+            f"{_supersede_links(sup, resolve)}</div>"
+        )
+
+    return "".join(blocks)
 
 
 def score_bar(score: float) -> str:

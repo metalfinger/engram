@@ -91,6 +91,59 @@ def test_graph_data_edges_from_relative_links(tmp_path: Path) -> None:
     assert all("index.md" not in e["target"] for e in data["edges"])
 
 
+def test_graph_data_supersession_edge_and_dimmed_node(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    dec = brain / "projects" / "alt" / "decisions"
+    dec.mkdir(parents=True)
+    (dec / "index.md").write_text("# Decisions\n", encoding="utf-8")
+    # the newer concept carries supersedes; the older carries the reverse the server
+    # writes (superseded_by + confidence: superseded) — the two collapse to ONE edge.
+    (dec / "new.md").write_text(
+        "---\ntype: decision\ntitle: New\n"
+        "supersedes: projects/alt/decisions/old.md\n---\n# New\n",
+        encoding="utf-8",
+    )
+    (dec / "old.md").write_text(
+        "---\ntype: decision\ntitle: Old\nconfidence: superseded\n"
+        "superseded_by: projects/alt/decisions/new.md\nvalid_until: 2026-07-08\n---\n# Old\n",
+        encoding="utf-8",
+    )
+    data = _graph_data(brain)
+    sup = [e for e in data["edges"] if e.get("kind") == "supersedes"]
+    # exactly one directional edge, newer -> older
+    assert sup == [
+        {
+            "source": "projects/alt/decisions/new.md",
+            "target": "projects/alt/decisions/old.md",
+            "kind": "supersedes",
+        }
+    ]
+    old = next(n for n in data["nodes"] if n["id"] == "projects/alt/decisions/old.md")
+    new = next(n for n in data["nodes"] if n["id"] == "projects/alt/decisions/new.md")
+    assert old["superseded"] is True
+    assert new["superseded"] is False
+
+
+def test_graph_data_supersession_from_superseded_by_only(tmp_path: Path) -> None:
+    # defensive: only the OLD side carries superseded_by (no supersedes anywhere) —
+    # the edge is still emitted, and the old node still dims.
+    brain = tmp_path / "brain"
+    dec = brain / "projects" / "alt" / "decisions"
+    dec.mkdir(parents=True)
+    (dec / "index.md").write_text("# Decisions\n", encoding="utf-8")
+    (dec / "new.md").write_text("---\ntype: decision\ntitle: New\n---\n# New\n", encoding="utf-8")
+    # file-relative form (sibling filename only) — the other accepted convention
+    (dec / "old.md").write_text(
+        "---\ntype: decision\ntitle: Old\nsuperseded_by: new.md\n---\n# Old\n",
+        encoding="utf-8",
+    )
+    data = _graph_data(brain)
+    sup = [e for e in data["edges"] if e.get("kind") == "supersedes"]
+    assert {"source": "projects/alt/decisions/new.md", "target": "projects/alt/decisions/old.md", "kind": "supersedes"} in sup
+    old = next(n for n in data["nodes"] if n["id"] == "projects/alt/decisions/old.md")
+    assert old["superseded"] is True
+
+
 # ------------------------------------------------------------ graph routes
 
 
@@ -109,6 +162,11 @@ async def test_graph_page_renders_canvas_and_is_guarded(settings: Settings) -> N
     assert "graphwrap" in html
     assert 'id="glegend"' in html  # type legend
     assert "requestAnimationFrame" in html  # the force-directed loop is inline
+    # supersession is a distinct edge kind: dashed amber draw + directional arrowhead,
+    # dimmed superseded nodes, and a legend entry gated on any such edge existing.
+    assert 'e.kind==="supersedes"' in html
+    assert "n.superseded" in html
+    assert "⚠ supersedes →" in html
     # guarded: no Access JWT -> 403
     assert _client(settings).get("/brain/graph").status_code == 403
 
