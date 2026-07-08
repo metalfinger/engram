@@ -31,7 +31,11 @@ Independent/non-project questions need no loading — not every conversation is 
   - *Log line* — what happened this session (history). Goes in the close-out entry, not written mid-session.
   - *Message* — an instruction the NEXT session must act on ("verify DNS Tuesday before CMS work"). `kb_leave_message`, addressed `to:` a surface if it matters.
   - *Nothing* — conversational back-and-forth, dead ends, chit-chat.
-- **Reading:** paths come from the index tree or `kb_search`. Use `kb_read(path, depth=1)` when you need to see a concept's neighborhood before deciding to go deeper.
+- **Editing, not rewriting.** To change part of an existing concept, use `kb_edit` (append / prepend / find_replace / replace_section / insert) — don't `kb_write` the whole file back. `kb_write` is for new concepts and whole-frontmatter changes; `kb_edit` for surgical body edits.
+- **Moving/renaming.** `kb_move(old, new)` relocates ONE concept and rewrites every link to it bundle-wide; `kb_rename_project` for a whole project. Never move files by hand — the link rewrite is the point.
+- **Superseding.** When a new concept replaces an old one, add `supersedes: <old-path>` to its frontmatter. The server stamps the old one `confidence: superseded`, writes the reverse `superseded_by` edge, and dates it `valid_until`. Don't delete the old decision — supersede it, so the reasoning trail survives (git remembers; the badge shows readers it's history).
+- **Backfilling.** `kb_import` turns a ChatGPT/Claude data export into triageable notes under `inbox/imports/` (dry-run first). Use it to seed a brain from past conversations, not just grow forward.
+- **Reading:** paths come from the index tree or `kb_search` (hybrid semantic+text, multi-query — phrase it however; add `since:`/`until:` for time-scoped recall). Use `kb_read(path, depth=1)` to see a concept's neighborhood (links AND backlinks AND supersession edges) before going deeper. Ask "is my brain healthy?" → `kb_doctor` for a live round-trip check; the nightly `library/reports/brain-health.md` has the standing findings.
 - **Concept file format (validator enforces):** YAML frontmatter — `type` (required; one of: project, client, person, decision, spec, runbook, idea, meeting, video, snippet, reference, message — or a new type if none fit), `title`, `description`, `tags`, `timestamp` (ISO 8601 UTC), plus `status`/`project`/`confidence` where useful. Then a markdown body. Standard relative markdown links only — never wikilinks. Filenames: kebab-case; decisions as `YYYY-MM-slug.md`.
 - Never write files named `index.md` or `log.md` as concepts — reserved by OKF. The server maintains indexes; in Claude Code, update the parent index.md yourself when adding a concept.
 
@@ -78,7 +82,21 @@ Artifacts tab and the explorer gallery, report staleness when their sources chan
 are REUSABLE: read them as sources, or rebuild them from their manifest (the
 rebuild_artifact prompt) — saving over the same path keeps versions in git.
 `kb_share_artifact` mints a PUBLIC revocable link (warn the user: anyone with the URL
-reads that document; sources stay private). `kb_unshare_artifact` revokes.
+reads that document; sources stay private — the server refuses to share if it detects a
+secret unless `allow_secrets=true`). `kb_unshare_artifact` revokes.
+
+**HTML artifacts:** if you built a rich HTML document in the chat side panel, save the
+COMPLETE HTML verbatim as the body with `format: html` in the frontmatter — the share link
+then serves the real interactive page (not a markdown rendering), and re-saving preserves
+the existing share token. **Recipes:** save a reusable build brief as `type: recipe` under
+`projects/<p>/recipes/`; `kb_recipes` lists them; re-run one anytime to regenerate a fresh
+artifact from current knowledge.
+
+**Widget caveats (surfaces):** the Navigator widget mounts reliably in claude.ai's browser,
+less so in the desktop app (host-side iframe limits) — every tool still works as plain
+conversation regardless. claude.ai caches a mounted widget's HTML per chat, so after a
+server update a NEW chat (or page refresh) is needed to pick it up; the FIRST tool call
+right after a server restart may error on a stale session — just retry.
 
 ## Writing conventions
 
