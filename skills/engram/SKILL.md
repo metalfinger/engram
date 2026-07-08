@@ -19,7 +19,8 @@ Never try to load everything. Orient from indexes, fetch files one at a time as 
 1. If no project is identified yet and work is beginning, call `kb_projects()` and ask Hiren which one (or infer from what he's discussing — he often just starts talking about a client).
 2. On "load X" or clear project context: `kb_load(project)`.
 3. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, if you're in Claude Code). Act on them or ask, then `kb_mark_read`.
-4. Confirm state in ONE line (current phase + top open loop). Do not recite the whole context back.
+4. `kb_load` returns a `server` block listing the tools this server currently offers. If any tool it names is missing from your available tools, this chat is running a STALE tool list (opened before the last update) — tell Hiren to start a fresh chat to use the newer tools; his writes here are still safe. Only mention this when there's a real gap.
+5. Confirm state in ONE line (current phase + top open loop). Do not recite the whole context back.
 
 Independent/non-project questions need no loading — not every conversation is a KB session. Load only when work on a known project begins.
 

@@ -195,3 +195,17 @@ def test_read_text_retry_survives_transient_oserror(tmp_path, monkeypatch):
     import pytest as _pytest
     with _pytest.raises(PermissionError):
         _read_text_retry(target, attempts=2, delay=0.001)
+
+
+async def test_kb_load_carries_server_manifest(store):
+    """kb_load embeds the live tool manifest so a stale chat can self-diagnose."""
+    from engram_server.version import CURRENT_TOOLS
+
+    projects = await store.kb_projects()
+    assert projects, "fixture has no projects"
+    r = await store.kb_load(projects[0]["id"])
+    assert "server" in r
+    assert r["server"]["version"]
+    assert "kb_edit" in r["server"]["tools"]
+    assert set(r["server"]["tools"]) == set(CURRENT_TOOLS)
+    assert "stale tool list" in r["server"]["note"]

@@ -162,7 +162,12 @@ async def kb_load(project: str) -> dict[str, Any]:
     for the house conventions.
 
     Returns {project, context_md, index_tree, recent_log (last 3 entries),
-    unread_messages (full bodies), active_concepts (frontmatter only)}.
+    unread_messages (full bodies), active_concepts (frontmatter only), server}.
+
+    The `server` block lists the tools this server currently offers. If any tool it
+    names is NOT in your available tools, this chat predates the latest update: tell the
+    user their chat is running a stale tool list and to start a FRESH chat to use the
+    newer tools (writes here are still safe). Do this only when there's an actual gap.
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """

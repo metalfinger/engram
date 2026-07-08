@@ -32,6 +32,7 @@ from .search import search as _run_search
 from .search import union_max as _union_max
 from .search import window_search as _window_search
 from .semantic import SemanticIndex
+from .version import server_manifest
 
 log = logging.getLogger("engram.kbstore")
 
@@ -788,6 +789,10 @@ class KBStore:
             "recent_log": recent_log,
             "unread_messages": self._unread_messages(proot_rel),
             "active_concepts": self._active_concepts(proot, proot_rel),
+            # Live capability manifest so a stale chat can detect it's behind (see
+            # version.py). Read fresh every load — the one channel that reaches
+            # already-open sessions whose tool list is frozen.
+            "server": server_manifest(),
         }
 
     def _tree_node(
