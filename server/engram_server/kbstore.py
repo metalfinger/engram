@@ -1866,6 +1866,47 @@ class KBStore:
             return None
         return bool(changed.strip())
 
+    # -------------------------------------------------------------------- recipes
+
+    async def kb_recipes(self, project: str | None = None) -> list[dict[str, Any]]:
+        """List saved recipes (type: recipe concepts under projects/*/recipes/) — reusable
+        build instructions (sources + instruction). Returns records sorted newest first."""
+        await self._refresh()
+        return await to_thread.run_sync(lambda: self._recipes_sync(project))
+
+    def _recipes_sync(self, project: str | None) -> list[dict[str, Any]]:
+        projects_dir = self.root / "projects"
+        out: list[dict[str, Any]] = []
+        if not projects_dir.is_dir():
+            return out
+        for pdir in sorted(projects_dir.iterdir()):
+            if not pdir.is_dir() or pdir.name.startswith("."):
+                continue
+            if project is not None and pdir.name != project:
+                continue
+            rdir = pdir / "recipes"
+            if not rdir.is_dir():
+                continue
+            for f in sorted(rdir.glob("*.md")):
+                if f.name == "index.md":
+                    continue
+                meta = read_meta(f)  # failure-soft: returns {} on any unreadable/malformed file
+                raw_sources = meta.get("sources")
+                sources = [str(s) for s in raw_sources] if isinstance(raw_sources, list) else []
+                out.append(
+                    {
+                        "path": f.relative_to(self.root).as_posix(),
+                        "project": pdir.name,
+                        "title": str(meta.get("title") or f.stem),
+                        "description": str(meta.get("description") or ""),
+                        "timestamp": meta.get("timestamp"),
+                        "sources": sources,
+                        "instruction": str(meta.get("instruction") or ""),
+                    }
+                )
+        out.sort(key=lambda a: str(a.get("timestamp") or ""), reverse=True)
+        return out
+
     async def kb_share_artifact(self, path: str, allow_secrets: bool = False) -> dict[str, Any]:
         """Mint (or return the existing) public share token for a type: artifact concept.
         Idempotent: an already-shared artifact returns its token with no new commit. Before

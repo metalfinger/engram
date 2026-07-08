@@ -446,6 +446,15 @@ async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
     return await store.kb_artifacts(project)
 
 
+@mcp.tool(meta=_nav_meta)
+async def kb_recipes(project: str | None = None) -> list[dict[str, Any]]:
+    """List saved recipes — reusable build instructions (sources + instruction) you can
+    re-run anytime with the rebuild flow to regenerate a fresh artifact from current
+    knowledge. Filter by project. Recipes are created by saving one from the Navigator
+    basket or kb_write of a type: recipe concept."""
+    return await store.kb_recipes(project)
+
+
 @mcp.tool()
 async def kb_share_artifact(path: str, allow_secrets: bool = False) -> dict[str, Any]:
     """Create a PUBLIC, revocable share link for a saved artifact (type: artifact concept).
