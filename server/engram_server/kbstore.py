@@ -25,7 +25,11 @@ from .errors import GitError, KBError
 from .frontmatter import Doc, normalize_meta, read_meta, serialize, split, validate_concept
 from .gitops import GitRepo
 from .indexer import ensure_indexed
+from .search import query_variants as _query_variants
+from .search import rrf_fuse as _rrf_fuse
 from .search import search as _run_search
+from .search import union_max as _union_max
+from .search import window_search as _window_search
 from .semantic import SemanticIndex
 
 log = logging.getLogger("engram.kbstore")
@@ -997,31 +1001,98 @@ class KBStore:
         project: str | None = None,
         type: str | None = None,  # noqa: A002 — tool contract field name
         limit: int = 8,
+        expand: bool = True,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Rank concept/log files against query. Prefers the semantic (vector) engine when
-        Qdrant is configured; on any failure or empty config falls back to the text scorer.
-        Each result carries an additive `engine` field ('semantic' | 'text').
+        """Rank concept/log files against query, fusing the semantic and text engines.
 
-        Returns [{path, title, description, score, matched_heading, engine}]."""
+        Multi-query (expand=True): the query is expanded into a few deterministic,
+        offline variants (raw, keyword-only, synonym-expanded) and each engine runs on
+        all of them, unioned to the best score per path. Hybrid: when BOTH engines have
+        hits they are fused by reciprocal-rank fusion (engine='hybrid'); when only one
+        is available its results serve alone (engine='semantic'|'text') — the original
+        all-or-nothing fallback is preserved for a downed engine. Time window: when
+        since/until (ISO dates) are set, every concept whose frontmatter timestamp (or
+        log entry date) falls in the window is unioned in and flagged window=True, so
+        'what did we decide about X back in June' surfaces those regardless of score.
+
+        Returns [{path, title, description, score, matched_heading, engine, window?}].
+        Failure-soft throughout: any engine or the window pass can fail without crashing.
+        """
+        if not query or not query.strip():
+            raise KBError(
+                "Empty search query — pass one or more keywords, e.g. kb_search('dns cutover')."
+            )
         await self._refresh()
+        limit = max(1, min(25, limit))
+        # Candidate depth per engine — deeper than the final limit so fusion has room.
+        cand = min(25, max(limit * 3, 10))
+        variants = _query_variants(query) if expand else [query.strip()]
+
+        def _text_multi() -> list[dict[str, Any]]:
+            # The raw variant's KBError (empty/punctuation-only query) is the contract
+            # error and must propagate; derived variants that tokenize to nothing are skipped.
+            lists = [_run_search(self.root, variants[0], project=project, type_=type, limit=cand)]
+            for v in variants[1:]:
+                try:
+                    lists.append(_run_search(self.root, v, project=project, type_=type, limit=cand))
+                except KBError:
+                    continue
+            return _union_max(lists)
+
+        text_ranked = await to_thread.run_sync(_text_multi)
+
+        semantic_ranked: list[dict[str, Any]] | None = None
         if self.semantic is not None:
             index = self.semantic
-            results = await to_thread.run_sync(
-                lambda: index.search(query, project=project, type=type, limit=limit)
+
+            def _sem_multi() -> list[dict[str, Any]] | None:
+                lists: list[list[dict[str, Any]]] = []
+                any_ok = False  # at least one variant reached the backend (not None)
+                for v in variants:
+                    r = index.search(v, project=project, type=type, limit=cand)
+                    if r is None:
+                        continue
+                    any_ok = True
+                    lists.append(r)
+                return _union_max(lists) if any_ok else None
+
+            semantic_ranked = await to_thread.run_sync(_sem_multi)
+
+        # None => semantic backend down for every variant; [] => reachable but no hits.
+        # Only fuse when semantic actually returned hits AND text has hits; otherwise
+        # fall back to whichever single engine has something (text preferred when tie-empty).
+        if semantic_ranked:
+            if text_ranked:
+                fused = _rrf_fuse([semantic_ranked, text_ranked])
+                engine = "hybrid"
+            else:
+                fused = semantic_ranked
+                engine = "semantic"
+        else:
+            fused = text_ranked
+            engine = "text"
+        for r in fused:
+            r["engine"] = engine
+
+        if since or until:
+            window_results = await to_thread.run_sync(
+                lambda: _window_search(self.root, since=since, until=until, project=project, type_=type)
             )
-            # None = backend failure; [] = empty/unpopulated collection. Either way the
-            # text scorer is the better answer, so only serve semantic when it has hits.
-            if results:
-                for r in results:
-                    r["engine"] = "semantic"
-                return results
-            log.info("semantic: no hits/unavailable, falling back to text engine")
-        text_results = await to_thread.run_sync(
-            lambda: _run_search(self.root, query, project=project, type_=type, limit=limit)
-        )
-        for r in text_results:
-            r["engine"] = "text"
-        return text_results
+            by_path = {r["path"]: r for r in fused}
+            for wr in window_results:
+                hit = by_path.get(wr["path"])
+                if hit is not None:
+                    hit["window"] = True  # already relevant — keep its score, just flag it
+                else:
+                    wr["engine"] = engine
+                    wr["window"] = True
+                    fused.append(wr)
+                    by_path[wr["path"]] = wr
+            fused.sort(key=lambda r: r["score"], reverse=True)
+
+        return fused[:limit]
 
     # ------------------------------------------------------------------ writes
 

@@ -15,6 +15,7 @@ first, so shrinking a document never leaves orphan chunks behind.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import posixpath
 import uuid
@@ -48,6 +49,11 @@ class _FakeControls:
     embedder: Any = None
     dim: int | None = None
     calls: list[tuple[str, Any]] = field(default_factory=list)
+
+
+def _sha(text: str) -> str:
+    """Content fingerprint of one chunk's embeddable text — the incremental key."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _project_of(path: str) -> str | None:
@@ -229,33 +235,118 @@ class SemanticIndex:
     # ------------------------------------------------------------------ writes
 
     def upsert_file(self, path: str, text: str) -> bool:
-        """(Re)index one concept file: delete its prior points, then upsert fresh ones.
-        Failure-soft — returns False on any backend error."""
+        """(Re)index one concept file, embedding only chunks whose content changed.
+
+        Incremental path (BM perf item): fetch the file's existing points, compare
+        each desired chunk's sha256 to the stored ``chunk_sha`` payload, and only
+        embed new/changed chunks; unchanged chunks reuse their stored vector (payload
+        refreshed if frontmatter shifted); removed chunks are deleted. This makes the
+        common re-write (a log append, one edited section) near-free and keeps a
+        nightly full_reindex cheap.
+
+        Failure-soft on two levels: any error in the incremental path falls back to a
+        full delete-and-re-embed of the file (the original behavior, always correct);
+        if that also fails (backend down) it returns False. Never raises."""
         if posixpath.basename(path) in _SKIP_NAMES:
             return True
         if not self.ensure_collection():
             return False
         try:
-            chunks = self.chunk_file(path, text)
-            self._delete_path(path)
-            if not chunks:
-                return True
-            vectors = self._embed([c.text for c in chunks])
-            qm = self._models()
-            points = [
-                qm.PointStruct(
-                    id=self._point_id(path, c.heading, i),
-                    vector=vectors[i],
-                    payload=self._payload(path, text, c),
-                )
-                for i, c in enumerate(chunks)
-            ]
+            return self._incremental_upsert(path, text)
+        except Exception as exc:  # noqa: BLE001 — incremental hiccup: re-embed the whole file
+            log.warning("semantic: incremental upsert(%s) failed, full re-embed: %s", path, exc)
+            try:
+                return self._full_upsert(path, text)
+            except Exception as exc2:  # noqa: BLE001 — backend down: give up softly
+                log.warning("semantic: upsert_file(%s) failed: %s", path, exc2)
+                return False
+
+    def _existing_points(self, path: str) -> dict[str, tuple[Any, dict[str, Any]]]:
+        """{point_id: (vector, payload)} for every point already stored for ``path``."""
+        qm = self._models()
+        records, _next = self._client().scroll(
+            collection_name=self.collection,
+            scroll_filter=qm.Filter(
+                must=[qm.FieldCondition(key="path", match=qm.MatchValue(value=path))]
+            ),
+            with_vectors=True,
+            with_payload=True,
+            limit=10_000,
+        )
+        return {str(rec.id): (rec.vector, dict(rec.payload or {})) for rec in records}
+
+    def _incremental_upsert(self, path: str, text: str) -> bool:
+        chunks = self.chunk_file(path, text)
+        # desired[point_id] = (chunk, chunk_sha) — the target state for this file.
+        desired: dict[str, tuple[Chunk, str]] = {}
+        for i, c in enumerate(chunks):
+            desired[self._point_id(path, c.heading, i)] = (c, _sha(c.text))
+        existing = self._existing_points(path)
+
+        remove = [pid for pid in existing if pid not in desired]
+        to_embed: list[str] = []  # point ids whose vector must be (re)computed
+        reuse: list[str] = []  # point ids whose vector is unchanged
+        for pid, (_c, sha) in desired.items():
+            prev = existing.get(pid)
+            if prev is not None and prev[1].get("chunk_sha") == sha:
+                reuse.append(pid)
+            else:
+                to_embed.append(pid)
+
+        qm = self._models()
+        points: list[Any] = []
+        if to_embed:
+            vectors = self._embed([desired[pid][0].text for pid in to_embed])
+            for pid, vec in zip(to_embed, vectors):
+                chunk, sha = desired[pid]
+                payload = self._payload(path, text, chunk)
+                payload["chunk_sha"] = sha
+                points.append(qm.PointStruct(id=pid, vector=vec, payload=payload))
+        for pid in reuse:
+            vec, old_payload = existing[pid]
+            chunk, sha = desired[pid]
+            payload = self._payload(path, text, chunk)
+            payload["chunk_sha"] = sha
+            # Only re-upsert an unchanged-vector chunk if its payload actually moved
+            # (frontmatter title/description/tags edit) — otherwise it is a true no-op.
+            if payload != old_payload:
+                points.append(qm.PointStruct(id=pid, vector=vec, payload=payload))
+
+        if remove:
+            self._client().delete(
+                collection_name=self.collection,
+                points_selector=qm.PointIdsList(points=remove),
+            )
+        if points:
             self._client().upsert(collection_name=self.collection, points=points)
-            log.info("semantic: upserted %d chunks for %s", len(points), path)
+        log.info(
+            "semantic: incremental %s: %d embedded, %d reused, %d removed",
+            path,
+            len(to_embed),
+            len(reuse),
+            len(remove),
+        )
+        return True
+
+    def _full_upsert(self, path: str, text: str) -> bool:
+        """Delete every prior point for the file and re-embed all chunks. The always-
+        correct fallback; also seeds ``chunk_sha`` so the next write can go incremental."""
+        chunks = self.chunk_file(path, text)
+        self._delete_path(path)
+        if not chunks:
             return True
-        except Exception as exc:  # noqa: BLE001
-            log.warning("semantic: upsert_file(%s) failed: %s", path, exc)
-            return False
+        vectors = self._embed([c.text for c in chunks])
+        qm = self._models()
+        points = []
+        for i, c in enumerate(chunks):
+            payload = self._payload(path, text, c)
+            payload["chunk_sha"] = _sha(c.text)
+            points.append(
+                qm.PointStruct(id=self._point_id(path, c.heading, i), vector=vectors[i], payload=payload)
+            )
+        self._client().upsert(collection_name=self.collection, points=points)
+        log.info("semantic: full re-embed %d chunks for %s", len(points), path)
+        return True
 
     def delete_file(self, path: str) -> bool:
         """Drop every point for ``path``. Failure-soft."""

@@ -326,22 +326,38 @@ async def kb_search(
     project: str | None = None,
     type: str | None = None,  # noqa: A002 — tool contract field name
     limit: int = 8,
+    expand: bool = True,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the whole knowledge base for concepts by meaning and text. Uses the
-    semantic (vector) engine when it's configured and reachable, and transparently
-    falls back to the pure-text scorer otherwise — each result carries an `engine`
-    field ('semantic' | 'text') so you can tell which served. Use it to find concepts
-    whose paths you don't already have — including in projects not currently loaded, and
-    in self/ (Hiren's stack and preferences) and library/ (cross-project runbooks):
-    search there before reinventing a procedure that likely already exists. Optional
-    filters: project (project id) and type (frontmatter type, e.g. 'decision',
-    'runbook'). Results are ranked best-first; follow up with kb_read on the paths.
+    """Search the whole knowledge base for concepts by meaning and text. Runs the
+    semantic (vector) engine and the pure-text scorer and FUSES them: when both have
+    hits the results are combined by reciprocal-rank fusion and each carries
+    engine='hybrid'; when only one engine is available its results serve alone with
+    engine='semantic' or 'text'. Use it to find concepts whose paths you don't already
+    have — including in projects not currently loaded, and in self/ (Hiren's stack and
+    preferences) and library/ (cross-project runbooks): search there before reinventing
+    a procedure that likely already exists.
 
-    Returns [{path, title, description, score, matched_heading, engine}].
+    Multi-query expansion is ON by default (expand): the query is broadened into a few
+    deterministic offline variants (keyword-only, light synonyms) so a concept phrased
+    differently than your query is still found; pass expand=false for a literal search.
+    Optional filters: project (project id) and type (frontmatter type, e.g. 'decision',
+    'runbook'). Optional time window: since/until (ISO dates, either alone) ALSO pulls in
+    every concept whose frontmatter timestamp (or log entry date) falls in the window
+    regardless of relevance — those rows are flagged window=true — for 'what did we
+    decide about X back in June' recall. Results are ranked best-first; follow up with
+    kb_read on the paths.
+
+    Returns [{path, title, description, score, matched_heading, engine, window?}] where
+    engine is 'hybrid' | 'semantic' | 'text' and window (present only on time-window
+    hits) is true.
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_search(query, project=project, type=type, limit=limit)
+    return await store.kb_search(
+        query, project=project, type=type, limit=limit, expand=expand, since=since, until=until
+    )
 
 
 @mcp.tool()

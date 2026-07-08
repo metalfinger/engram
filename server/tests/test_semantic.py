@@ -64,11 +64,27 @@ class FakeQdrant:
         return None  # cloud requires keyword indexes for filtered fields; no-op in the fake
 
     def delete(self, collection_name: str, points_selector) -> None:
+        # Two selector shapes: a Filter (delete-by-path) or a PointIdsList (delete the
+        # removed chunk ids during an incremental upsert).
+        if hasattr(points_selector, "points"):  # PointIdsList
+            for pid in points_selector.points:
+                self.points[collection_name].pop(str(pid), None)
+            return
         cond = points_selector.must[0]
         key, val = cond.key, cond.match.value
         drop = [pid for pid, (_v, pl) in self.points[collection_name].items() if pl.get(key) == val]
         for pid in drop:
             del self.points[collection_name][pid]
+
+    def scroll(self, collection_name, scroll_filter=None, with_vectors=True, with_payload=True, limit=10000):
+        recs = []
+        for pid, (vec, pl) in self.points[collection_name].items():
+            if scroll_filter is not None and not self._match(scroll_filter, pl):
+                continue
+            recs.append(SimpleNamespace(id=pid, vector=list(vec), payload=pl))
+            if len(recs) >= limit:
+                break
+        return recs, None
 
     # Mirror the REAL qdrant-client >= 1.12 API: query_points (returns .points).
     # There is deliberately NO .search() here — the old fake had one and it hid a
@@ -185,6 +201,83 @@ def test_delete_file_removes_points() -> None:
     assert not idx._ctl.client.points["test-col"]
 
 
+# ------------------------------------------------------------------ incremental embed fingerprints
+
+
+class CountingEmbedder(FakeEmbedder):
+    """FakeEmbedder that records how many texts it embedded — the incremental metric."""
+
+    def __init__(self) -> None:
+        self.embedded = 0
+
+    def embed(self, texts):
+        texts = list(texts)
+        self.embedded += len(texts)
+        return super().embed(texts)
+
+
+def _counting_index() -> tuple[SemanticIndex, CountingEmbedder]:
+    emb = CountingEmbedder()
+    settings = Settings(_env_file=None, qdrant_url="http://fake", qdrant_collection="test-col")
+    idx = SemanticIndex(settings, controls=_FakeControls(client=FakeQdrant(), embedder=emb))
+    return idx, emb
+
+
+_SECS = "---\ntype: idea\ntitle: X\ndescription: d\n---\n\n## A\n\nalpha\n\n## B\n\nbeta\n"
+
+
+def test_incremental_unchanged_file_embeds_zero() -> None:
+    idx, emb = _counting_index()
+    idx.upsert_file("p/x.md", _DOC)
+    emb.embedded = 0  # ignore the seed embed + dimension probe
+    assert idx.upsert_file("p/x.md", _DOC) is True  # identical content
+    assert emb.embedded == 0
+
+
+def test_incremental_changed_section_reembeds_only_that_chunk() -> None:
+    idx, emb = _counting_index()
+    idx.upsert_file("p/x.md", _SECS)
+    emb.embedded = 0
+    changed = "---\ntype: idea\ntitle: X\ndescription: d\n---\n\n## A\n\nalpha\n\n## B\n\nbeta rewritten\n"
+    idx.upsert_file("p/x.md", changed)
+    assert emb.embedded == 1  # only the B section's chunk re-embedded
+
+
+def test_incremental_removed_section_deletes_its_point() -> None:
+    idx, _emb = _counting_index()
+    idx.upsert_file("p/x.md", _SECS)
+    before = len(idx._ctl.client.points["test-col"])
+    idx.upsert_file("p/x.md", "---\ntype: idea\ntitle: X\ndescription: d\n---\n\n## A\n\nalpha\n")
+    pts = idx._ctl.client.points["test-col"]
+    assert len(pts) == before - 1
+    assert "B" not in {pl["heading"] for _v, pl in pts.values()}  # no orphan
+
+
+def test_incremental_frontmatter_change_refreshes_payload_without_reembedding_body() -> None:
+    idx, emb = _counting_index()
+    idx.upsert_file("p/x.md", "---\ntype: idea\ntitle: Old\ndescription: d\n---\n\n## A\n\nalpha\n")
+    emb.embedded = 0
+    idx.upsert_file("p/x.md", "---\ntype: idea\ntitle: New\ndescription: d\n---\n\n## A\n\nalpha\n")
+    # intro chunk embeds (title lives in its text); section A's body is unchanged so it
+    # reuses its vector — but its payload title must still be refreshed (no stale "Old").
+    assert emb.embedded == 1
+    titles = {pl["title"] for _v, pl in idx._ctl.client.points["test-col"].values()}
+    assert titles == {"New"}
+
+
+def test_incremental_error_falls_back_to_full_reembed() -> None:
+    idx, emb = _counting_index()
+    idx.upsert_file("p/x.md", _DOC)  # seed with chunk_sha payloads
+
+    def _boom(*a, **k):
+        raise RuntimeError("scroll boom")
+
+    idx._ctl.client.scroll = _boom  # break the incremental path only
+    emb.embedded = 0
+    assert idx.upsert_file("p/x.md", _DOC) is True  # fell back to full re-embed
+    assert emb.embedded > 0  # the whole file was re-embedded
+
+
 def test_search_filters_project_and_type() -> None:
     idx = _index()
     idx.upsert_file("projects/alt/specs/api.md", "---\ntype: spec\ntitle: Alt API\ndescription: d\n---\n\ngrafana dashboard\n")
@@ -269,13 +362,16 @@ async def test_kb_search_falls_back_when_semantic_empty(store: KBStore) -> None:
     assert all(r["engine"] == "text" for r in results)
 
 
-async def test_kb_search_uses_semantic_when_available(store: KBStore) -> None:
+async def test_kb_search_semantic_only_when_text_has_no_hits(store: KBStore) -> None:
+    # Semantic returns a hit for a doc the text scorer can't reach (no file / no token
+    # match), so text is empty and semantic serves ALONE — engine='semantic', score kept.
+    # (When text ALSO has hits the two are fused into engine='hybrid'; see test_search_fusion.)
     store.semantic = SimpleNamespace(
         search=lambda *a, **k: [
             {"path": "projects/alt/x.md", "title": "X", "description": "d", "score": 0.9, "matched_heading": None}
         ]
     )
-    results = await store.kb_search("anything")
+    results = await store.kb_search("zzqqxx-token-that-matches-no-file")
     assert results == [
         {"path": "projects/alt/x.md", "title": "X", "description": "d", "score": 0.9,
          "matched_heading": None, "engine": "semantic"}
