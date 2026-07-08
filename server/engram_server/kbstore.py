@@ -209,6 +209,260 @@ def _is_expired(expires: Any, today: date) -> bool:
         return False
 
 
+# ------------------------------------------------------------------ secret scan (share boundary)
+
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("OpenAI API key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
+    ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("bearer token", re.compile(r"Bearer [A-Za-z0-9._-]{20,}")),
+    ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    (
+        "hardcoded credential",
+        re.compile(r"(?i)\b(?:api[_-]?key|secret|password)\b\s*[:=]\s*['\"][^'\"]{8,}"),
+    ),
+)
+
+
+def _scan_secrets(body: str) -> list[tuple[str, int]]:
+    """Scan text for likely secrets. Returns [(kind, 1-based line number)] — never the
+    matched value, so a refusal can name the KIND and location without leaking the secret."""
+    hits: list[tuple[str, int]] = []
+    for lineno, line in enumerate(body.splitlines(), start=1):
+        for kind, rx in _SECRET_PATTERNS:
+            if rx.search(line):
+                hits.append((kind, lineno))
+    return hits
+
+
+# ------------------------------------------------------------------ surgical body edits (kb_edit)
+
+_EDIT_OPERATIONS = ("append", "prepend", "find_replace", "replace_section", "insert_after", "insert_before")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+
+
+def _replace_nth(text: str, find: str, repl: str, n: int) -> str:
+    """Replace only the n-th (1-based) occurrence of ``find`` in ``text``."""
+    start = 0
+    for _ in range(n - 1):
+        start = text.index(find, start) + len(find)
+    pos = text.index(find, start)
+    return text[:pos] + repl + text[pos + len(find) :]
+
+
+def _replace_section(body: str, section: str, replacement: str) -> str:
+    """Replace the block under the first heading matching ``section`` (heading kept; the
+    lines beneath it up to the next same-or-higher heading are replaced)."""
+    want = section.lstrip("#").strip()
+    lines = body.split("\n")
+    start: int | None = None
+    level = 0
+    for i, ln in enumerate(lines):
+        m = _HEADING_RE.match(ln)
+        if m and m.group(2).strip() == want:
+            start, level = i, len(m.group(1))
+            break
+    if start is None:
+        raise KBError(
+            f"No section heading matching {section!r} in this concept — read it (kb_read) to see "
+            "the exact headings, or use append/insert instead."
+        )
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        m = _HEADING_RE.match(lines[j])
+        if m and len(m.group(1)) <= level:
+            end = j
+            break
+    block = [lines[start]]
+    if replacement:
+        block.append(replacement)
+    tail = lines[end:]
+    if tail and tail[0].strip():
+        block.append("")
+    return "\n".join(lines[:start] + block + tail)
+
+
+def _apply_body_edit(
+    operation: str,
+    body: str,
+    content: str,
+    find: str | None,
+    section: str | None,
+    occurrence: int | str,
+    fm_block: str,
+) -> str:
+    """Pure body transform for kb_edit. Operates ONLY on ``body``; ``fm_block`` is passed
+    solely to tell a genuine zero-match apart from an anchor that lives in the frontmatter."""
+    chunk = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    piece = chunk.strip("\n")
+    if operation == "append":
+        if not piece:
+            return body
+        base = body.rstrip("\n")
+        return f"{base}\n\n{piece}\n" if base else f"{piece}\n"
+    if operation == "prepend":
+        if not piece:
+            return body
+        rest = body.lstrip("\n")
+        return f"{piece}\n\n{rest}" if rest else f"{piece}\n"
+    if operation == "find_replace":
+        if not find:
+            raise KBError("find_replace needs `find` — the exact body text to replace.")
+        count = body.count(find)
+        if count == 0:
+            if find in fm_block:
+                raise KBError(
+                    f"`find` text {find!r} appears only in the frontmatter, which kb_edit never "
+                    "touches — use kb_write to change frontmatter."
+                )
+            raise KBError(
+                f"`find` text {find!r} was not found in the body — read the concept (kb_read) and "
+                "copy the anchor exactly; the match is literal, not fuzzy."
+            )
+        if str(occurrence) == "all":
+            return body.replace(find, chunk)
+        try:
+            n = int(occurrence)
+        except (TypeError, ValueError):
+            raise KBError("occurrence must be a positive integer (1 = first) or 'all'.") from None
+        if n < 1:
+            raise KBError("occurrence must be a positive integer (1 = first) or 'all'.")
+        if count < n:
+            raise KBError(
+                f"asked to replace occurrence #{n} of {find!r} but it appears only {count} time(s)."
+            )
+        return _replace_nth(body, find, chunk, n)
+    if operation == "replace_section":
+        if not section:
+            raise KBError(
+                "replace_section needs `section` — the heading whose block to replace, e.g. '## Notes'."
+            )
+        return _replace_section(body, section, piece)
+    if operation in ("insert_after", "insert_before"):
+        if not find:
+            raise KBError(f"{operation} needs `find` — the existing body line to anchor to.")
+        lines = body.split("\n")
+        anchor = next((i for i, ln in enumerate(lines) if find in ln), None)
+        if anchor is None:
+            if find in fm_block:
+                raise KBError(
+                    f"anchor {find!r} appears only in the frontmatter, which kb_edit never touches "
+                    "— use kb_write to change frontmatter."
+                )
+            raise KBError(
+                f"anchor {find!r} was not found in the body — read the concept (kb_read) and copy "
+                "an existing line exactly."
+            )
+        insert_at = anchor + 1 if operation == "insert_after" else anchor
+        return "\n".join(lines[:insert_at] + piece.split("\n") + lines[insert_at:])
+    raise KBError(f"Unknown edit operation {operation!r} — one of: {', '.join(_EDIT_OPERATIONS)}.")
+
+
+# ------------------------------------------------------------------ single-concept move (kb_move)
+
+
+def _link_resolves_to(target: str, from_dir: str) -> str | None:
+    """Repo-relative path a markdown link target resolves to from ``from_dir``, or None
+    when it is not a relative .md link (external, mailto, or non-markdown)."""
+    base = target.split("#", 1)[0]
+    if not base.endswith(".md") or "://" in base or base.startswith("mailto:"):
+        return None
+    if base.startswith("/"):
+        return posixpath.normpath(base.lstrip("/"))
+    return posixpath.normpath(posixpath.join(from_dir, base))
+
+
+def _rebase_body_links(text: str, old_rel: str, new_rel: str) -> str:
+    """Re-express a moved file's OWN relative links so they still resolve after the move."""
+    old_dir = posixpath.dirname(old_rel)
+    new_dir = posixpath.dirname(new_rel)
+    if old_dir == new_dir:
+        return text
+
+    def repl(m: re.Match[str]) -> str:
+        target = m.group(1)
+        base, sep, frag = target.partition("#")
+        if not base.endswith(".md") or "://" in base or base.startswith(("mailto:", "/")):
+            return m.group(0)
+        resolved = posixpath.normpath(posixpath.join(old_dir, base))
+        new_target = posixpath.relpath(resolved, new_dir or ".").replace("\\", "/")
+        return f"]({new_target}{sep}{frag})"
+
+    return _MD_LINK_RE.sub(repl, text)
+
+
+def _retarget_body_links(text: str, from_dir: str, old_rel: str, new_rel: str) -> tuple[str, int]:
+    """Rewrite every relative link in ``text`` that resolved to ``old_rel`` so it now
+    resolves to ``new_rel``. Returns (text, number of links rewritten)."""
+    count = 0
+
+    def repl(m: re.Match[str]) -> str:
+        nonlocal count
+        target = m.group(1)
+        base, sep, frag = target.partition("#")
+        if _link_resolves_to(target, from_dir) != old_rel:
+            return m.group(0)
+        count += 1
+        if base.startswith("/"):
+            return f"](/{new_rel}{sep}{frag})"
+        new_target = posixpath.relpath(new_rel, from_dir or ".").replace("\\", "/")
+        return f"]({new_target}{sep}{frag})"
+
+    return _MD_LINK_RE.sub(repl, text), count
+
+
+def _rewrite_frontmatter_refs(text: str, old_rel: str, new_rel: str) -> str:
+    """Rewrite frontmatter sources/supersedes/superseded_by entries that point at ``old_rel``."""
+    try:
+        doc = split(text)
+    except KBError:
+        return text
+    if doc is None:
+        return text
+    meta = normalize_meta(doc.meta)
+    changed = False
+    for key in ("sources", "supersedes", "superseded_by"):
+        if key not in meta:
+            continue
+        val = meta[key]
+        if isinstance(val, list):
+            new_val = [new_rel if str(x) == old_rel else x for x in val]
+            if new_val != val:
+                meta[key] = new_val
+                changed = True
+        elif str(val) == old_rel:
+            meta[key] = new_rel
+            changed = True
+    if not changed:
+        return text
+    return serialize(Doc(meta=meta, body=doc.body))
+
+
+def _remove_index_bullet(root: Path, rel: str) -> str | None:
+    """Drop ``rel``'s bullet from its parent index.md. Returns the index rel path if changed."""
+    parent = posixpath.dirname(rel)
+    base = posixpath.basename(rel)
+    index_rel = f"{parent}/index.md" if parent else "index.md"
+    index_path = root / index_rel
+    if not index_path.is_file():
+        return None
+    text = _read_text_retry(index_path)
+    kept: list[str] = []
+    removed = False
+    for line in text.splitlines():
+        m = _BULLET_RE.match(line)
+        if m:
+            target = m.group("target").split("#", 1)[0]
+            if posixpath.basename(target) == base and (target == base or target.endswith(f"/{base}")):
+                removed = True
+                continue
+        kept.append(line)
+    if not removed:
+        return None
+    _write_text(index_path, "\n".join(kept).rstrip("\n") + "\n")
+    return index_rel
+
+
 class KBStore:
     """All kb_* tool behavior over one server-owned brain checkout."""
 
@@ -639,9 +893,40 @@ class KBStore:
             raise KBError(f"'{rel}' is not a UTF-8 text file — kb_read serves text only.") from exc
         result: dict[str, Any] = {"path": rel, "content": content, "meta": read_meta(abs_path)}
         if depth == 1:
-            result["links"] = self._neighbor_links(rel, content)
+            links = self._neighbor_links(rel, content)
+            self._add_supersede_links(rel, result["meta"], links)
+            result["links"] = links
             result["backlinks"] = self._backlinks(rel)
         return result
+
+    def _add_supersede_links(
+        self, rel: str, meta: dict[str, Any], links: list[dict[str, Any]]
+    ) -> None:
+        """Append the frontmatter supersession edges (supersedes + superseded_by) to a
+        depth=1 link set, marked via='supersedes', so the chain is walkable both ways even
+        when there is no body link between the two concepts."""
+        refs: list[str] = list(self._supersedes_list(meta))
+        back = meta.get("superseded_by")
+        if back:
+            refs.extend(str(b) for b in (back if isinstance(back, list) else [back]))
+        seen = {link["path"] for link in links}
+        for ref in refs:
+            try:
+                _abs, tref = self._resolve(ref)
+            except KBError:
+                continue
+            if tref == rel or tref in seen:
+                continue
+            seen.add(tref)
+            neighbor = self.root / tref
+            if neighbor.is_file():
+                links.append(
+                    {"path": tref, "missing": False, "meta": read_meta(neighbor), "via": "supersedes"}
+                )
+            else:
+                links.append({"path": tref, "missing": True, "via": "supersedes"})
+            if len(links) >= _LINK_CAP:
+                break
 
     def _backlinks(self, rel: str) -> list[dict[str, Any]]:
         """Concepts whose bodies link TO rel, PLUS artifacts that list rel as a
@@ -795,32 +1080,45 @@ class KBStore:
                 normalized = serialize(Doc(meta=meta, body=doc.body))
             # An artifact's provenance lives in its `sources:` list, not body links —
             # a non-empty sources list counts as "links to something", so don't nag.
+            # A `supersedes:` frontmatter edge is walkable too (depth=1 surfaces it).
             sources = meta.get("sources")
             has_sources = isinstance(sources, list) and len(sources) > 0
+            has_supersedes = bool(self._supersedes_list(meta))
             if (
                 abs_path.name != "context.md"
                 and not _REL_MD_LINK.search(normalized)
                 and not (is_artifact and has_sources)
+                and not has_supersedes
             ):
                 warnings.append(
                     "This concept links to nothing — future sessions cannot navigate to "
                     "related knowledge from it (kb_read depth=1 will be empty). Add "
                     "relative markdown links to the concepts it relates to."
                 )
+            # Structured supersession edge: validate targets, reject self/cycles, stamp
+            # each superseded target's frontmatter in THIS commit, and strip a stray
+            # superseded_by from the new concept. May re-serialize `normalized`/`meta`.
+            today_iso = _utcnow().strftime("%Y-%m-%d")
+            normalized, meta, superseded = self._apply_supersedes(rel, meta, normalized, today_iso)
             state["warnings"] = warnings
             state["meta"] = meta
+            state["superseded"] = superseded
             created = not abs_path.exists()
             state["created"] = created
-            if not created and _read_text_retry(abs_path) == normalized:
+            main_unchanged = not created and _read_text_retry(abs_path) == normalized
+            if main_unchanged and not superseded:
                 state["no_change"] = True
                 return []
-            _write_text(abs_path, normalized)
-            paths = [rel]
-            if created:
-                state["indexes"] = ensure_indexed(
-                    self.root, rel, str(meta.get("title") or ""), str(meta.get("description") or "")
-                )
-                paths.extend(state["indexes"])
+            paths: list[str] = []
+            if not main_unchanged:
+                _write_text(abs_path, normalized)
+                paths.append(rel)
+                if created:
+                    state["indexes"] = ensure_indexed(
+                        self.root, rel, str(meta.get("title") or ""), str(meta.get("description") or "")
+                    )
+                    paths.extend(state["indexes"])
+            paths.extend(superseded)
             return paths
 
         sha, pushed = await self._locked_commit(_mutate, f"kb: {message.strip()}")
@@ -844,6 +1142,7 @@ class KBStore:
             "pushed": pushed,
             "warnings": state["warnings"],
             "indexes_updated": state["indexes"],
+            "superseded": state.get("superseded", []),
         }
 
     _DUPE_EXEMPT_TYPES = ("artifact", "report", "inbox", "message")
@@ -872,6 +1171,239 @@ class KBStore:
                     "instead of keeping both, or link them explicitly."
                 )
         return None
+
+    # ------------------------------------------------------------------ supersession
+
+    def _supersedes_list(self, meta: dict[str, Any]) -> list[str]:
+        """Frontmatter `supersedes` as a clean list of raw path strings (scalar or list)."""
+        raw = meta.get("supersedes")
+        if not raw:
+            return []
+        values = raw if isinstance(raw, list) else [raw]
+        return [s for s in (str(v).strip() for v in values) if s]
+
+    def _apply_supersedes(
+        self, rel: str, meta: dict[str, Any], normalized: str, today: str
+    ) -> tuple[str, dict[str, Any], list[str]]:
+        """Resolve a concept's `supersedes:` edge inside the write commit: validate the
+        targets exist, reject self-supersession and cycles, strip a stray `superseded_by`
+        from the new concept (the newest link in a chain is not itself superseded), and
+        stamp each target's frontmatter (confidence: superseded, superseded_by: <this>,
+        valid_until: <today>) without touching its body. Returns (normalized, meta,
+        edited_target_rels)."""
+        raw_targets = self._supersedes_list(meta)
+        if not raw_targets:
+            return normalized, meta, []
+        resolved: list[str] = []
+        missing: list[str] = []
+        for target in raw_targets:
+            _abs, trel = self._resolve(target)
+            if trel == rel:
+                raise KBError(
+                    f"A concept cannot supersede itself ({rel}) — remove it from `supersedes`."
+                )
+            if not (self.root / trel).is_file():
+                missing.append(trel)
+            elif trel not in resolved:
+                resolved.append(trel)
+        if missing:
+            raise KBError(
+                "supersedes points at concept(s) that do not exist: "
+                f"{', '.join(missing)}. Never write a dangling supersede — fix the path(s) "
+                "(kb_search to find the real one) or drop them."
+            )
+        self._guard_supersede_cycle(rel, resolved)
+        # Normalize the supersedes list to resolved repo-relative paths and drop any
+        # superseded_by the author left on the new concept, then re-serialize.
+        doc = split(normalized)
+        assert doc is not None
+        meta = normalize_meta(doc.meta)
+        meta["supersedes"] = resolved if len(resolved) > 1 else resolved[0]
+        meta.pop("superseded_by", None)
+        normalized = serialize(Doc(meta=meta, body=doc.body))
+        edited = [trel for trel in resolved if self._stamp_superseded(trel, rel, today)]
+        return normalized, meta, edited
+
+    def _guard_supersede_cycle(self, rel: str, targets: list[str]) -> None:
+        """Raise if following the targets' own supersedes chains loops back to ``rel``."""
+        seen: set[str] = set()
+        stack = list(targets)
+        while stack:
+            cur = stack.pop()
+            if cur == rel:
+                raise KBError(
+                    f"Supersession cycle detected: {rel} would supersede a concept that "
+                    "(transitively) supersedes it back. Supersession is a chain, not a loop."
+                )
+            if cur in seen:
+                continue
+            seen.add(cur)
+            for nxt in self._supersedes_list(read_meta(self.root / cur)):
+                try:
+                    _abs, nrel = self._resolve(nxt)
+                except KBError:
+                    continue
+                stack.append(nrel)
+
+    def _stamp_superseded(self, target_rel: str, by_rel: str, today: str) -> bool:
+        """Stamp a superseded target's frontmatter (body untouched). Returns True if changed."""
+        abs_path = self.root / target_rel
+        doc = split(_read_text_retry(abs_path))
+        if doc is None:
+            raise KBError(f"Cannot supersede {target_rel}: it has no frontmatter fence to mark.")
+        meta = normalize_meta(doc.meta)
+        before = dict(meta)
+        meta["confidence"] = "superseded"
+        meta["superseded_by"] = by_rel
+        meta.setdefault("valid_until", today)
+        if meta == before:
+            return False
+        _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+        return True
+
+    # ------------------------------------------------------------------ surgical edit + move
+
+    async def kb_edit(
+        self,
+        path: str,
+        operation: str,
+        content: str = "",
+        find: str | None = None,
+        section: str | None = None,
+        occurrence: int | str = 1,
+    ) -> dict[str, Any]:
+        """Surgically edit ONE concept's body without rewriting the whole file. Operations:
+        append, prepend, find_replace, replace_section, insert_after, insert_before. Never
+        touches the frontmatter fence. Returns {path, sha, pushed, operation, warnings}."""
+        abs_path, rel = self._resolve(path)
+        name = posixpath.basename(rel)
+        if operation not in _EDIT_OPERATIONS:
+            raise KBError(f"Unknown operation {operation!r} — one of: {', '.join(_EDIT_OPERATIONS)}.")
+        if not rel.endswith(".md"):
+            raise KBError("kb_edit edits markdown concept files — the path must end in '.md'.")
+        if name == "index.md":
+            raise KBError("index.md files are server-maintained — edit the concept, not its index.")
+        if name == "log.md":
+            raise KBError("log.md is append-only — use kb_append_log to add a session entry.")
+        if "messages" in rel.split("/")[:-1]:
+            raise KBError(
+                "Files under messages/ are managed by the messaging tools — use kb_leave_message "
+                "and kb_mark_read."
+            )
+        state: dict[str, Any] = {"warnings": [], "no_change": False}
+
+        def _mutate() -> list[str]:
+            if not abs_path.is_file():
+                raise KBError(
+                    f"No such concept: '{rel}'. kb_edit changes an EXISTING concept's body — "
+                    "create new concepts with kb_write."
+                )
+            original = _read_text_retry(abs_path)
+            doc = split(original)
+            if doc is None:
+                raise KBError(
+                    f"'{rel}' has no frontmatter fence — kb_edit edits OKF concept bodies; use "
+                    "kb_write to (re)establish this file."
+                )
+            fm_block = original[: len(original) - len(doc.body)] if doc.body else original
+            new_body = _apply_body_edit(operation, doc.body, content, find, section, occurrence, fm_block)
+            if new_body == doc.body:
+                state["no_change"] = True
+                return []
+            candidate = serialize(Doc(meta=normalize_meta(doc.meta), body=new_body))
+            validated, _meta, warnings = validate_concept(candidate, rel_path=rel)
+            state["warnings"] = warnings
+            if validated == original:
+                state["no_change"] = True
+                return []
+            _write_text(abs_path, validated)
+            return [rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: edit {rel} ({operation})")
+        self._log_mutation("kb_edit", [rel], sha, pushed)
+        if not state["no_change"]:
+            self._schedule_index(upserts=[rel])
+        return {
+            "path": rel,
+            "sha": sha,
+            "pushed": pushed,
+            "operation": operation,
+            "warnings": state["warnings"],
+        }
+
+    async def kb_move(self, old_path: str, new_path: str) -> dict[str, Any]:
+        """Move a single concept old_path -> new_path, rewriting every relative markdown link
+        to it across the whole bundle and both parent indexes. Returns
+        {old, new, links_rewritten, sha, pushed}."""
+        old_abs, old_rel = self._resolve(old_path)
+        new_abs, new_rel = self._resolve(new_path)
+        if old_rel == new_rel:
+            raise KBError("old_path and new_path are identical — nothing to move.")
+        for rel_, label in ((old_rel, "source"), (new_rel, "destination")):
+            if not rel_.endswith(".md"):
+                raise KBError(f"kb_move moves markdown concepts — the {label} path must end in '.md'.")
+            base = posixpath.basename(rel_)
+            if base in ("index.md", "log.md"):
+                raise KBError(f"{base} is server-maintained and cannot be moved with kb_move.")
+            if "messages" in rel_.split("/")[:-1]:
+                raise KBError("Messages are managed by the messaging tools — kb_move does not move them.")
+        state: dict[str, Any] = {"links": 0}
+
+        def _mutate() -> list[str]:
+            if not old_abs.is_file():
+                raise KBError(
+                    f"No such concept to move: '{old_rel}'. Discover paths via kb_load or kb_search."
+                )
+            if new_abs.exists():
+                raise KBError(
+                    f"'{new_rel}' already exists — pick a destination that is free, or edit it directly."
+                )
+            old_content = _read_text_retry(old_abs)
+            # Move the file, rebasing ITS OWN relative links so they still resolve and
+            # fixing any self-referential frontmatter refs.
+            new_content = _rewrite_frontmatter_refs(
+                _rebase_body_links(old_content, old_rel, new_rel), old_rel, new_rel
+            )
+            _write_text(new_abs, new_content)
+            old_abs.unlink()
+            touched: set[str] = {old_rel, new_rel}
+            meta = read_meta(new_abs)
+            removed = _remove_index_bullet(self.root, old_rel)
+            if removed:
+                touched.add(removed)
+            touched.update(
+                ensure_indexed(
+                    self.root, new_rel, str(meta.get("title") or ""), str(meta.get("description") or "")
+                )
+            )
+            # Rewrite every OTHER file: body links that resolved to old_rel + frontmatter refs.
+            for f in self.root.rglob("*.md"):
+                if ".git" in f.parts:
+                    continue
+                f_rel = f.relative_to(self.root).as_posix()
+                if f_rel == old_rel:
+                    continue
+                text = _read_text_retry(f)
+                orig = text
+                if f_rel != new_rel:
+                    text, n = _retarget_body_links(text, posixpath.dirname(f_rel), old_rel, new_rel)
+                    state["links"] += n
+                text = _rewrite_frontmatter_refs(text, old_rel, new_rel)
+                if text != orig:
+                    _write_text(f, text)
+                    touched.add(f_rel)
+            return sorted(touched)
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: move {old_rel} -> {new_rel}")
+        self._log_mutation("kb_move", [old_rel, new_rel], sha, pushed)
+        self._schedule_index(upserts=[new_rel], deletes=[old_rel])
+        return {
+            "old": old_rel,
+            "new": new_rel,
+            "links_rewritten": state["links"],
+            "sha": sha,
+            "pushed": pushed,
+        }
 
     async def kb_append_log(self, project: str, entry: str) -> dict[str, Any]:
         """Prepend a dated entry to the project's log.md (newest first; history never edited).
@@ -1131,10 +1663,11 @@ class KBStore:
             return None
         return bool(changed.strip())
 
-    async def kb_share_artifact(self, path: str) -> dict[str, Any]:
+    async def kb_share_artifact(self, path: str, allow_secrets: bool = False) -> dict[str, Any]:
         """Mint (or return the existing) public share token for a type: artifact concept.
-        Idempotent: an already-shared artifact returns its token with no new commit.
-        Returns {path, share_url, sha, pushed}."""
+        Idempotent: an already-shared artifact returns its token with no new commit. Before
+        minting, the body is scanned for likely secrets and sharing is REFUSED if any are
+        found unless allow_secrets=True. Returns {path, share_url, sha, pushed}."""
         abs_path, rel = self._resolve(path)
         name = posixpath.basename(rel)
         state: dict[str, Any] = {}
@@ -1145,6 +1678,17 @@ class KBStore:
             if existing:
                 state["token"] = str(existing)
                 return []  # already shared — idempotent, no commit
+            if not allow_secrets:
+                findings = _scan_secrets(doc.body)
+                if findings:
+                    kinds = sorted({kind for kind, _ in findings})
+                    lines = sorted({ln for _, ln in findings})
+                    raise KBError(
+                        f"Refusing to share {name}: its body contains what look like secrets "
+                        f"({', '.join(kinds)}) on line(s) {', '.join(map(str, lines))}. A share "
+                        "link is PUBLIC — remove the secret(s) with kb_edit/kb_write, or re-run "
+                        "kb_share_artifact with allow_secrets=True to override deliberately."
+                    )
             token = secrets.token_urlsafe(24)
             meta["share"] = token
             state["token"] = token

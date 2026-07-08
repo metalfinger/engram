@@ -205,13 +205,66 @@ async def kb_write(path: str, content: str, message: str, description: str = "")
     (side-panel documents) are saved VERBATIM: frontmatter with type: artifact,
     format: html, and sources, then the COMPLETE HTML document as the body — the
     share link then serves the real interactive page, and updating an artifact never
-    loses its existing share token. `message` is the git commit
+    loses its existing share token. To mark that this concept REPLACES older ones, add a
+    `supersedes:` frontmatter field (a repo-relative path, or a list of them): the server
+    validates each target exists, stamps it superseded (confidence: superseded,
+    superseded_by pointing back here, valid_until: today) in the SAME commit, and makes the
+    edge walkable from kb_read depth=1 — never leave a superseded decision looking current.
+    `message` is the git commit
     message. If the write fails on a conflict, re-read the file, merge intent
     manually, and retry — never overwrite blind.
 
-    Returns {path, created, no_change, sha, pushed, warnings, indexes_updated}.
+    Returns {path, created, no_change, sha, pushed, warnings, indexes_updated, superseded}.
     """
     return await store.kb_write(path, content, message, description)
+
+
+@mcp.tool()
+async def kb_edit(
+    path: str,
+    operation: str,
+    content: str = "",
+    find: str | None = None,
+    section: str | None = None,
+    occurrence: int | str = 1,
+) -> dict[str, Any]:
+    """Surgically edit part of a concept without rewriting the whole file — append/prepend/
+    find_replace/replace_section/insert; body only, use kb_write for frontmatter or new
+    concepts. Reach for this over kb_write when you want to change ONE part of an existing
+    concept and leave the rest byte-for-byte: adding a bullet, fixing a line, swapping a
+    version string, replacing a section. Operations:
+    - append: add `content` to the end of the body.
+    - prepend: add `content` right after the frontmatter, before the body.
+    - find_replace: replace `find` with `content`; `occurrence` picks which — 1 (default)
+      = first match, an integer N = the Nth match, or "all" = every match. A zero-match
+      `find` is an error (the anchor must exist; matching is literal, not fuzzy).
+    - replace_section: replace the block under the markdown heading named by `section`
+      (e.g. "## Notes"); the heading stays, the lines under it become `content`.
+    - insert_after / insert_before: place `content` just after/before the body line that
+      contains the `find` anchor.
+    The frontmatter fence is never touched — an edit whose anchor lives in the frontmatter
+    is refused with a pointer to kb_write. index.md, log.md and messages/ are not editable
+    here (same rules as kb_write). The concept must already exist; create new ones with
+    kb_write.
+
+    Returns {path, sha, pushed, operation, warnings}.
+    """
+    return await store.kb_edit(path, operation, content, find, section, occurrence)
+
+
+@mcp.tool()
+async def kb_move(old_path: str, new_path: str) -> dict[str, Any]:
+    """Rename/relocate a single concept, rewriting every link to it bundle-wide — use
+    kb_rename_project for whole projects. Moves one concept file from old_path to new_path
+    (both repo-relative POSIX .md paths; new_path must be free) and keeps the graph intact:
+    it re-bases the moved file's own relative links, rewrites every relative markdown link
+    ANYWHERE in the bundle that pointed at it, updates both the old and new parent index.md,
+    and fixes any frontmatter sources/supersedes/superseded_by references to it — all in one
+    commit. index.md, log.md and messages/ cannot be moved.
+
+    Returns {old, new, links_rewritten, sha, pushed}.
+    """
+    return await store.kb_move(old_path, new_path)
 
 
 @mcp.tool()
@@ -343,17 +396,21 @@ async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-async def kb_share_artifact(path: str) -> dict[str, Any]:
+async def kb_share_artifact(path: str, allow_secrets: bool = False) -> dict[str, Any]:
     """Create a PUBLIC, revocable share link for a saved artifact (type: artifact concept).
     WARNING: this makes THIS document readable by anyone who has the URL — no sign-in, no
     Access gate. Only the artifact's rendered body is exposed; its source paths and the
     rest of the knowledge base stay private. Confirm with the user before sharing anything
     sensitive. Idempotent: re-sharing returns the same link. Revoke anytime with
-    kb_unshare_artifact.
+    kb_unshare_artifact. Before minting the link the body is scanned for likely secrets
+    (API keys, tokens, private keys, hardcoded credentials) and sharing is REFUSED if any
+    are found — the error names the kinds and line numbers, not the values. Only pass
+    allow_secrets=True to override once you have confirmed with the user that the flagged
+    content is safe to publish (e.g. an example placeholder), since it bypasses that guard.
 
     Returns {path, share_url, sha, pushed}.
     """
-    return await store.kb_share_artifact(path)
+    return await store.kb_share_artifact(path, allow_secrets)
 
 
 @mcp.tool()
