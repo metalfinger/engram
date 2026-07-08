@@ -57,12 +57,23 @@ class GitRepo:
         env["GIT_AUTHOR_EMAIL"] = email
         env["GIT_COMMITTER_NAME"] = name
         env["GIT_COMMITTER_EMAIL"] = email
-        # Only set GIT_SSH_COMMAND when the key actually exists — file:// test
-        # remotes (and https remotes) need no SSH at all.
+        # Deploy key present -> use exactly it, and ONLY it (IdentitiesOnly).
         if self.ssh_key is not None and self.ssh_key.is_file():
             env["GIT_SSH_COMMAND"] = (
                 f'ssh -i "{self.ssh_key}" -o IdentitiesOnly=yes '
                 "-o StrictHostKeyChecking=accept-new"
+            )
+        else:
+            # No deploy key configured (tests, throwaway copies): FORCE an SSH command
+            # that carries no identity and never prompts, overriding any core.sshCommand
+            # baked into a copied checkout's .git/config. Without this, a `shutil.copytree`
+            # of the real brain inherits the real key and can silently push to production
+            # (a real incident, 2026-07-08). file:// and https remotes ignore SSH entirely,
+            # so this is inert for the test suite; a real SSH remote simply fails to auth
+            # (push returns pushed=False), which is the correct, safe behavior.
+            env["GIT_SSH_COMMAND"] = (
+                "ssh -o IdentitiesOnly=yes -o IdentityAgent=none "
+                "-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=no"
             )
         return env
 

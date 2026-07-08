@@ -132,3 +132,25 @@ def test_push_race_conflict_preserves_local_commit(gitrepo: GitRepo, other_clone
     assert gitrepo.rebase_in_progress() is False
     assert gitrepo.is_dirty() == []
     assert gitrepo.run("log", "-1", "--format=%s").strip() == "feat: local edit"
+
+
+def test_no_key_forces_identityless_ssh_command(tmp_path):
+    """A GitRepo with no deploy key must FORCE an identity-free GIT_SSH_COMMAND so a
+    copied checkout's baked-in core.sshCommand can't silently push to prod (2026-07-08
+    incident). file:// remotes ignore SSH, so this is inert for the suite."""
+    from engram_server.gitops import GitRepo
+
+    repo = GitRepo(
+        path=tmp_path,
+        remote="git@github.com:owner/repo.git",
+        branch="main",
+        ssh_key=tmp_path / "does-not-exist",
+        author=("bot", "bot@example.com"),
+        timeout=30,
+    )
+    env = repo._env()
+    cmd = env["GIT_SSH_COMMAND"]
+    assert "IdentitiesOnly=yes" in cmd
+    assert "IdentityAgent=none" in cmd
+    assert "BatchMode=yes" in cmd
+    assert " -i " not in cmd
