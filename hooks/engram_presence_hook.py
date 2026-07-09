@@ -35,6 +35,35 @@ def _git(cwd, *args):
     return ""
 
 
+def _detect_project(cwd, toplevel):
+    """Read a `.engram-project` pin so a repo/dir can attach its sessions to a
+    default Engram project (shown as that project's room in the live office).
+
+    Walk up from cwd to the repo top (or filesystem root) looking for a
+    `.engram-project` file; its first non-empty line is the project id. Empty on
+    miss. Purely a home-room hint — it never restricts what the session can access.
+    """
+    try:
+        cur = os.path.abspath(cwd)
+        stop = os.path.abspath(toplevel) if toplevel else None
+        while True:
+            pin = os.path.join(cur, ".engram-project")
+            if os.path.isfile(pin):
+                with open(pin, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            return line
+                return ""
+            parent = os.path.dirname(cur)
+            if cur == stop or parent == cur:
+                break
+            cur = parent
+    except Exception:
+        pass
+    return ""
+
+
 def main():
     try:
         data = json.loads(sys.stdin.read())
@@ -64,6 +93,7 @@ def main():
     branch = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") if toplevel else ""
     repo_remote = _git(cwd, "remote", "get-url", "origin") if toplevel else ""
     host = socket.gethostname()
+    project = _detect_project(cwd, toplevel)  # `.engram-project` pin → home room
 
     # Friendly display name: host + repo (or cwd basename when not a repo).
     where = repo or os.path.basename(cwd.rstrip("/\\")) or cwd
@@ -77,6 +107,7 @@ def main():
         "branch": branch,
         "repo_remote": repo_remote,
         "host": host,
+        "project": project,
         "status": status,
         "ts": int(time.time()),
     }

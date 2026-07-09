@@ -42,6 +42,21 @@ and leaves the one-writer invariant intact. See
 3. That's it — the server side is already deployed. Watch yourself appear at
    `https://brain.metalfinger.xyz/brain/workspace`.
 
+## Attaching a repo to a project (`.engram-project`)
+
+Drop a one-line file named `.engram-project` at a repo's root containing an Engram
+project id (e.g. `engram`). The hook walks up from `cwd` to the repo top, reads it,
+and stamps the session's `project` — so that session shows up in that project's
+**room** in the live office (`/brain/office`), and the roster knows its home project.
+
+```
+echo engram > .engram-project      # pin this repo's sessions to the "engram" project
+```
+
+Lines starting with `#` are ignored; the first non-empty line wins. This is purely a
+**home-room hint** — it never restricts access. Every session can still read any
+project via the `kb_*` tools; the room is just where its character sits.
+
 ## Config (server side, all optional, `ENGRAM_` env prefix)
 
 - `PRESENCE_SPOOL_DIR` — spool dir (default `~/.engram/presence-spool`)
