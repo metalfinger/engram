@@ -129,7 +129,7 @@ def _scan(root: Path) -> dict[str, Any]:
     # Orphans + dead knowledge: concepts nobody's body links to. Outputs are
     # exempt — artifacts/reports/recipes carry provenance instead of inbound
     # links, and inbox notes are pre-triage by definition; flagging them is noise.
-    _output_types = ("artifact", "report", "recipe", "inbox", "imported-conversation")
+    _output_types = ("artifact", "report", "recipe", "inbox", "imported-conversation", "thread", "thread-turn")
     orphans: list[str] = []
     dead: list[str] = []
     for rel in concept_files:

@@ -51,6 +51,7 @@ _VALID_TO = ("any", "claude-code", "mobile", "web")
 _ARCHIVE_INDEX = "# Archive\n\nRead messages land here.\n"
 _LINK_CAP = 50
 _SLUG_MAX = 60
+_THREAD_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 def _utcnow() -> datetime:
@@ -1721,6 +1722,263 @@ class KBStore:
         self._log_mutation("kb_inbox", [state["path"]], sha, pushed)
         self._schedule_index(upserts=[state["path"]])
         return {"path": state["path"], "sha": sha, "pushed": pushed}
+
+    # ------------------------------------------------------------------ cross-session threads
+
+    def _thread_dir(self, thread: str) -> tuple[str, str]:
+        """Validate a kebab thread id and return (thread-id, 'threads/<id>' rel dir)."""
+        tid = (thread or "").strip()
+        if not tid or not _THREAD_ID_RE.fullmatch(tid):
+            raise KBError(
+                f"Invalid thread id {thread!r} — thread ids are kebab-case (lowercase "
+                "letters, digits, hyphens), e.g. 'deploy-handoff'. Call kb_threads to list "
+                "the open threads."
+            )
+        return tid, f"threads/{tid}"
+
+    def _read_turns(self, turns_dir: Path) -> list[dict[str, Any]]:
+        """Every turn under a thread's turns/ dir, ordered by seq (failure-soft per file)."""
+        out: list[dict[str, Any]] = []
+        if not turns_dir.is_dir():
+            return out
+        for f in sorted(turns_dir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            try:
+                doc = split(_read_text_retry(f))
+            except Exception:  # noqa: BLE001 — skip a bad turn, never crash a read
+                continue
+            if doc is None:
+                continue
+            meta = normalize_meta(doc.meta)
+            if str(meta.get("type") or "") != "thread-turn":
+                continue
+            try:
+                seq = int(meta.get("seq"))
+            except (TypeError, ValueError):
+                seq = 0
+            out.append(
+                {
+                    "seq": seq,
+                    "sender": str(meta.get("sender") or ""),
+                    "timestamp": str(meta.get("timestamp") or ""),
+                    "message": doc.body.strip("\n"),
+                }
+            )
+        out.sort(key=lambda t: (t["seq"], t["timestamp"]))
+        return out
+
+    @staticmethod
+    def _render_thread(meta: dict[str, Any], turns: list[dict[str, Any]]) -> str:
+        """Human-readable transcript body regenerated on each post (explorer renders it)."""
+        topic = str(meta.get("topic") or "")
+        status = str(meta.get("status") or "open")
+        parts = meta.get("participants")
+        participants = ", ".join(str(p) for p in parts) if isinstance(parts, list) else ""
+        head = [f"# Thread: {topic or meta.get('title') or 'untitled'}", ""]
+        if status == "closed":
+            closed_by = str(meta.get("closed_by") or "")
+            closed_at = str(meta.get("closed_at") or "")
+            head.append(f"**Status:** closed (by {closed_by} at {closed_at})")
+        else:
+            head.append("**Status:** open")
+        head.append(f"**Participants:** {participants or '—'}")
+        head.append("")
+        head.append("---")
+        head.append("")
+        lines = list(head)
+        for t in turns:
+            lines.append(f"### {t['seq']}. {t['sender']} — {t['timestamp']}")
+            lines.append("")
+            lines.append(t["message"] or "_(empty)_")
+            lines.append("")
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+    async def kb_thread_post(
+        self,
+        thread: str,
+        sender: str,
+        message: str,
+        close: bool = False,
+        topic: str = "",
+    ) -> dict[str, Any]:
+        """Post one turn to a bundle-root cross-session thread (auto-creates it on first
+        post). Appends a turn file, adds the sender to participants, regenerates the
+        thread.md transcript, and — when close=True — marks the thread closed with this as
+        the final turn. Returns {thread, seq, status, participants, posted, pushed}."""
+        tid, tdir_rel = self._thread_dir(thread)
+        if not sender or not sender.strip():
+            raise KBError("A thread post needs a sender — the name of the session posting (e.g. 'session-a').")
+        if not message or not message.strip():
+            raise KBError("Empty thread message — pass what you want the other session to read.")
+        sender = sender.strip()
+        sender_slug = re.sub(r"[^a-z0-9]+", "-", sender.lower()).strip("-")[:_SLUG_MAX].strip("-") or "anon"
+        clean = message.replace("\r\n", "\n").replace("\r", "\n").strip()
+        now = _utcnow()
+        timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            tdir = self.root / tdir_rel
+            thread_path = tdir / "thread.md"
+            turns_dir = tdir / "turns"
+            existing = self._read_turns(turns_dir)
+
+            if thread_path.is_file():
+                tmeta = normalize_meta(split(_read_text_retry(thread_path)).meta)
+                if str(tmeta.get("status") or "open") == "closed":
+                    raise KBError(
+                        f"Thread '{tid}' is closed (by {tmeta.get('closed_by')!r}) — no more "
+                        "posts. Start a new thread with a different id to keep talking."
+                    )
+                created = False
+            else:
+                tmeta = {
+                    "type": "thread",
+                    "title": f"Thread: {topic.strip() or tid}",
+                    "description": (topic.strip() or f"Cross-session thread {tid}")[:_SLUG_MAX * 3],
+                    "topic": topic.strip(),
+                    "status": "open",
+                    "participants": [],
+                    "created": timestamp,
+                    "timestamp": timestamp,
+                }
+                created = True
+
+            seq = len(existing)
+            participants = list(tmeta.get("participants") or [])
+            if sender not in participants:
+                participants.append(sender)
+
+            # Collision-safe turn filename (compact ts + sender slug); the write lock
+            # already serializes posts, this only guards a same-microsecond retry.
+            base = now.strftime("%Y%m%dT%H%M%S%f")
+            name = f"{base}-{sender_slug}.md"
+            n = 2
+            while (turns_dir / name).exists():
+                name = f"{base}-{sender_slug}-{n}.md"
+                n += 1
+            turn_meta: dict[str, Any] = {
+                "type": "thread-turn",
+                "title": f"Turn {seq} — {sender}",
+                "description": _first_sentence(clean) or f"Turn {seq} from {sender}",
+                "sender": sender,
+                "timestamp": timestamp,
+                "seq": seq,
+            }
+            turn_rel = f"{tdir_rel}/turns/{name}"
+            _write_text(turns_dir / name, serialize(Doc(meta=turn_meta, body=f"{clean}\n")))
+
+            all_turns = existing + [
+                {"seq": seq, "sender": sender, "timestamp": timestamp, "message": clean}
+            ]
+            tmeta["participants"] = participants
+            tmeta["timestamp"] = timestamp
+            tmeta["last_activity"] = timestamp
+            if close:
+                tmeta["status"] = "closed"
+                tmeta["closed_by"] = sender
+                tmeta["closed_at"] = timestamp
+            _write_text(thread_path, serialize(Doc(meta=tmeta, body=self._render_thread(tmeta, all_turns))))
+
+            paths = [turn_rel, f"{tdir_rel}/thread.md"]
+            if created:
+                paths.extend(
+                    ensure_indexed(self.root, f"{tdir_rel}/thread.md", str(tmeta["title"]), str(tmeta["description"]))
+                )
+            # Keep the turn reachable from its parent index so the reconcile membership
+            # sweep never has to repair it.
+            paths.extend(ensure_indexed(self.root, turn_rel, str(turn_meta["title"]), str(turn_meta["description"])))
+
+            state["seq"] = seq
+            state["status"] = str(tmeta["status"])
+            state["participants"] = participants
+            return paths
+
+        verb = "close" if close else "post"
+        sha, pushed = await self._locked_commit(_mutate, f"thread: {tid} {sender} {verb}")
+        self._log_mutation("kb_thread_post", [f"{tdir_rel}/thread.md"], sha, pushed)
+        self._schedule_index(upserts=[f"{tdir_rel}/thread.md"])
+        return {
+            "thread": tid,
+            "seq": state["seq"],
+            "status": state["status"],
+            "participants": state["participants"],
+            "posted": timestamp,
+            "pushed": pushed,
+        }
+
+    async def kb_thread_read(self, thread: str, since: str | None = None) -> dict[str, Any]:
+        """Read a cross-session thread — poll for the other session's turns. `since` is a
+        cursor (a prior read's `cursor`); only turns AFTER it are returned. An unknown
+        thread returns {status: 'none', turns: []}. Returns {thread, status, topic,
+        participants, turns: [{seq, sender, timestamp, message}], cursor, closed_by?}."""
+        tid, tdir_rel = self._thread_dir(thread)
+        await self._refresh()
+
+        def _read() -> dict[str, Any]:
+            tdir = self.root / tdir_rel
+            thread_path = tdir / "thread.md"
+            none = {"thread": tid, "status": "none", "topic": "", "participants": [], "turns": [], "cursor": since}
+            if not thread_path.is_file():
+                return none
+            try:
+                doc = split(_read_text_retry(thread_path))
+            except Exception:  # noqa: BLE001 — a corrupt thread.md reads as absent, never crashes
+                return none
+            if doc is None:
+                return none
+            tmeta = normalize_meta(doc.meta)
+            all_turns = self._read_turns(tdir / "turns")
+            newest = all_turns[-1]["timestamp"] if all_turns else since
+            shown = [t for t in all_turns if not since or t["timestamp"] > since]
+            out: dict[str, Any] = {
+                "thread": tid,
+                "status": str(tmeta.get("status") or "open"),
+                "topic": str(tmeta.get("topic") or ""),
+                "participants": list(tmeta.get("participants") or []),
+                "turns": shown,
+                "cursor": newest,
+            }
+            if str(tmeta.get("status") or "") == "closed":
+                out["closed_by"] = str(tmeta.get("closed_by") or "")
+            return out
+
+        return await to_thread.run_sync(_read)
+
+    async def kb_threads(self) -> list[dict[str, Any]]:
+        """List cross-session threads (newest activity first) so a session can discover or
+        join one by name. Returns [{thread, status, topic, participants, turn_count,
+        last_activity}]."""
+        await self._refresh()
+
+        def _list() -> list[dict[str, Any]]:
+            troot = self.root / "threads"
+            out: list[dict[str, Any]] = []
+            if not troot.is_dir():
+                return out
+            for tdir in sorted(troot.iterdir()):
+                if not tdir.is_dir() or tdir.name.startswith("."):
+                    continue
+                thread_path = tdir / "thread.md"
+                if not thread_path.is_file():
+                    continue
+                meta = read_meta(thread_path)
+                turns = self._read_turns(tdir / "turns")
+                out.append(
+                    {
+                        "thread": tdir.name,
+                        "status": str(meta.get("status") or "open"),
+                        "topic": str(meta.get("topic") or ""),
+                        "participants": list(meta.get("participants") or []),
+                        "turn_count": len(turns),
+                        "last_activity": str(meta.get("last_activity") or meta.get("timestamp") or ""),
+                    }
+                )
+            out.sort(key=lambda t: str(t.get("last_activity") or ""), reverse=True)
+            return out
+
+        return await to_thread.run_sync(_list)
 
     # ------------------------------------------------------------------ importers
 

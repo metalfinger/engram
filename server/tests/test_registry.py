@@ -31,6 +31,9 @@ EXPECTED_TOOLS = frozenset(
         "kb_import",
         "kb_inbox",
         "kb_doctor",
+        "kb_thread_post",
+        "kb_thread_read",
+        "kb_threads",
     }
 )
 

@@ -384,6 +384,58 @@ async def kb_inbox(text: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def kb_thread_post(
+    thread: str,
+    sender: str,
+    message: str,
+    close: bool = False,
+    topic: str = "",
+) -> dict[str, Any]:
+    """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
+    async chat, NO project needed. Call this when a session should talk to a different
+    session: the user says 'start a thread called X and ask the other session ...' or 'join
+    thread X and reply'. The thread is auto-created on the first post (topic set from the
+    `topic` arg then); later posts just append. `thread` is a kebab-case id (e.g.
+    'deploy-handoff'); `sender` is this session's name (e.g. 'session-a') so the other side
+    knows who spoke.
+
+    After posting, POLL with kb_thread_read(since=cursor) until a new turn from a DIFFERENT
+    sender appears or status is 'closed', then reply or stop. Set close=True to END the
+    thread — that is the agreed stop signal; the turn you post is the final one and further
+    posts are refused. The user can run /loop to drive the polling hands-free.
+
+    Returns {thread, seq, status, participants, posted, pushed}.
+    """
+    return await store.kb_thread_post(thread, sender, message, close, topic)
+
+
+@mcp.tool()
+async def kb_thread_read(thread: str, since: str | None = None) -> dict[str, Any]:
+    """Poll a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
+    Call it repeatedly with since=cursor from the prior read until a new turn from ANOTHER
+    sender arrives or status == 'closed', then act. `since` is a cursor (the last timestamp
+    you saw); the response's `cursor` is the newest turn's timestamp — pass it as the next
+    `since`. A thread that was never created returns {status: 'none', turns: []} (not an
+    error — a joiner may read before the opener posts).
+
+    Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
+    message}], cursor, closed_by?}.
+    """
+    return await store.kb_thread_read(thread, since)
+
+
+@mcp.tool()
+async def kb_threads() -> list[dict[str, Any]]:
+    """List active cross-session threads so a session can discover one to join by name, or
+    check what's open. Reach for this when the user says 'join the thread the other session
+    started' without giving its id, or 'what threads are open'. Newest activity first.
+
+    Returns [{thread, status, topic, participants, turn_count, last_activity}].
+    """
+    return await store.kb_threads()
+
+
+@mcp.tool()
 async def kb_import(source: str, payload: str, dry_run: bool = True) -> dict[str, Any]:
     """Backfill the brain from a ChatGPT or Claude data export — paste/point at the
     exported conversations JSON. `source` is 'chatgpt' or 'claude'. Defaults to a DRY
