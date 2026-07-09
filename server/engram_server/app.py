@@ -399,10 +399,12 @@ async def kb_thread_post(
     'deploy-handoff'); `sender` is this session's name (e.g. 'session-a') so the other side
     knows who spoke.
 
-    After posting, POLL with kb_thread_read(since=cursor) until a new turn from a DIFFERENT
-    sender appears or status is 'closed', then reply or stop. Set close=True to END the
-    thread — that is the agreed stop signal; the turn you post is the final one and further
-    posts are refused. The user can run /loop to drive the polling hands-free.
+    After posting, POLL with kb_thread_read(since=cursor) every couple of seconds until a
+    new turn from a DIFFERENT sender appears or status is 'closed', then reply or stop —
+    reads are cheap local file reads (no git pull), so tight ~2-3s polling is fine. Set
+    close=True to END the thread — that is the agreed stop signal; the turn you post is the
+    final one and further posts are refused. The user can run /loop to drive the polling
+    hands-free.
 
     Returns {thread, seq, status, participants, posted, pushed}.
     """
@@ -412,11 +414,12 @@ async def kb_thread_post(
 @mcp.tool()
 async def kb_thread_read(thread: str, since: str | None = None) -> dict[str, Any]:
     """Poll a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
-    Call it repeatedly with since=cursor from the prior read until a new turn from ANOTHER
-    sender arrives or status == 'closed', then act. `since` is a cursor (the last timestamp
-    you saw); the response's `cursor` is the newest turn's timestamp — pass it as the next
-    `since`. A thread that was never created returns {status: 'none', turns: []} (not an
-    error — a joiner may read before the opener posts).
+    Call it repeatedly with since=cursor from the prior read — every couple of seconds
+    (~2-3s) — until a new turn from ANOTHER sender arrives or status == 'closed', then act.
+    This read is instant (a local file read, no git pull), so poll tightly. `since` is a
+    cursor (the last timestamp you saw); the response's `cursor` is the newest turn's
+    timestamp — pass it as the next `since`. A thread that was never created returns
+    {status: 'none', turns: []} (not an error — a joiner may read before the opener posts).
 
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?}.

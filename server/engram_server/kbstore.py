@@ -1912,9 +1912,14 @@ class KBStore:
         """Read a cross-session thread — poll for the other session's turns. `since` is a
         cursor (a prior read's `cursor`); only turns AFTER it are returned. An unknown
         thread returns {status: 'none', turns: []}. Returns {thread, status, topic,
-        participants, turns: [{seq, sender, timestamp, message}], cursor, closed_by?}."""
+        participants, turns: [{seq, sender, timestamp, message}], cursor, closed_by?}.
+
+        Deliberately does NOT trigger a git pull: both sessions post THROUGH this same
+        server to the same local checkout, so a turn is on disk the instant its post
+        commits and a same-server poll sees it with zero network round-trip. This keeps a
+        tight poll loop cheap (a local file read). External/other-PC posts are still picked
+        up by the periodic pull that other tools drive."""
         tid, tdir_rel = self._thread_dir(thread)
-        await self._refresh()
 
         def _read() -> dict[str, Any]:
             tdir = self.root / tdir_rel
