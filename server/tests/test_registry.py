@@ -34,6 +34,10 @@ EXPECTED_TOOLS = frozenset(
         "kb_thread_post",
         "kb_thread_read",
         "kb_threads",
+        "kb_presence",
+        "kb_roster",
+        "kb_handoff",
+        "kb_workspace",
     }
 )
 

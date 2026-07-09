@@ -11,7 +11,7 @@ Bump SERVER_VERSION + CURRENT_TOOLS on any tool-surface change.
 
 from __future__ import annotations
 
-SERVER_VERSION = "2026-07-09"
+SERVER_VERSION = "2026-07-09.workspace"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -21,6 +21,7 @@ CURRENT_TOOLS = (
     "kb_recipes", "kb_share_artifact", "kb_unshare_artifact", "kb_rename_project",
     "kb_import", "kb_inbox", "kb_doctor",
     "kb_thread_post", "kb_thread_read", "kb_threads",
+    "kb_presence", "kb_roster", "kb_handoff", "kb_workspace",
 )
 
 

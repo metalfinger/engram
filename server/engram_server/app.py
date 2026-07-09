@@ -390,6 +390,7 @@ async def kb_thread_post(
     message: str,
     close: bool = False,
     topic: str = "",
+    refs: list[str] | None = None,
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -398,6 +399,11 @@ async def kb_thread_post(
     `topic` arg then); later posts just append. `thread` is a kebab-case id (e.g.
     'deploy-handoff'); `sender` is this session's name (e.g. 'session-a') so the other side
     knows who spoke.
+
+    Share concepts/artifacts INTO the room with `refs` — a list of repo-relative paths (e.g.
+    ['projects/alt/specs/api.md']); they attach to the turn and show as a 'shared:' line the
+    other session can kb_read. To share a CODE snippet, drop a fenced ``` code block ``` into
+    `message` — it renders verbatim in the transcript, no special param needed.
 
     After posting, POLL with kb_thread_read(since=cursor) every couple of seconds until a
     new turn from a DIFFERENT sender appears or status is 'closed', then reply or stop —
@@ -408,7 +414,7 @@ async def kb_thread_post(
 
     Returns {thread, seq, status, participants, posted, pushed}.
     """
-    return await store.kb_thread_post(thread, sender, message, close, topic)
+    return await store.kb_thread_post(thread, sender, message, close, topic, refs)
 
 
 @mcp.tool()
@@ -436,6 +442,95 @@ async def kb_threads() -> list[dict[str, Any]]:
     Returns [{thread, status, topic, participants, turn_count, last_activity}].
     """
     return await store.kb_threads()
+
+
+@mcp.tool()
+async def kb_presence(
+    session: str,
+    name: str = "",
+    status: str = "working",
+    working_on: str = "",
+    repo: str = "",
+    branch: str = "",
+    repo_remote: str = "",
+    cwd: str = "",
+    project: str = "",
+    note: str = "",
+    host: str = "",
+) -> dict[str, Any]:
+    """Announce/heartbeat THIS session so other sessions (and Hiren's dashboard) can see
+    who's working on what. Call at session start and again whenever your task changes — one
+    file per session, overwritten each time (no history). A Claude Code session should first
+    auto-detect its git context and pass real values: repo = basename of
+    `git rev-parse --show-toplevel`, branch = `git rev-parse --abbrev-ref HEAD`,
+    repo_remote = `git remote get-url origin` (or 'local' if none), cwd = the working dir,
+    host = the PC name (`hostname`). A claude.ai session self-reports what the user says.
+    `session` is a short kebab-case handle for this session (e.g. 'pc1-claude-code');
+    `status` is one of working | idle | blocked | available | done. `note` is an optional
+    freeform line. The user can run /loop to heartbeat hands-free.
+
+    Returns {session, updated, roster_active} where roster_active = sessions active in the
+    last 15 minutes (including this one).
+    """
+    return await store.kb_presence(
+        session, name, status, working_on, repo, branch, repo_remote, cwd, project, note, host
+    )
+
+
+@mcp.tool()
+async def kb_roster(active_within_min: int = 15) -> list[dict[str, Any]]:
+    """See which Claude sessions are currently active across all of Hiren's PCs and
+    projects, and what each is working on (repo/branch/task) — the 'who's online' board.
+    Call when the user asks what's running, before handing off work, or to coordinate.
+    Sessions that haven't heartbeat within `active_within_min` (default 15) are filtered
+    out (their records are kept, not deleted). Most-recently-updated first.
+
+    Returns [{session, name, status, working_on, repo, branch, repo_remote, cwd, project,
+    host, updated, age_min}].
+    """
+    return await store.kb_roster(active_within_min)
+
+
+@mcp.tool()
+async def kb_handoff(
+    from_session: str,
+    summary: str,
+    repo: str = "",
+    branch: str = "",
+    state: str = "",
+    next_steps: str = "",
+    refs: list[str] | None = None,
+    to: str = "any",
+    room: str = "",
+) -> dict[str, Any]:
+    """Hand your current work to another session (or leave it for whoever picks it up):
+    captures repo / branch / state / next-steps / refs so they resume exactly where you left
+    off. Use when the user says 'hand this off', 'another session will continue', or when
+    wrapping a session that has unfinished work. `from_session` is your session name;
+    `summary` is what's being handed off; `next_steps` is the to-do for the taker; `refs` is
+    a list of repo-relative concept/artifact paths they'll need; `to` names an intended taker
+    (default 'any'). Pass `room` (a kebab-case thread id) to ALSO drop a pointer into that
+    room so a watching session is notified immediately.
+
+    Returns {path, sha, pushed}.
+    """
+    return await store.kb_handoff(
+        from_session, summary, repo, branch, state, next_steps, refs, to, room
+    )
+
+
+@mcp.tool()
+async def kb_workspace() -> dict[str, Any]:
+    """One-shot snapshot of the whole workspace — who's active, what rooms are open, and
+    recent handoffs. Use to brief the user on everything happening across their sessions
+    ('what's going on across my machines', 'give me the workspace board'). Combines the live
+    roster (active 15 min), open threads, and the last ~5 handoffs in a single call.
+
+    Returns {roster: [...same as kb_roster...], rooms: [...same as kb_threads...],
+    recent_handoffs: [{path, from, to, summary, repo, branch, state, next_steps, refs,
+    created, status}]}.
+    """
+    return await store.kb_workspace()
 
 
 @mcp.tool()

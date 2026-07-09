@@ -52,10 +52,31 @@ _ARCHIVE_INDEX = "# Archive\n\nRead messages land here.\n"
 _LINK_CAP = 50
 _SLUG_MAX = 60
 _THREAD_ID_RE = re.compile(r"^[a-z0-9-]+$")
+_PRESENCE_STATUSES = ("working", "idle", "blocked", "available", "done")
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _slug(value: str, fallback: str = "") -> str:
+    """kebab-ish slug: lowercase, each non-alphanumeric run -> one hyphen, trimmed and
+    capped. Returns ``fallback`` when nothing slug-able survives."""
+    s = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")[:_SLUG_MAX].strip("-")
+    return s or fallback
+
+
+def _parse_ts(value: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp (with or without a trailing 'Z') to an aware UTC
+    datetime; None when absent or unparseable. Used for presence TTL/age math."""
+    s = (value or "").strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def _title_case(slug: str) -> str:
@@ -1757,12 +1778,15 @@ class KBStore:
                 seq = int(meta.get("seq"))
             except (TypeError, ValueError):
                 seq = 0
+            raw_refs = meta.get("refs")
+            refs = [str(r) for r in raw_refs] if isinstance(raw_refs, list) else []
             out.append(
                 {
                     "seq": seq,
                     "sender": str(meta.get("sender") or ""),
                     "timestamp": str(meta.get("timestamp") or ""),
                     "message": doc.body.strip("\n"),
+                    "refs": refs,
                 }
             )
         out.sort(key=lambda t: (t["seq"], t["timestamp"]))
@@ -1791,6 +1815,14 @@ class KBStore:
             lines.append(f"### {t['seq']}. {t['sender']} — {t['timestamp']}")
             lines.append("")
             lines.append(t["message"] or "_(empty)_")
+            refs = t.get("refs")
+            if refs:
+                # Rendered as code spans, not markdown links: the reconcile link sweep
+                # must not read a shared path as an outbound link from the thread dir
+                # (it would resolve wrong and look dangling). The turn's refs: frontmatter
+                # is the machine-readable copy the dashboard consumes.
+                lines.append("")
+                lines.append("shared: " + ", ".join(f"`{r}`" for r in refs))
             lines.append("")
         return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -1801,17 +1833,22 @@ class KBStore:
         message: str,
         close: bool = False,
         topic: str = "",
+        refs: list[str] | None = None,
     ) -> dict[str, Any]:
         """Post one turn to a bundle-root cross-session thread (auto-creates it on first
         post). Appends a turn file, adds the sender to participants, regenerates the
         thread.md transcript, and — when close=True — marks the thread closed with this as
-        the final turn. Returns {thread, seq, status, participants, posted, pushed}."""
+        the final turn. Optional `refs` are repo-relative concept/artifact paths shared into
+        the room: they land in the turn's refs: frontmatter and render as a 'shared:' line in
+        the transcript. To share a CODE snippet, put a fenced code block in `message` — it
+        renders verbatim. Returns {thread, seq, status, participants, posted, pushed}."""
         tid, tdir_rel = self._thread_dir(thread)
         if not sender or not sender.strip():
             raise KBError("A thread post needs a sender — the name of the session posting (e.g. 'session-a').")
         if not message or not message.strip():
             raise KBError("Empty thread message — pass what you want the other session to read.")
         sender = sender.strip()
+        refs_list = [str(r).strip() for r in (refs or []) if str(r).strip()]
         sender_slug = re.sub(r"[^a-z0-9]+", "-", sender.lower()).strip("-")[:_SLUG_MAX].strip("-") or "anon"
         clean = message.replace("\r\n", "\n").replace("\r", "\n").strip()
         now = _utcnow()
@@ -1866,11 +1903,15 @@ class KBStore:
                 "timestamp": timestamp,
                 "seq": seq,
             }
+            # Only stamp refs: when there are some, so a plain post's turn file stays
+            # byte-identical to the pre-refs shape.
+            if refs_list:
+                turn_meta["refs"] = refs_list
             turn_rel = f"{tdir_rel}/turns/{name}"
             _write_text(turns_dir / name, serialize(Doc(meta=turn_meta, body=f"{clean}\n")))
 
             all_turns = existing + [
-                {"seq": seq, "sender": sender, "timestamp": timestamp, "message": clean}
+                {"seq": seq, "sender": sender, "timestamp": timestamp, "message": clean, "refs": refs_list}
             ]
             tmeta["participants"] = participants
             tmeta["timestamp"] = timestamp
@@ -1956,34 +1997,317 @@ class KBStore:
         join one by name. Returns [{thread, status, topic, participants, turn_count,
         last_activity}]."""
         await self._refresh()
+        return await to_thread.run_sync(self._threads_sync)
 
-        def _list() -> list[dict[str, Any]]:
-            troot = self.root / "threads"
-            out: list[dict[str, Any]] = []
-            if not troot.is_dir():
-                return out
-            for tdir in sorted(troot.iterdir()):
-                if not tdir.is_dir() or tdir.name.startswith("."):
-                    continue
-                thread_path = tdir / "thread.md"
-                if not thread_path.is_file():
-                    continue
-                meta = read_meta(thread_path)
-                turns = self._read_turns(tdir / "turns")
-                out.append(
-                    {
-                        "thread": tdir.name,
-                        "status": str(meta.get("status") or "open"),
-                        "topic": str(meta.get("topic") or ""),
-                        "participants": list(meta.get("participants") or []),
-                        "turn_count": len(turns),
-                        "last_activity": str(meta.get("last_activity") or meta.get("timestamp") or ""),
-                    }
-                )
-            out.sort(key=lambda t: str(t.get("last_activity") or ""), reverse=True)
+    def _threads_sync(self) -> list[dict[str, Any]]:
+        troot = self.root / "threads"
+        out: list[dict[str, Any]] = []
+        if not troot.is_dir():
             return out
+        for tdir in sorted(troot.iterdir()):
+            if not tdir.is_dir() or tdir.name.startswith("."):
+                continue
+            thread_path = tdir / "thread.md"
+            if not thread_path.is_file():
+                continue
+            meta = read_meta(thread_path)
+            turns = self._read_turns(tdir / "turns")
+            out.append(
+                {
+                    "thread": tdir.name,
+                    "status": str(meta.get("status") or "open"),
+                    "topic": str(meta.get("topic") or ""),
+                    "participants": list(meta.get("participants") or []),
+                    "turn_count": len(turns),
+                    "last_activity": str(meta.get("last_activity") or meta.get("timestamp") or ""),
+                }
+            )
+        out.sort(key=lambda t: str(t.get("last_activity") or ""), reverse=True)
+        return out
 
-        return await to_thread.run_sync(_list)
+    # ------------------------------------------------------------------ workspace (presence / roster / handoff)
+
+    async def kb_presence(
+        self,
+        session: str,
+        name: str = "",
+        status: str = "working",
+        working_on: str = "",
+        repo: str = "",
+        branch: str = "",
+        repo_remote: str = "",
+        cwd: str = "",
+        project: str = "",
+        note: str = "",
+        host: str = "",
+    ) -> dict[str, Any]:
+        """Upsert THIS session's presence record (one file per session, overwritten each
+        call) so the roster and Hiren's dashboard can see who's working on what. Returns
+        {session, updated, roster_active} where roster_active counts sessions active in the
+        last 15 minutes."""
+        sid = _slug(session)
+        if not sid:
+            raise KBError(
+                "A presence record needs a session id — a short kebab-case handle for THIS "
+                "session, e.g. 'pc1-claude-code' or 'mobile-hiren'."
+            )
+        st = (status or "working").strip().lower()
+        if st not in _PRESENCE_STATUSES:
+            raise KBError(
+                f"Invalid status {status!r} — use one of: {', '.join(_PRESENCE_STATUSES)}."
+            )
+        now = _utcnow()
+        updated = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        clean_note = (note or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        state: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            rel = f"workspace/presence/{sid}.md"
+            title = f"Presence: {name.strip() or sid}"
+            desc = (working_on.strip() or f"{sid} — {st}")[: _SLUG_MAX * 3]
+            meta: dict[str, Any] = {
+                "type": "presence",
+                "title": title,
+                "description": desc,
+                "session": sid,
+                "name": name.strip(),
+                "status": st,
+                "working_on": working_on.strip(),
+                "repo": repo.strip(),
+                "branch": branch.strip(),
+                "repo_remote": repo_remote.strip(),
+                "cwd": cwd.strip(),
+                "project": project.strip(),
+                "host": host.strip(),
+                "updated": updated,
+            }
+            body = f"{clean_note}\n" if clean_note else ""
+            _write_text(self.root / rel, serialize(Doc(meta=meta, body=body)))
+            state["rel"] = rel
+            # Keep the record linked from its parent index so the reconcile membership
+            # sweep never has to repair it; idempotent on re-announce (already linked).
+            paths = [rel]
+            paths.extend(ensure_indexed(self.root, rel, title, desc))
+            return paths
+
+        sha, pushed = await self._locked_commit(_mutate, f"workspace: presence {sid} ({st})")
+        self._log_mutation("kb_presence", [state["rel"]], sha, pushed)
+        # Presence records churn on every heartbeat and are pure ephemera — deliberately
+        # NOT fed to the semantic index (the nightly full reindex still catches them).
+        roster_active = await to_thread.run_sync(lambda: len(self._presence_records_sync(15)))
+        return {"session": sid, "updated": updated, "roster_active": roster_active}
+
+    async def kb_roster(self, active_within_min: int = 15) -> list[dict[str, Any]]:
+        """List sessions active within the window (default 15 min), most-recently-updated
+        first — the 'who's online' board across all of Hiren's PCs and projects. Stale
+        records are filtered out (not deleted). Returns [{session, name, status, working_on,
+        repo, branch, repo_remote, cwd, project, host, updated, age_min}]."""
+        await self._refresh()
+        return await to_thread.run_sync(lambda: self._presence_records_sync(active_within_min))
+
+    def _presence_records_sync(self, active_within_min: int | None) -> list[dict[str, Any]]:
+        """Every presence record, newest-updated first, TTL-filtered. age_min is minutes
+        since `updated` (None when the timestamp is missing/unparseable). A record with an
+        unusable timestamp is treated as stale and excluded when a window is set."""
+        pdir = self.root / "workspace" / "presence"
+        out: list[dict[str, Any]] = []
+        if not pdir.is_dir():
+            return out
+        now = _utcnow()
+        for f in sorted(pdir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            meta = read_meta(f)
+            if str(meta.get("type") or "") != "presence":
+                continue
+            updated = str(meta.get("updated") or "")
+            dt = _parse_ts(updated)
+            age_min = round((now - dt).total_seconds() / 60.0, 1) if dt is not None else None
+            if active_within_min is not None and active_within_min >= 0:
+                if age_min is None or age_min > active_within_min:
+                    continue
+            out.append(
+                {
+                    "session": str(meta.get("session") or f.stem),
+                    "name": str(meta.get("name") or ""),
+                    "status": str(meta.get("status") or ""),
+                    "working_on": str(meta.get("working_on") or ""),
+                    "repo": str(meta.get("repo") or ""),
+                    "branch": str(meta.get("branch") or ""),
+                    "repo_remote": str(meta.get("repo_remote") or ""),
+                    "cwd": str(meta.get("cwd") or ""),
+                    "project": str(meta.get("project") or ""),
+                    "host": str(meta.get("host") or ""),
+                    "updated": updated,
+                    "age_min": age_min,
+                }
+            )
+        out.sort(key=lambda r: str(r.get("updated") or ""), reverse=True)
+        return out
+
+    async def kb_handoff(
+        self,
+        from_session: str,
+        summary: str,
+        repo: str = "",
+        branch: str = "",
+        state: str = "",
+        next_steps: str = "",
+        refs: list[str] | None = None,
+        to: str = "any",
+        room: str = "",
+    ) -> dict[str, Any]:
+        """Write a structured, append-only handoff record (repo/branch/state/next-steps/refs)
+        so another session resumes exactly where this one left off. When `room` is given, ALSO
+        posts a short pointer into that thread so a watching session is notified. Returns
+        {path, sha, pushed}."""
+        frm = (from_session or "").strip()
+        if not frm:
+            raise KBError(
+                "A handoff needs from_session — the name of the session handing off (e.g. 'session-a')."
+            )
+        if not summary or not summary.strip():
+            raise KBError("Empty handoff summary — say what work is being handed off.")
+        room_id = (room or "").strip()
+        if room_id and not _THREAD_ID_RE.fullmatch(room_id):
+            # Validate up front so a bad room id can't leave a committed handoff whose
+            # notification silently failed.
+            raise KBError(
+                f"Invalid room id {room_id!r} — rooms are kebab-case (lowercase letters, "
+                "digits, hyphens), e.g. 'deploy-handoff'. Call kb_threads to list open rooms."
+            )
+        from_slug = _slug(frm, "anon")
+        refs_list = [str(r).strip() for r in (refs or []) if str(r).strip()]
+        to_clean = (to or "any").strip() or "any"
+        summary_clean = summary.replace("\r\n", "\n").replace("\r", "\n").strip()
+        now = _utcnow()
+        created = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        result: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            hdir = self.root / "workspace" / "handoffs"
+            base = now.strftime("%Y%m%dT%H%M%S%f")
+            name = f"{base}-{from_slug}.md"
+            n = 2
+            while (hdir / name).exists():
+                name = f"{base}-{from_slug}-{n}.md"
+                n += 1
+            rel = f"workspace/handoffs/{name}"
+            title = f"Handoff from {frm}"
+            desc = _first_sentence(summary_clean) or title
+            meta: dict[str, Any] = {
+                "type": "handoff",
+                "title": title,
+                "description": desc,
+                "from": frm,
+                "to": to_clean,
+                "summary": summary_clean,
+                "repo": repo.strip(),
+                "branch": branch.strip(),
+                "state": state.strip(),
+                "next_steps": next_steps.strip(),
+                "refs": refs_list,
+                "created": created,
+                "status": "open",
+            }
+            _write_text(self.root / rel, serialize(Doc(meta=meta, body=self._render_handoff(meta))))
+            result["rel"] = rel
+            paths = [rel]
+            paths.extend(ensure_indexed(self.root, rel, title, desc))
+            return paths
+
+        sha, pushed = await self._locked_commit(_mutate, f"workspace: handoff from {from_slug}")
+        self._log_mutation("kb_handoff", [result["rel"]], sha, pushed)
+        self._schedule_index(upserts=[result["rel"]])
+
+        if room_id:
+            # Notify a watching session. The handoff already committed; a room-post failure
+            # (e.g. the room is closed) must not fail the handoff — log and move on.
+            pointer = f"Handoff from {frm}: {summary_clean}"
+            if next_steps.strip():
+                pointer += f"\n\n**Next:** {next_steps.strip()}"
+            try:
+                await self.kb_thread_post(
+                    room_id, frm, pointer, refs=[result["rel"], *refs_list]
+                )
+            except KBError:
+                log.warning("kb_handoff: could not post pointer into room %r", room_id, exc_info=True)
+
+        return {"path": result["rel"], "sha": sha, "pushed": pushed}
+
+    @staticmethod
+    def _render_handoff(meta: dict[str, Any]) -> str:
+        """Human-readable handoff body (explorer renders it). Refs are code spans, not
+        markdown links, so the reconcile link sweep doesn't misread them from workspace/."""
+        frm = str(meta.get("from") or "")
+        lines = [f"# Handoff from {frm}", ""]
+        lines.append(
+            f"**To:** {meta.get('to') or 'any'}   "
+            f"**Status:** {meta.get('status') or 'open'}   "
+            f"**Created:** {meta.get('created') or ''}"
+        )
+        repo = str(meta.get("repo") or "")
+        branch = str(meta.get("branch") or "")
+        if repo or branch:
+            lines.append(f"**Repo:** {repo or '—'}   **Branch:** {branch or '—'}")
+        lines += ["", "## Summary", str(meta.get("summary") or "").strip() or "—"]
+        state = str(meta.get("state") or "").strip()
+        if state:
+            lines += ["", "## State", state]
+        nxt = str(meta.get("next_steps") or "").strip()
+        if nxt:
+            lines += ["", "## Next steps", nxt]
+        refs = meta.get("refs")
+        if isinstance(refs, list) and refs:
+            lines += ["", "## Refs"]
+            lines += [f"- `{r}`" for r in refs]
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+    def _handoffs_sync(self, limit: int | None = 5) -> list[dict[str, Any]]:
+        """Recent handoff records, newest first (filenames are compact-ts prefixed)."""
+        hdir = self.root / "workspace" / "handoffs"
+        out: list[dict[str, Any]] = []
+        if not hdir.is_dir():
+            return out
+        for f in sorted(hdir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            meta = read_meta(f)
+            if str(meta.get("type") or "") != "handoff":
+                continue
+            raw_refs = meta.get("refs")
+            refs = [str(r) for r in raw_refs] if isinstance(raw_refs, list) else []
+            out.append(
+                {
+                    "path": f.relative_to(self.root).as_posix(),
+                    "from": str(meta.get("from") or ""),
+                    "to": str(meta.get("to") or "any"),
+                    "summary": str(meta.get("summary") or ""),
+                    "repo": str(meta.get("repo") or ""),
+                    "branch": str(meta.get("branch") or ""),
+                    "state": str(meta.get("state") or ""),
+                    "next_steps": str(meta.get("next_steps") or ""),
+                    "refs": refs,
+                    "created": str(meta.get("created") or ""),
+                    "status": str(meta.get("status") or "open"),
+                }
+            )
+        out.sort(key=lambda h: str(h.get("created") or ""), reverse=True)
+        return out[:limit] if (limit is not None and limit >= 0) else out
+
+    async def kb_workspace(self) -> dict[str, Any]:
+        """One-shot snapshot of the whole workspace: {roster, rooms, recent_handoffs}. Single
+        refresh, then reads presence (active 15 min), open threads, and the last ~5 handoffs."""
+        await self._refresh()
+
+        def _snapshot() -> dict[str, Any]:
+            return {
+                "roster": self._presence_records_sync(15),
+                "rooms": self._threads_sync(),
+                "recent_handoffs": self._handoffs_sync(5),
+            }
+
+        return await to_thread.run_sync(_snapshot)
 
     # ------------------------------------------------------------------ importers
 
