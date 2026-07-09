@@ -2240,6 +2240,92 @@ class KBStore:
         out.sort(key=lambda r: str(r.get("updated") or ""), reverse=True)
         return out
 
+    def _presence_write_batch(
+        self, records: list[dict[str, Any]], refresh_minutes: int, written: list[str]
+    ) -> list[str]:
+        """Upsert MANY presence records in ONE commit — the spool-ingest write path.
+
+        Pure mutate: called INSIDE ``_locked_commit`` (never a second git writer). Each
+        record is a spool dict keyed by ``session``; a record is written only when a
+        meaningful field (status/name/working_on/repo/branch/repo_remote/cwd/project)
+        differs from the on-disk record OR the on-disk ``updated`` is older than
+        ``refresh_minutes`` — so a long-running session refreshes to stay inside the
+        roster window without a commit per heartbeat. Reuses the same slug/status/meta
+        shape as ``kb_presence``. Appends each written session slug to ``written`` and
+        returns every touched rel path (records + indexes, de-duplicated, in order);
+        ``[]`` means nothing changed so ``_locked_commit`` makes no commit."""
+        now = _utcnow()
+        updated = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        window = max(0, refresh_minutes) * 60
+        paths: list[str] = []
+        seen: set[str] = set()
+        for rec in records:
+            sid = _slug(str(rec.get("session") or ""))
+            if not sid:
+                continue  # unusable session id — failure-soft skip
+            st = str(rec.get("status") or "working").strip().lower()
+            if st in ("ended", "end", "closed"):
+                st = "done"  # a session-end hook says done; presence file is kept (housekeeping prunes)
+            if st not in _PRESENCE_STATUSES:
+                st = "working"  # coerce rather than raise — ingest must stay failure-soft
+            name = str(rec.get("name") or "").strip()
+            working_on = str(rec.get("working_on") or "").strip()
+            repo = str(rec.get("repo") or "").strip()
+            branch = str(rec.get("branch") or "").strip()
+            repo_remote = str(rec.get("repo_remote") or "").strip()
+            cwd = str(rec.get("cwd") or "").strip()
+            project = str(rec.get("project") or "").strip()
+            host = str(rec.get("host") or "").strip()
+            note = (
+                str(rec.get("note") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            )
+
+            rel = f"workspace/presence/{sid}.md"
+            abs_path = self.root / rel
+            if abs_path.is_file():
+                old = read_meta(abs_path)
+                unchanged = (
+                    str(old.get("status") or "") == st
+                    and str(old.get("name") or "") == name
+                    and str(old.get("working_on") or "") == working_on
+                    and str(old.get("repo") or "") == repo
+                    and str(old.get("branch") or "") == branch
+                    and str(old.get("repo_remote") or "") == repo_remote
+                    and str(old.get("cwd") or "") == cwd
+                    and str(old.get("project") or "") == project
+                )
+                old_dt = _parse_ts(str(old.get("updated") or ""))
+                fresh = old_dt is not None and (now - old_dt).total_seconds() < window
+                if unchanged and fresh:
+                    continue  # deduped: no meaningful change and still inside the window
+
+            title = f"Presence: {name or sid}"
+            desc = (working_on or f"{sid} — {st}")[: _SLUG_MAX * 3]
+            meta: dict[str, Any] = {
+                "type": "presence",
+                "title": title,
+                "description": desc,
+                "session": sid,
+                "name": name,
+                "status": st,
+                "working_on": working_on,
+                "repo": repo,
+                "branch": branch,
+                "repo_remote": repo_remote,
+                "cwd": cwd,
+                "project": project,
+                "host": host,
+                "updated": updated,
+            }
+            body = f"{note}\n" if note else ""
+            _write_text(abs_path, serialize(Doc(meta=meta, body=body)))
+            written.append(sid)
+            for p in [rel, *ensure_indexed(self.root, rel, title, desc)]:
+                if p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+        return paths
+
     async def kb_handoff(
         self,
         from_session: str,

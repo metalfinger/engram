@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     reconcile_at: str = "03:30"
     briefing_at: str = "08:00"
 
+    # Auto-presence spool ingest. Claude Code hooks drop plain JSON intent files
+    # into presence_spool_dir (NO git — a second checkout writer would race the
+    # server's lock); a scheduler tick ingests them THROUGH the server lock every
+    # presence_ingest_seconds, batched into one commit, deduped so a session only
+    # re-commits when a meaningful field changed OR its `updated` is older than
+    # presence_refresh_minutes (heartbeat throttle that keeps it inside the 15-min
+    # roster window without a commit per prompt). Empty dir => the default below.
+    presence_spool_dir: str = ""  # empty -> Path.home()/".engram"/"presence-spool"
+    presence_ingest_seconds: int = 30
+    presence_refresh_minutes: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

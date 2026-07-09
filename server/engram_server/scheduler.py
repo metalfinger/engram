@@ -17,6 +17,7 @@ from typing import Any, Callable, Coroutine
 
 from .briefing import build_briefing
 from .config import Settings
+from .presence_spool import ingest_spool
 from .reconcile import run_reconcile
 
 log = logging.getLogger("engram.scheduler")
@@ -53,6 +54,9 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="engram-scheduler", daemon=True)
         self._jobs: list[tuple[str, tuple[int, int], Callable[[], Coroutine[Any, Any, Any]]]] = []
+        # Interval jobs fire every N seconds (vs the daily HH:MM jobs above).
+        self._interval_jobs: list[tuple[str, float, Callable[[], Coroutine[Any, Any, Any]]]] = []
+        self._poll = _POLL_SECONDS
 
     def start(self) -> None:
         reconcile_t = _parse_hhmm(self._settings.reconcile_at)
@@ -63,14 +67,23 @@ class Scheduler:
             )
         if briefing_t:
             self._jobs.append(("briefing", briefing_t, lambda: build_briefing(self._store)))
-        if not self._jobs:
+        ingest_secs = self._settings.presence_ingest_seconds
+        if ingest_secs and ingest_secs > 0:
+            self._interval_jobs.append(
+                ("presence-ingest", float(ingest_secs),
+                 lambda: ingest_spool(self._store, self._settings))
+            )
+            # Poll at least as often as the tightest interval so it can actually fire.
+            self._poll = min(self._poll, max(1.0, float(ingest_secs)))
+        if not self._jobs and not self._interval_jobs:
             log.warning("scheduler: no valid jobs configured — not starting")
             return
         self._thread.start()
         log.info(
-            "scheduler: started (reconcile=%s briefing=%s)",
+            "scheduler: started (reconcile=%s briefing=%s presence-ingest=%ss)",
             self._settings.reconcile_at,
             self._settings.briefing_at,
+            ingest_secs,
         )
 
     def stop(self) -> None:
@@ -79,13 +92,20 @@ class Scheduler:
     def _run(self) -> None:
         now = datetime.now()
         next_fire = {name: _next_dt(hh, mm, now) for name, (hh, mm), _ in self._jobs}
+        interval_next = {
+            name: now + timedelta(seconds=secs) for name, secs, _ in self._interval_jobs
+        }
         while not self._stop.is_set():
             now = datetime.now()
             for name, (hh, mm), factory in self._jobs:
                 if now >= next_fire[name]:
                     self._fire(name, factory)
                     next_fire[name] = _next_dt(hh, mm, now)
-            self._stop.wait(_POLL_SECONDS)
+            for name, secs, factory in self._interval_jobs:
+                if now >= interval_next[name]:
+                    self._fire(name, factory)
+                    interval_next[name] = now + timedelta(seconds=secs)
+            self._stop.wait(self._poll)
 
     def _fire(self, name: str, factory: Callable[[], Coroutine[Any, Any, Any]]) -> None:
         log.info("scheduler: firing %s", name)
