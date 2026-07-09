@@ -42,6 +42,7 @@ from engram_server.explorer.html import (
     page,
     share_page,
 )
+from engram_server.explorer.office_api import office_payload, session_dossier
 from engram_server.explorer.render import (
     render_markdown,
     render_markdown_public,
@@ -845,7 +846,8 @@ def _sidebar(brain: Path, active: str) -> str:
     out.append(
         _nav_section(
             "Live",
-            _nav_link("/brain/workspace", "Workspace", active)
+            _nav_link("/brain/office", "Office", active)
+            + _nav_link("/brain/workspace", "Workspace", active)
             + _nav_link("/brain/threads", "Threads", active),
         )
     )
@@ -2101,6 +2103,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             stamp("presence"),
             '<div><p class="eyebrow">Live</p><h1>Workspace</h1></div>',
             "</div>",
+            '<p class="office-cta"><a href="/brain/office">▶ open the live office</a></p>',
             '<div class="stat-row">'
             '<span class="livebadge"><span class="pulse"></span>workspace · auto-refreshing</span>'
             + "".join(counts)
@@ -2207,6 +2210,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             stamp("message"),
             '<div><p class="eyebrow">Live</p><h1>Threads</h1></div>',
             "</div>",
+            '<p class="office-cta"><a href="/brain/office">▶ open the live office</a></p>',
             '<p class="meta">Cross-session conversations — two Claude sessions talking through '
             "the brain. Open threads refresh live as new turns land.</p>",
         ]
@@ -2400,6 +2404,41 @@ def register(mcp: FastMCP, settings: Settings) -> None:
     async def graph_view(request: Request) -> Response:
         data = await _graph_payload()
         return HTMLResponse(graph_page(data, dict(TYPE_GLYPHS)))
+
+    @mcp.custom_route("/brain/api/office.json", ["GET"])
+    @guard
+    async def office_json(request: Request) -> Response:
+        now = dt.datetime.now(dt.timezone.utc)
+        return JSONResponse(await to_thread.run_sync(office_payload, brain, now))
+
+    @mcp.custom_route("/brain/api/session/{sid}", ["GET"])
+    @guard
+    async def session_json(request: Request) -> Response:
+        sid = str(request.path_params.get("sid", ""))
+        now = dt.datetime.now(dt.timezone.utc)
+        data = await to_thread.run_sync(session_dossier, brain, sid, now)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(data)
+
+    @mcp.custom_route("/brain/office", ["GET"])
+    @guard
+    async def office_view(request: Request) -> Response:
+        # The frontend owns office.html — served VERBATIM (full-bleed, its own <!doctype>,
+        # NOT wrapped in _shell). A placeholder keeps the route (and its tests) alive until
+        # the file lands.
+        office = Path(__file__).parent / "office.html"
+
+        def _load() -> str | None:
+            try:
+                return office.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None
+
+        text = await to_thread.run_sync(_load)
+        if text is None:
+            return HTMLResponse("<h1>office.html pending</h1>")
+        return HTMLResponse(text)
 
     @mcp.custom_route("/share/{token}", ["GET"])
     async def share_view(request: Request) -> Response:

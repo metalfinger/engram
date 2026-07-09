@@ -572,6 +572,7 @@ def page(
         placeholder="Search the brain…" aria-label="Search the brain" autocomplete="off">
     </form>
     <nav class="topnav">
+      <a href="/brain/office" class="nav-office">Office</a>
       <a href="/brain/workspace" class="nav-workspace">Workspace</a>
       <a href="/brain/threads">Threads</a>
       <a href="/brain/graph">Graph</a>
