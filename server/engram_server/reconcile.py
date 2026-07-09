@@ -14,14 +14,16 @@ from __future__ import annotations
 import logging
 import posixpath
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from anyio import to_thread
 
 from .errors import GitError
-from .frontmatter import read_meta, split
+from .frontmatter import Doc, normalize_meta, read_meta, serialize, split
 from .indexer import ensure_indexed
+from .kbstore import _parse_ts
 
 log = logging.getLogger("engram.reconcile")
 
@@ -201,11 +203,136 @@ def _similar_pairs(root: Path, idx: Any, threshold: float) -> list[tuple[str, st
     return out
 
 
+# ============================================================ workspace housekeeping
+# Coordination ephemera age out: presence heartbeats older than a day are dead
+# sessions and get deleted; open handoffs older than a week are stale but kept as
+# history. Runs as ONE locked commit inside the nightly reconcile. Failure-soft —
+# any single file error is logged and skipped, never aborting the sweep.
+
+_PRESENCE_TTL_HOURS = 24.0    # delete presence records not updated within this window
+_HANDOFF_STALE_DAYS = 7.0     # flip still-open handoffs older than this to status: stale
+_STATUS_OPEN_RE = re.compile(r"(\*\*Status:\*\*\s*)open", re.IGNORECASE)
+
+
+def _strip_index_bullet(text: str, basename: str) -> str:
+    """Drop any index line whose markdown link targets ``basename`` (a pruned record)."""
+    pat = re.compile(r"\]\((?:[^)\s]*/)?" + re.escape(basename) + r"\)")
+    kept = [ln for ln in text.splitlines() if not pat.search(ln)]
+    return "\n".join(kept).rstrip("\n") + "\n"
+
+
+def _housekeep(
+    root: Path, now: datetime, presence_ttl_hours: float, handoff_stale_days: float
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Mutating lifecycle sweep (runs inside a locked commit): delete stale presence
+    records + their parent-index bullet, and mark old open handoffs stale (never delete).
+    Never touches fresh presence, already-stale/undated handoffs, or any thread. Returns
+    (changed_rel_paths, {"pruned_presence": [...], "staled_handoffs": [...]})."""
+    changed: list[str] = []
+    pruned_presence: list[str] = []
+    staled_handoffs: list[str] = []
+
+    # --- presence prune: a heartbeat we can't prove is fresh is a dead session ---
+    pdir = root / "workspace" / "presence"
+    if pdir.is_dir():
+        index_path = pdir / "index.md"
+        index_text: str | None = None
+        if index_path.is_file():
+            try:
+                index_text = index_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                index_text = None
+        index_dirty = False
+        for f in sorted(pdir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            meta = read_meta(f)
+            if str(meta.get("type") or "") != "presence":
+                continue
+            dt = _parse_ts(str(meta.get("updated") or ""))
+            # Keep only records provably within the TTL; undated/unparseable = stale.
+            if dt is not None and (now - dt).total_seconds() <= presence_ttl_hours * 3600:
+                continue
+            rel = f.relative_to(root).as_posix()
+            try:
+                f.unlink()
+            except OSError as exc:
+                log.warning("reconcile: could not prune presence %s: %s", rel, exc)
+                continue
+            changed.append(rel)
+            pruned_presence.append(rel)
+            if index_text is not None:
+                new_text = _strip_index_bullet(index_text, f.name)
+                if new_text != index_text:
+                    index_text = new_text
+                    index_dirty = True
+        if index_dirty and index_text is not None:
+            try:
+                with open(index_path, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(index_text)
+                changed.append(index_path.relative_to(root).as_posix())
+            except OSError as exc:
+                log.warning("reconcile: could not rewrite presence index: %s", exc)
+
+    # --- handoff stale-marking: keep the record, flip its status (history, not trash) ---
+    hdir = root / "workspace" / "handoffs"
+    if hdir.is_dir():
+        for f in sorted(hdir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                doc = split(text)
+            except Exception:  # noqa: BLE001 — a corrupt handoff is left untouched
+                doc = None
+            if doc is None:
+                continue
+            meta = normalize_meta(doc.meta)
+            if str(meta.get("type") or "") != "handoff" or str(meta.get("status") or "") != "open":
+                continue
+            dt = _parse_ts(str(meta.get("created") or ""))
+            if dt is None or (now - dt).total_seconds() <= handoff_stale_days * 86400:
+                continue  # can't age it, or still recent -> leave open
+            meta["status"] = "stale"
+            body = _STATUS_OPEN_RE.sub(r"\g<1>stale", doc.body, count=1)
+            try:
+                with open(f, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(serialize(Doc(meta=meta, body=body)))
+            except OSError as exc:
+                log.warning("reconcile: could not stale handoff %s: %s", f.name, exc)
+                continue
+            rel = f.relative_to(root).as_posix()
+            changed.append(rel)
+            staled_handoffs.append(rel)
+
+    return changed, {"pruned_presence": pruned_presence, "staled_handoffs": staled_handoffs}
+
+
+def _render_housekeeping(hk: dict[str, list[str]]) -> str:
+    """A 'Workspace housekeeping' report section. Pruned/staled paths are rendered as
+    code spans (not links) so a deleted presence file never becomes a dangling link."""
+    pruned = hk.get("pruned_presence", [])
+    staled = hk.get("staled_handoffs", [])
+    lines = [
+        f"## Workspace housekeeping",
+        "",
+        f"* Pruned {len(pruned)} stale presence record(s).",
+    ]
+    lines += [f"    * `{p}`" for p in pruned]
+    lines.append(f"* Marked {len(staled)} open handoff(s) stale.")
+    lines += [f"    * `{p}`" for p in staled]
+    return "\n".join(lines) + "\n"
+
+
 def _render_report(
     scan: dict[str, Any],
     timestamp: str,
     semantic_summary: dict | None,
     similar_pairs: list[tuple[str, str, float]] | None = None,
+    housekeeping: dict[str, list[str]] | None = None,
 ) -> str:
     similar_pairs = similar_pairs or []
     dangling_lines = [
@@ -229,6 +356,8 @@ def _render_report(
             ),
         ]
     )
+    if housekeeping is not None:
+        body += "\n" + _render_housekeeping(housekeeping)
     if semantic_summary is not None:
         body += f"\n## Semantic reindex\n\n`{semantic_summary}`\n"
     meta = (
@@ -276,6 +405,25 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         except GitError as exc:
             log.warning("reconcile: index repair commit failed: %s", exc)
 
+    # 3.5. Workspace housekeeping — prune dead presence, mark old handoffs stale
+    # (one locked commit; before reindex so pruned files never re-embed).
+    presence_ttl_hours = float(getattr(store.settings, "presence_ttl_hours", _PRESENCE_TTL_HOURS))
+    handoff_stale_days = float(getattr(store.settings, "handoff_stale_days", _HANDOFF_STALE_DAYS))
+    housekeeping: dict[str, list[str]] = {"pruned_presence": [], "staled_handoffs": []}
+    now = datetime.now(timezone.utc)
+    hk_state: dict[str, dict[str, list[str]]] = {}
+
+    def _do_housekeep() -> list[str]:
+        changed, hk_summary = _housekeep(store.root, now, presence_ttl_hours, handoff_stale_days)
+        hk_state["summary"] = hk_summary
+        return changed
+
+    try:
+        await store._locked_commit(_do_housekeep, "reconcile: workspace housekeeping")
+        housekeeping = hk_state.get("summary", housekeeping)
+    except GitError as exc:
+        log.warning("reconcile: housekeeping commit failed: %s", exc)
+
     # 4. Re-embed the whole bundle when semantic is live, then sweep for
     # near-duplicate concept pairs (possible duplicates or contradictions).
     semantic_summary = None
@@ -288,10 +436,8 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         )
 
     # 5. Write the report back (its own commit).
-    from datetime import datetime, timezone
-
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    md = _render_report(scan, timestamp, semantic_summary, similar_pairs)
+    md = _render_report(scan, timestamp, semantic_summary, similar_pairs, housekeeping)
     try:
         await store.kb_write(_REPORT_PATH, md, "reconcile: brain health report")
     except GitError as exc:
@@ -305,6 +451,8 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         "orphans": len(scan["orphans"]),
         "dead": len(scan["dead"]),
         "similar_pairs": len(similar_pairs),
+        "pruned_presence": len(housekeeping["pruned_presence"]),
+        "staled_handoffs": len(housekeeping["staled_handoffs"]),
         "report_path": _REPORT_PATH,
     }
     log.info("reconcile: %s", summary)

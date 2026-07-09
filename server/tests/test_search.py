@@ -101,6 +101,16 @@ def test_index_excluded_log_included_git_excluded(tmp_path: Path) -> None:
     assert results[0]["matched_heading"] == "2026-07-01 — kickoff"
 
 
+def test_threads_and_workspace_excluded_from_corpus(tmp_path: Path) -> None:
+    """Coordination ephemera (threads/, workspace/) is not knowledge — never returned."""
+    _write(tmp_path, "projects/alt/specs/api.md", _concept("spec", "API", "d", "kumquat design"))
+    _write(tmp_path, "threads/deploy/thread.md", _concept("thread", "Deploy room", "d", "kumquat chatter"))
+    _write(tmp_path, "workspace/presence/pc1.md", _concept("presence", "PC1", "d", "kumquat working_on"))
+    _write(tmp_path, "workspace/handoffs/20260709-x.md", _concept("handoff", "Handoff", "d", "kumquat handoff"))
+    paths = {r["path"] for r in search(tmp_path, "kumquat")}
+    assert paths == {"projects/alt/specs/api.md"}
+
+
 def test_limit_clamped_1_to_25(tmp_path: Path) -> None:
     for i in range(30):
         _write(tmp_path, f"library/snippets/s{i:02d}.md", _concept("snippet", f"S{i}", "d", "kumquat everywhere"))

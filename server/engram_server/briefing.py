@@ -60,12 +60,31 @@ def _gather(store: Any, today: str, yesterday: str) -> dict[str, Any]:
                     }
                 )
 
+    # Workspace snapshot — who's live and what's waiting. Reuses the same sync
+    # helpers kb_workspace does; each is guarded so a workspace read never sinks the
+    # briefing. Rooms/handoffs are filtered to the still-open ones only.
+    try:
+        roster = store._presence_records_sync(15)
+    except Exception:  # noqa: BLE001 — briefing must never crash on a workspace read
+        roster = []
+    try:
+        rooms = [t for t in store._threads_sync() if str(t.get("status") or "") == "open"]
+    except Exception:  # noqa: BLE001
+        rooms = []
+    try:
+        handoffs = [h for h in store._handoffs_sync(None) if str(h.get("status") or "") == "open"]
+    except Exception:  # noqa: BLE001
+        handoffs = []
+
     return {
         "projects": projects,
         "unread": unread,
         "yesterday_log": yday_log,
         "stale_artifacts": stale,
         "inbox": inbox_items,
+        "workspace_roster": roster,
+        "workspace_rooms": rooms,
+        "workspace_handoffs": handoffs,
     }
 
 
@@ -120,6 +139,42 @@ def _render(data: dict[str, Any], today: str) -> tuple[str, list[str]]:
     else:
         parts.append("Empty. ✓")
     parts.append("")
+
+    roster = data.get("workspace_roster", [])
+    rooms = data.get("workspace_rooms", [])
+    handoffs = data.get("workspace_handoffs", [])
+    if roster or rooms or handoffs:
+        parts.append("## Workspace")
+        parts.append("")
+        parts.append(
+            f"{len(roster)} session(s) active, {len(rooms)} open room(s), "
+            f"{len(handoffs)} handoff(s) waiting."
+        )
+        parts.append("")
+        if roster:
+            parts.append("**Active sessions**")
+            for r in roster:
+                name = r.get("name") or r.get("session") or "?"
+                repo = r.get("repo") or ""
+                branch = r.get("branch") or ""
+                loc = f"{repo}@{branch}" if (repo or branch) else "—"
+                parts.append(
+                    f"* {name} — {loc} — {r.get('status', '')} — {r.get('working_on', '')}"
+                )
+            parts.append("")
+        if rooms:
+            parts.append("**Open rooms**")
+            for t in rooms:
+                parts.append(
+                    f"* {t.get('thread', '')} — {t.get('topic', '')} "
+                    f"({t.get('turn_count', 0)} turns)"
+                )
+            parts.append("")
+        if handoffs:
+            parts.append("**Open handoffs**")
+            for h in handoffs:
+                parts.append(f"* {h.get('from', '')} → {h.get('summary', '')}")
+            parts.append("")
 
     parts.append("## Projects")
     parts.append("")

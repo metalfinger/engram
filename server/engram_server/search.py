@@ -28,6 +28,16 @@ _BODY_CAP = 3  # per-token cap on body hits (1 point each)
 _PHRASE_BONUS = 4
 _MAX_LIMIT = 25
 
+# Coordination ephemera — threads/ (cross-session rooms) and workspace/ (presence,
+# handoffs) are transient signalling, not knowledge of record. They must never
+# surface in kb_search results, so every corpus walk here excludes them (mirrors
+# the spirit of reconcile's output-type exemptions).
+_EPHEMERAL_ROOTS = ("threads", "workspace")
+
+
+def _is_ephemeral(rel: Path) -> bool:
+    return bool(rel.parts) and rel.parts[0] in _EPHEMERAL_ROOTS
+
 
 def _read_meta(text: str) -> tuple[dict[str, Any], str]:
     """Split leading YAML frontmatter from body. Tolerant: absent/bad YAML -> ({}, body)."""
@@ -93,7 +103,7 @@ def search(
     scored: list[tuple[float, str, dict[str, Any]]] = []
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root)
-        if ".git" in rel.parts or path.name == "index.md":
+        if ".git" in rel.parts or path.name == "index.md" or _is_ephemeral(rel):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -320,7 +330,7 @@ def window_search(
     results: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root)
-        if ".git" in rel.parts or path.name == "index.md":
+        if ".git" in rel.parts or path.name == "index.md" or _is_ephemeral(rel):
             continue
         try:
             text = path.read_text(encoding="utf-8")

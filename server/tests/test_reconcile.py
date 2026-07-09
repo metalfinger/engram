@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from engram_server.config import Settings
 from engram_server.frontmatter import read_meta
 from engram_server.kbstore import KBStore
-from engram_server.reconcile import _scan, run_reconcile
+from engram_server.reconcile import _housekeep, _scan, run_reconcile
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @pytest.fixture
@@ -133,6 +139,107 @@ async def test_reconcile_reports_similar_pairs(store):
     assert "Similar pairs" in report
     assert "grafana-boards.md" in report and "grafana-dashboards.md" in report
     assert "0.93" in report
+
+
+def _seed_workspace(other_clone, now: datetime) -> None:
+    """Seed a stale + fresh presence record (with their index) and a stale + fresh open
+    handoff via another clone, so the server checkout stays clean after reconcile's pull."""
+    stale_p = _iso(now - timedelta(hours=48))
+    fresh_p = _iso(now - timedelta(minutes=5))
+    other_clone.commit_file(
+        "workspace/presence/stale-sess.md",
+        "---\ntype: presence\ntitle: Presence A\ndescription: stale session\n"
+        f"session: stale-sess\nname: A\nstatus: working\nupdated: {stale_p}\n---\n",
+        "add stale presence",
+    )
+    other_clone.commit_file(
+        "workspace/presence/fresh-sess.md",
+        "---\ntype: presence\ntitle: Presence B\ndescription: fresh session\n"
+        f"session: fresh-sess\nname: B\nstatus: working\nupdated: {fresh_p}\n---\n",
+        "add fresh presence",
+    )
+    other_clone.commit_file(
+        "workspace/presence/index.md",
+        "# Presence\n\n"
+        "* [Presence A](stale-sess.md) - stale session\n"
+        "* [Presence B](fresh-sess.md) - fresh session\n",
+        "add presence index",
+    )
+    old_h = _iso(now - timedelta(days=8))
+    fresh_h = _iso(now - timedelta(hours=1))
+    other_clone.commit_file(
+        "workspace/handoffs/20260701T000000-x.md",
+        "---\ntype: handoff\ntitle: Handoff from x\ndescription: old\nfrom: x\nto: any\n"
+        f"summary: Old handoff work\ncreated: {old_h}\nstatus: open\n---\n\n"
+        "# Handoff from x\n\n**To:** any   **Status:** open   **Created:** " + old_h + "\n",
+        "add old handoff",
+    )
+    other_clone.commit_file(
+        "workspace/handoffs/20260709T000000-y.md",
+        "---\ntype: handoff\ntitle: Handoff from y\ndescription: fresh\nfrom: y\nto: any\n"
+        f"summary: Fresh handoff work\ncreated: {fresh_h}\nstatus: open\n---\n\n"
+        "# Handoff from y\n\n**To:** any   **Status:** open   **Created:** " + fresh_h + "\n",
+        "add fresh handoff",
+    )
+    other_clone.commit_file(
+        "workspace/handoffs/index.md",
+        "# Handoffs\n\n"
+        "* [Handoff from x](20260701T000000-x.md) - old\n"
+        "* [Handoff from y](20260709T000000-y.md) - fresh\n",
+        "add handoffs index",
+    )
+
+
+async def test_reconcile_prunes_stale_presence_and_stales_old_handoffs(
+    store: KBStore, other_clone
+) -> None:
+    now = datetime.now(timezone.utc)
+    _seed_workspace(other_clone, now)
+
+    summary = await run_reconcile(store, semantic_index=None)
+    assert summary["pruned_presence"] == 1
+    assert summary["staled_handoffs"] == 1
+
+    root = store.root
+    # Stale presence deleted, fresh one kept.
+    assert not (root / "workspace/presence/stale-sess.md").is_file()
+    assert (root / "workspace/presence/fresh-sess.md").is_file()
+    # Its index bullet is gone; the fresh one survives.
+    idx = (root / "workspace/presence/index.md").read_text(encoding="utf-8")
+    assert "stale-sess.md" not in idx
+    assert "fresh-sess.md" in idx
+
+    # Old open handoff flipped to stale (kept as history); fresh one still open.
+    old_meta = read_meta(root / "workspace/handoffs/20260701T000000-x.md")
+    assert old_meta["status"] == "stale"
+    fresh_meta = read_meta(root / "workspace/handoffs/20260709T000000-y.md")
+    assert fresh_meta["status"] == "open"
+
+    # The report carries a workspace housekeeping section.
+    report = (root / "library/reports/brain-health.md").read_text(encoding="utf-8")
+    assert "Workspace housekeeping" in report
+
+
+async def test_housekeep_never_touches_fresh_records(store: KBStore) -> None:
+    """A direct _housekeep call with only fresh records makes no changes."""
+    now = datetime.now(timezone.utc)
+    root = store.root
+    _write(
+        root,
+        "workspace/presence/live.md",
+        "---\ntype: presence\ntitle: Live\ndescription: d\nsession: live\n"
+        f"status: working\nupdated: {_iso(now - timedelta(minutes=2))}\n---\n",
+    )
+    _write(
+        root,
+        "workspace/handoffs/20260709T120000-z.md",
+        "---\ntype: handoff\ntitle: Handoff from z\ndescription: d\nfrom: z\nto: any\n"
+        f"summary: recent\ncreated: {_iso(now - timedelta(hours=2))}\nstatus: open\n---\n\nbody\n",
+    )
+    changed, hk = _housekeep(root, now, 24.0, 7.0)
+    assert changed == []
+    assert hk == {"pruned_presence": [], "staled_handoffs": []}
+    assert (root / "workspace/presence/live.md").is_file()
 
 
 async def test_outputs_exempt_from_orphans_and_dead(store):

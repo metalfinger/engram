@@ -53,3 +53,26 @@ async def test_briefing_quiet_day_leaves_no_message(store: KBStore, settings: Se
     res = await build_briefing(store)
     assert res["notable"] is False
     assert res["message_left"] is False
+
+
+async def test_briefing_renders_workspace_section(store: KBStore, settings: Settings) -> None:
+    await store.kb_presence(
+        "pc1-cc", name="Alice", status="working", working_on="reconcile", repo="engram", branch="main"
+    )
+    await store.kb_handoff("session-a", "Finish the search exclusion work", repo="engram", branch="main")
+    await store.kb_thread_post("deploy-room", "session-a", "anyone around?")
+
+    res = await build_briefing(store)
+    text = (settings.brain_path / res["path"]).read_text(encoding="utf-8")
+    assert "## Workspace" in text
+    assert "1 session(s) active" in text
+    assert "Alice" in text and "engram@main" in text
+    assert "deploy-room" in text            # open room listed
+    assert "session-a" in text              # open handoff 'from'
+    assert "Finish the search exclusion work" in text
+
+
+async def test_briefing_omits_workspace_when_empty(store: KBStore, settings: Settings) -> None:
+    res = await build_briefing(store)
+    text = (settings.brain_path / res["path"]).read_text(encoding="utf-8")
+    assert "## Workspace" not in text

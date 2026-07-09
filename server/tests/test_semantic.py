@@ -310,6 +310,27 @@ def test_full_reindex_walks_bundle(tmp_path: Path) -> None:
     assert paths == {"projects/alt/x.md"}
 
 
+def test_full_reindex_excludes_threads_and_workspace(tmp_path: Path) -> None:
+    """Coordination ephemera must not be re-added to the vector corpus by the nightly walk."""
+    (tmp_path / "projects/alt").mkdir(parents=True)
+    (tmp_path / "projects/alt/x.md").write_text(
+        "---\ntype: idea\ntitle: X\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+    )
+    (tmp_path / "threads/deploy").mkdir(parents=True)
+    (tmp_path / "threads/deploy/thread.md").write_text(
+        "---\ntype: thread\ntitle: Deploy\ndescription: d\n---\n\nchatter\n", encoding="utf-8"
+    )
+    (tmp_path / "workspace/presence").mkdir(parents=True)
+    (tmp_path / "workspace/presence/pc1.md").write_text(
+        "---\ntype: presence\ntitle: PC1\ndescription: d\n---\n\nlive\n", encoding="utf-8"
+    )
+    idx = _index()
+    summary = idx.full_reindex(tmp_path)
+    assert summary["indexed"] == 1  # only the concept
+    paths = {pl["path"] for _v, pl in idx._ctl.client.points["test-col"].values()}
+    assert paths == {"projects/alt/x.md"}
+
+
 # ------------------------------------------------------------------ backend-down softness
 
 

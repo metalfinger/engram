@@ -33,6 +33,10 @@ _CHUNK_CAP = 1500
 # Fixed namespace so uuid5(path#heading#idx) is stable across processes/reindexes.
 _NAMESPACE = uuid.UUID("6f9d1e6a-2b1e-5c8a-9f3d-b8c2a1d0f9e7")
 _SKIP_NAMES = {"index.md"}
+# Coordination ephemera (threads/, workspace/) are transient signalling, not
+# knowledge — kept out of the vector corpus so the nightly full reindex never
+# re-adds presence/handoff/thread files after the write-path already skipped them.
+_EPHEMERAL_ROOTS = ("threads", "workspace")
 
 
 @dataclass
@@ -549,6 +553,9 @@ class SemanticIndex:
         for f in sorted(root.rglob("*.md")):
             rel = f.relative_to(root).as_posix()
             if ".git" in f.parts or f.name in _SKIP_NAMES:
+                summary["skipped"] += 1
+                continue
+            if rel.split("/", 1)[0] in _EPHEMERAL_ROOTS:
                 summary["skipped"] += 1
                 continue
             try:
