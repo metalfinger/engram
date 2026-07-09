@@ -29,6 +29,8 @@ TYPE_GLYPHS = {
     "note": "📝",
     "artifact": "📄",
     "live-view": "📡",
+    "presence": "📍",
+    "handoff": "🤝",
 }
 _DEFAULT_GLYPH = "◆"
 

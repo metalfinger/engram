@@ -381,6 +381,42 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
 .bubble.c2 .bsender { color: var(--violet); }
 .bubble.c3 { background: color-mix(in srgb, var(--green) 9%, var(--surface)); }
 .bubble.c3 .bsender { color: var(--green); }
+/* shared refs row under a message bubble */
+.bubble .brefs { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; padding-top: .4rem; border-top: 1px solid var(--line); }
+.bubble .brefs .rlabel { font-size: .66rem; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); align-self: center; font-weight: 700; }
+
+/* ---------- workspace (live mission control) ---------- */
+.topnav a.nav-workspace { color: var(--accent-ink); font-weight: 700; }
+.frontdoor {
+  display: flex; align-items: center; gap: .7rem; margin: 1.4rem 0 0; padding: .7rem 1rem;
+  border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 12px;
+  color: var(--fg); font-weight: 600; box-shadow: var(--shadow);
+}
+.frontdoor:hover { text-decoration: none; border-color: var(--accent); }
+.frontdoor .fd-arrow { margin-left: auto; color: var(--accent-ink); font-size: 1.15rem; }
+/* status dots — semantic to the workspace roster (working/blocked/idle/available/done) */
+.dot.st-working { background: var(--green); }
+.dot.st-blocked { background: var(--red); }
+.dot.st-idle, .dot.st-available { background: var(--amber); }
+.dot.st-done { background: var(--faint); }
+.wcard { position: relative; }
+.wcard .card-head { align-items: center; }
+.wcard .wstatus { margin-left: auto; font-size: .72rem; font-weight: 600; color: var(--muted); text-transform: capitalize; }
+.wcard.stale { opacity: .6; }
+.wsrow { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .45rem 0 0; }
+.chip.repo { font-family: ui-monospace, Consolas, monospace; }
+.wcwd { margin: .4rem 0 0; font-size: .74rem; color: var(--faint); font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+.handoff {
+  display: block; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  padding: .6rem .9rem; margin: .55rem 0; box-shadow: var(--shadow); color: var(--fg);
+}
+.handoff:hover { border-color: var(--accent-line); text-decoration: none; }
+.handoff .hhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: .3rem; }
+.handoff .hfrom { font-weight: 700; font-size: .92rem; letter-spacing: -0.01em; }
+.handoff .harrow { color: var(--faint); }
+.handoff .hto { font-weight: 700; font-size: .92rem; color: var(--accent-ink); }
+.handoff p { margin: .3rem 0 .4rem; font-size: .87rem; color: var(--muted); }
+.handoff .hfoot { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
 
 @media (max-width: 52rem) {
   .bubble { max-width: 92%; }
@@ -526,6 +562,7 @@ def page(
         placeholder="Search the brain…" aria-label="Search the brain" autocomplete="off">
     </form>
     <nav class="topnav">
+      <a href="/brain/workspace" class="nav-workspace">Workspace</a>
       <a href="/brain/threads">Threads</a>
       <a href="/brain/graph">Graph</a>
       <a href="/brain/system">System</a>
@@ -720,6 +757,7 @@ def graph_page(data: dict, glyphs: dict) -> str:
         '<span class="search" aria-hidden="true"></span>'
         '<nav class="topnav">'
         '<a href="/brain">Overview</a>'
+        '<a href="/brain/workspace" class="nav-workspace">Workspace</a>'
         '<a href="/brain/threads">Threads</a>'
         '<a href="/brain/graph" class="active" aria-current="page">Graph</a>'
         '<a href="/brain/system">System</a>'

@@ -23,6 +23,7 @@ from engram_server.errors import KBError
 from engram_server.explorer.access import make_guard
 from engram_server.explorer.format import (
     TYPE_GLYPHS,
+    _to_utc,
     humanize_time,
     is_expired,
     properties_panel,
@@ -841,7 +842,13 @@ def _sidebar(brain: Path, active: str) -> str:
             _nav_section("Artifacts", _nav_link("/brain/artifacts", "Gallery", active))
         )
 
-    out.append(_nav_section("Live", _nav_link("/brain/threads", "Threads", active)))
+    out.append(
+        _nav_section(
+            "Live",
+            _nav_link("/brain/workspace", "Workspace", active)
+            + _nav_link("/brain/threads", "Threads", active),
+        )
+    )
 
     skills_items = [_nav_link("/brain/setup", "Setup", active)]
     if (brain / "skills" / "engram" / "SKILL.md").is_file():
@@ -1258,13 +1265,206 @@ def _thread_bubbles(turns: list[tuple[dict, str]], participants: list[str], tid:
             rel, exact = humanize_time(ts)
             time_html = f'<span class="btime" title="{esc(exact)}">{esc(rel)}</span>'
         body_html = render_markdown(body.strip(), f"threads/{tid}/turns/_")
+        refs = _thread_names(meta.get("refs"))
+        refs_html = ""
+        if refs:
+            links = "".join(
+                f'<a class="chip" href="/brain/f/{esc(p)}" title="{esc(p)}">'
+                f"{esc(posixpath.basename(p))}</a>"
+                for p in refs
+            )
+            refs_html = f'<div class="brefs"><span class="rlabel">shared</span>{links}</div>'
         bubbles.append(
             f'<div class="bubble {side} c{color}">'
             f'<div class="bhead"><span class="bsender">{esc(sender)}</span>{time_html}</div>'
             f'<div class="bbody md">{body_html}</div>'
+            f"{refs_html}"
             "</div>"
         )
     return "".join(bubbles)
+
+
+# ---------------------------------------------------------------- workspace (mission control)
+
+_STATUS_DOT = {
+    "working": "st-working",
+    "blocked": "st-blocked",
+    "idle": "st-idle",
+    "available": "st-available",
+    "done": "st-done",
+}
+
+
+def _status_dot_cls(status: object) -> str:
+    """The roster status-dot class (unknown/absent → grey default)."""
+    return _STATUS_DOT.get(str(status or "").strip().lower(), "")
+
+
+def _is_url(value: str) -> bool:
+    return value.startswith(("http://", "https://"))
+
+
+def _presence_records(brain: Path) -> list[dict]:
+    """Every ``workspace/presence/*.md`` frontmatter (index.md excluded).
+
+    Returns [] when the workspace/ tree is absent (feature unused yet) — the route
+    renders a friendly empty state rather than an error. Unreadable files are skipped.
+    """
+    pdir = brain / "workspace" / "presence"
+    if not pdir.is_dir():
+        return []
+    out: list[dict] = []
+    for f in sorted(pdir.glob("*.md")):
+        if f.name == "index.md":
+            continue
+        try:
+            meta, _body = split_frontmatter(_read(f))
+        except (OSError, UnicodeDecodeError):
+            continue
+        out.append(meta)
+    return out
+
+
+def _presence_rows(
+    brain: Path, now: dt.datetime, active_within_min: float = 15.0
+) -> tuple[list[dict], list[dict]]:
+    """Split presence records into (active, stale) by heartbeat age.
+
+    A record is active when its ``updated`` timestamp is within
+    ``active_within_min`` of ``now``; everything else (including undated records)
+    is stale. Both lists are most-recent first. Each row is the raw frontmatter
+    plus a parsed ``_dt`` (aware UTC or None) for the view to format.
+    """
+    active: list[dict] = []
+    stale: list[dict] = []
+    for meta in _presence_records(brain):
+        d = _to_utc(meta.get("updated"))
+        row = dict(meta)
+        row["_dt"] = d
+        if d is not None and (now - d).total_seconds() <= active_within_min * 60:
+            active.append(row)
+        else:
+            stale.append(row)
+    floor = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    active.sort(key=lambda r: r["_dt"] or floor, reverse=True)
+    stale.sort(key=lambda r: r["_dt"] or floor, reverse=True)
+    return active, stale
+
+
+def _repo_chip(repo: object, branch: object, remote: object) -> str:
+    """A ``repo · branch`` chip + a github/local origin badge.
+
+    Links the chip to the origin when ``remote`` is a URL; otherwise the chip is
+    inert and a ``local`` badge marks it. Returns '' when there is no repo at all.
+    """
+    repo_s = str(repo or "").strip()
+    branch_s = str(branch or "").strip()
+    remote_s = str(remote or "").strip()
+    if not repo_s and not branch_s:
+        return ""
+    label = repo_s or "repo"
+    if branch_s:
+        label = f"{label} · {branch_s}"
+    if _is_url(remote_s):
+        chip_html = (
+            f'<a class="chip repo" href="{esc(remote_s)}" target="_blank" rel="noopener" '
+            f'title="{esc(remote_s)}">⎇ {esc(label)}</a>'
+        )
+        origin = badge("github", "accent")
+    else:
+        chip_html = f'<span class="chip repo" title="{esc(remote_s or "local checkout")}">⎇ {esc(label)}</span>'
+        origin = badge("local", "")
+    return f'<div class="wsrow">{chip_html}{origin}</div>'
+
+
+def _presence_card(row: dict, *, stale: bool = False) -> str:
+    """One roster card: status dot + name, working_on, repo·branch, cwd, footer."""
+    status = str(row.get("status") or "").strip()
+    name = str(row.get("name") or row.get("session") or "session")
+    dot = f'<span class="dot {_status_dot_cls(status)}" title="{esc(status or "unknown")}"></span>'
+    status_lbl = f'<span class="wstatus">{esc(status)}</span>' if status else ""
+    working = row.get("working_on")
+    work_html = (
+        f"<p>{esc(str(working))}</p>" if working else '<p class="empty">No task announced.</p>'
+    )
+    repo_html = _repo_chip(row.get("repo"), row.get("branch"), row.get("repo_remote"))
+    cwd = row.get("cwd")
+    cwd_html = f'<p class="wcwd">{esc(str(cwd))}</p>' if cwd else ""
+    foot: list[str] = []
+    if row.get("project"):
+        foot.append(chip(str(row["project"])))
+    if row.get("host"):
+        foot.append(badge(str(row["host"]), ""))
+    if row.get("_dt") is not None:
+        rel, exact = humanize_time(row.get("updated"))
+        foot.append(f'<span class="badge date" title="{esc(exact)}">updated {esc(rel)}</span>')
+    elif row.get("updated"):
+        foot.append(f'<span class="badge date">updated {esc(str(row["updated"]))}</span>')
+    foot_html = f'<div class="card-foot">{"".join(foot)}</div>' if foot else ""
+    cls = "card wcard stale" if stale else "card wcard"
+    return (
+        f'<div class="{cls}">'
+        f'<div class="card-head">{dot}<h3>{esc(name)}</h3>{status_lbl}</div>'
+        f"{work_html}{repo_html}{cwd_html}{foot_html}"
+        "</div>"
+    )
+
+
+def _handoff_records(brain: Path) -> list[tuple[Path, dict]]:
+    """Every ``workspace/handoffs/*.md`` as (path, frontmatter), newest ``created`` first.
+
+    Returns [] when the tree is absent. Unreadable files are skipped, not fatal.
+    """
+    hdir = brain / "workspace" / "handoffs"
+    if not hdir.is_dir():
+        return []
+    rows: list[tuple[Path, dict]] = []
+    for f in sorted(hdir.glob("*.md")):
+        if f.name == "index.md":
+            continue
+        try:
+            meta, _body = split_frontmatter(_read(f))
+        except (OSError, UnicodeDecodeError):
+            continue
+        rows.append((f, meta))
+    rows.sort(key=lambda r: str(r[1].get("created") or ""), reverse=True)
+    return rows
+
+
+def _handoff_row(f: Path, meta: dict, brain: Path) -> str:
+    """A single handoff record as a linked row: from → to, summary, repo·branch, time, status."""
+    rel = _rel(f, brain)
+    frm = str(meta.get("from") or "?")
+    to = str(meta.get("to") or "").strip()
+    to_html = f'<span class="harrow">→</span><span class="hto">{esc(to)}</span>' if to else '<span class="harrow">→</span><span class="hto">anyone</span>'
+    summary = meta.get("summary")
+    summary_html = f"<p>{esc(str(summary))}</p>" if summary else ""
+    foot: list[str] = []
+    # A compact inline repo·branch chip (the roster's _repo_chip wraps its own row).
+    repo_s = str(meta.get("repo") or "").strip()
+    branch_s = str(meta.get("branch") or "").strip()
+    if repo_s or branch_s:
+        rb = repo_s or "repo"
+        if branch_s:
+            rb = f"{rb} · {branch_s}"
+        foot.append(chip(rb, cls="repo"))
+    state = str(meta.get("state") or "").strip()
+    if state:
+        foot.append(badge(state, "accent"))
+    status = str(meta.get("status") or "").strip()
+    if status:
+        foot.append(badge(status, "active" if status.lower() in ("open", "pending") else ""))
+    created = meta.get("created")
+    if created:
+        rel_t, exact = humanize_time(created)
+        foot.append(f'<span class="badge date" title="{esc(exact)}">{esc(rel_t)}</span>')
+    foot_html = f'<div class="hfoot">{"".join(foot)}</div>' if foot else ""
+    return (
+        f'<a class="handoff" href="/brain/f/{esc(rel)}">'
+        f'<div class="hhead"><span class="hfrom">{esc(frm)}</span>{to_html}</div>'
+        f"{summary_html}{foot_html}"
+        "</a>"
+    )
 
 
 # ---------------------------------------------------------------- routes
@@ -1325,6 +1525,10 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             f'<p class="lede">{esc(lede)}</p>',
             f'<div class="stat-row">{"".join(stats)}</div>',
             "</section>",
+            '<a class="frontdoor" href="/brain/workspace">'
+            '<span class="livebadge"><span class="pulse"></span>live</span>'
+            "<span>Workspace — every session, room &amp; handoff on one board</span>"
+            '<span class="fd-arrow">→</span></a>',
         ]
 
         body.append('<p class="section-label">Projects</p>')
@@ -1748,6 +1952,100 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         crumbs = [("brain", "/brain"), ("Artifacts", "/brain/artifacts")]
         return HTMLResponse(
             _shell(brain, "Artifacts", "".join(body), crumbs, "/brain/artifacts")
+        )
+
+    @mcp.custom_route("/brain/workspace", ["GET"])
+    @guard
+    async def workspace_view(request: Request) -> Response:
+        now = dt.datetime.now(dt.timezone.utc)
+        today = now.date()
+        active, stale = await to_thread.run_sync(_presence_rows, brain, now)
+        threads = await to_thread.run_sync(_thread_summaries, brain)
+        handoffs = await to_thread.run_sync(_handoff_records, brain)
+
+        # Rooms: reuse the threads card style, open rooms first (stable within group).
+        rooms = sorted(threads, key=lambda t: t["status"] == "closed")
+        open_rooms = sum(1 for t in threads if t["status"] != "closed")
+        recent_handoffs = handoffs[:8]
+        handoffs_today = sum(
+            1 for _f, m in handoffs if str(m.get("created") or "")[:10] == today.isoformat()
+        )
+
+        def _count(n: int, word: str) -> str:
+            return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+        counts = [
+            chip(_count(len(active), "active session")),
+            chip(_count(open_rooms, "open room")),
+            chip(_count(handoffs_today, "handoff") + " today"),
+        ]
+        parts: list[str] = [
+            '<div class="page-head">',
+            stamp("presence"),
+            '<div><p class="eyebrow">Live</p><h1>Workspace</h1></div>',
+            "</div>",
+            '<div class="stat-row">'
+            '<span class="livebadge"><span class="pulse"></span>workspace · auto-refreshing</span>'
+            + "".join(counts)
+            + "</div>",
+            '<p class="meta">Every Claude session, room, and handoff across your PCs on one '
+            "board — who is working on what, where, right now.</p>",
+        ]
+
+        # ---- ROSTER
+        parts.append('<p class="section-label">Roster</p>')
+        if active:
+            parts.append(
+                '<div class="cards">' + "".join(_presence_card(r) for r in active) + "</div>"
+            )
+        else:
+            parts.append(
+                '<p class="empty">No active sessions — a session announces itself with '
+                "kb_presence.</p>"
+            )
+        if stale:
+            cards = "".join(_presence_card(r, stale=True) for r in stale)
+            parts.append(
+                f"<details><summary>Recently seen ({len(stale)})</summary>"
+                f'<div class="cards">{cards}</div></details>'
+            )
+
+        # ---- ROOMS
+        parts.append('<p class="section-label">Rooms</p>')
+        if rooms:
+            parts.append(
+                '<div class="cards">' + "".join(_thread_card(t) for t in rooms) + "</div>"
+            )
+        else:
+            parts.append(
+                '<p class="empty">No rooms yet — two sessions can open one with kb_thread_post.</p>'
+            )
+
+        # ---- RECENT HANDOFFS
+        parts.append('<p class="section-label">Recent handoffs</p>')
+        if recent_handoffs:
+            parts.append("".join(_handoff_row(f, m, brain) for f, m in recent_handoffs))
+        else:
+            parts.append(
+                '<p class="empty">No handoffs yet — a session hands off with kb_handoff.</p>'
+            )
+
+        parts.append(
+            '<footer class="concept-foot"><p class="meta">This board refreshes automatically '
+            "every 5 seconds. Sessions go stale after 15 minutes without a heartbeat.</p></footer>"
+        )
+
+        head_extra = '<meta http-equiv="refresh" content="5">\n'
+        crumbs = [("brain", "/brain"), ("Workspace", "/brain/workspace")]
+        return HTMLResponse(
+            _shell(
+                brain,
+                "Workspace",
+                "\n".join(parts),
+                crumbs,
+                "/brain/workspace",
+                head_extra=head_extra,
+            )
         )
 
     def _thread_not_found() -> Response:
