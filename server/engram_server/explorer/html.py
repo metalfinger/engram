@@ -348,6 +348,43 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
 .masthead .lede { color: var(--muted); font-size: 1.02rem; margin: .5rem 0 0; max-width: 34rem; }
 .stat-row { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0 0; }
 
+/* ---------- threads (live cross-session chat) ---------- */
+.livebadge {
+  display: inline-flex; align-items: center; gap: .4rem; font-size: .74rem; font-weight: 700;
+  letter-spacing: .02em; padding: .14rem .6rem; border-radius: 999px; color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent);
+}
+.livebadge .pulse {
+  width: .5rem; height: .5rem; border-radius: 50%; background: var(--green); flex: 0 0 auto;
+  animation: livepulse 1.4s ease-in-out infinite;
+}
+@keyframes livepulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.65); } }
+.thread-transcript { display: flex; flex-direction: column; gap: .7rem; margin: 1.6rem 0 0; }
+.bubble {
+  max-width: 82%; border: 1px solid var(--line); border-radius: 12px; padding: .55rem .85rem;
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.bubble.left { align-self: flex-start; border-bottom-left-radius: 4px; }
+.bubble.right { align-self: flex-end; border-bottom-right-radius: 4px; }
+.bubble .bhead { display: flex; align-items: baseline; gap: .5rem; margin-bottom: .2rem; }
+.bubble .bsender { font-weight: 700; font-size: .8rem; letter-spacing: -0.01em; }
+.bubble .btime { font-size: .7rem; color: var(--faint); font-variant-numeric: tabular-nums; }
+.bubble .bbody { font-size: .92rem; }
+.bubble .bbody > :first-child { margin-top: 0; }
+.bubble .bbody > :last-child { margin-bottom: 0; }
+.bubble.c0 { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.bubble.c0 .bsender { color: var(--accent-ink); }
+.bubble.c1 { background: color-mix(in srgb, var(--blue) 8%, var(--surface)); }
+.bubble.c1 .bsender { color: var(--blue); }
+.bubble.c2 { background: color-mix(in srgb, var(--violet) 9%, var(--surface)); }
+.bubble.c2 .bsender { color: var(--violet); }
+.bubble.c3 { background: color-mix(in srgb, var(--green) 9%, var(--surface)); }
+.bubble.c3 .bsender { color: var(--green); }
+
+@media (max-width: 52rem) {
+  .bubble { max-width: 92%; }
+}
 @media (max-width: 52rem) {
   .burger { display: inline-block; }
   .layout { display: block; padding: 0 1rem; }
@@ -363,7 +400,7 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
   main { max-width: none; padding: 1.2rem 0 5rem; }
   .masthead h1 { font-size: 1.9rem; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } .livebadge .pulse { animation: none; } }
 """
 
 
@@ -457,11 +494,14 @@ def page(
     *,
     sidebar_html: str = "",
     search_value: str = "",
+    head_extra: str = "",
 ) -> str:
     """Full HTML document: sticky topbar, persistent sidebar, then ``body_html``.
 
     ``sidebar_html`` and ``body_html`` are trusted (server-built). The mobile
     sidebar toggle and all collapsibles are pure CSS — zero JavaScript.
+    ``head_extra`` injects trusted markup into ``<head>`` (e.g. the live-thread
+    ``<meta http-equiv="refresh">`` — the single dynamic mechanism, no JS).
     """
     crumb_html = ""
     if crumbs:
@@ -473,7 +513,7 @@ def page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)} — brain</title>
-<style>{CSS}</style>
+{head_extra}<style>{CSS}</style>
 </head>
 <body>
 <input type="checkbox" id="navcb" class="navcb" aria-hidden="true">
@@ -486,6 +526,7 @@ def page(
         placeholder="Search the brain…" aria-label="Search the brain" autocomplete="off">
     </form>
     <nav class="topnav">
+      <a href="/brain/threads">Threads</a>
       <a href="/brain/graph">Graph</a>
       <a href="/brain/system">System</a>
       <a href="/brain/activity">Activity</a>
@@ -679,6 +720,7 @@ def graph_page(data: dict, glyphs: dict) -> str:
         '<span class="search" aria-hidden="true"></span>'
         '<nav class="topnav">'
         '<a href="/brain">Overview</a>'
+        '<a href="/brain/threads">Threads</a>'
         '<a href="/brain/graph" class="active" aria-current="page">Graph</a>'
         '<a href="/brain/system">System</a>'
         '<a href="/brain/activity">Activity</a>'

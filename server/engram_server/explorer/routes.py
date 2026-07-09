@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 
 _LOG_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Thread ids are single path segments (kebab/slug); the leading-alnum anchor rejects
+# "." and ".." and the class excludes "/", so no id can escape threads/ (traversal-proof).
+_SAFE_THREAD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _MONTH_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
 
@@ -838,6 +841,8 @@ def _sidebar(brain: Path, active: str) -> str:
             _nav_section("Artifacts", _nav_link("/brain/artifacts", "Gallery", active))
         )
 
+    out.append(_nav_section("Live", _nav_link("/brain/threads", "Threads", active)))
+
     skills_items = [_nav_link("/brain/setup", "Setup", active)]
     if (brain / "skills" / "engram" / "SKILL.md").is_file():
         skills_items.append(
@@ -850,13 +855,22 @@ def _sidebar(brain: Path, active: str) -> str:
     return "".join(out)
 
 
-def _shell(brain: Path, title: str, body: str, crumbs, active: str, search_value: str = "") -> str:
+def _shell(
+    brain: Path,
+    title: str,
+    body: str,
+    crumbs,
+    active: str,
+    search_value: str = "",
+    head_extra: str = "",
+) -> str:
     return page(
         title,
         body,
         crumbs,
         sidebar_html=_sidebar(brain, active),
         search_value=search_value,
+        head_extra=head_extra,
     )
 
 
@@ -1109,6 +1123,148 @@ def _render_status_wall(brain: Path, today: dt.date) -> str:
         '<footer class="concept-foot"><p class="meta">'
         f"live — rendered just now · {esc(now)}</p></footer>"
     )
+
+
+# ---------------------------------------------------------------- threads (live)
+
+
+def _thread_names(value: object) -> list[str]:
+    """Coerce a participants/frontmatter name field (str | list) to clean names."""
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _thread_meta(tdir: Path) -> dict:
+    """Frontmatter of a thread's ``thread.md`` (empty dict when absent/unreadable)."""
+    tm = tdir / "thread.md"
+    if not tm.is_file():
+        return {}
+    try:
+        meta, _body = split_frontmatter(_read(tm))
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return meta
+
+
+def _thread_turns(tdir: Path) -> list[tuple[dict, str]]:
+    """A thread's turn files as (frontmatter, body), ordered by (seq, timestamp, name).
+
+    Turns live in ``threads/<id>/turns/*.md`` (index.md excluded). ``seq`` drives the
+    order; a missing/garbled seq sinks to the end so partial writes never reorder the
+    settled conversation. Defensive: unreadable files are skipped, not fatal.
+    """
+    turns_dir = tdir / "turns"
+    if not turns_dir.is_dir():
+        return []
+    rows: list[tuple[int, str, str, dict, str]] = []
+    for f in sorted(turns_dir.glob("*.md")):
+        if f.name == "index.md":
+            continue
+        try:
+            meta, body = split_frontmatter(_read(f))
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            seq = int(meta.get("seq"))
+        except (TypeError, ValueError):
+            seq = 1_000_000_000
+        rows.append((seq, str(meta.get("timestamp") or ""), f.name, meta, body))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    return [(meta, body) for _seq, _ts, _name, meta, body in rows]
+
+
+def _thread_last_activity(meta: dict, turns: list[tuple[dict, str]]) -> str:
+    """The most-recent timestamp for a thread: newest turn, else closed/created."""
+    latest = ""
+    for m, _body in turns:
+        ts = str(m.get("timestamp") or "")
+        if ts > latest:
+            latest = ts
+    return latest or str(meta.get("closed_at") or meta.get("created") or "")
+
+
+def _thread_summaries(brain: Path) -> list[dict]:
+    """Card data for every ``threads/<id>/thread.md``, newest-activity first.
+
+    Returns [] when the ``threads/`` tree is absent (feature unused yet) — the route
+    renders a friendly empty state rather than an error.
+    """
+    troot = brain / "threads"
+    if not troot.is_dir():
+        return []
+    out: list[dict] = []
+    for tdir in sorted(troot.iterdir()):
+        if not tdir.is_dir() or tdir.name.startswith("."):
+            continue
+        if not (tdir / "thread.md").is_file():
+            continue
+        meta = _thread_meta(tdir)
+        turns = _thread_turns(tdir)
+        out.append(
+            {
+                "id": tdir.name,
+                "topic": str(meta.get("topic") or meta.get("title") or tdir.name),
+                "status": str(meta.get("status") or "open").strip().lower(),
+                "participants": _thread_names(meta.get("participants")),
+                "turns": len(turns),
+                "last_activity": _thread_last_activity(meta, turns),
+            }
+        )
+    out.sort(key=lambda t: t["last_activity"], reverse=True)
+    return out
+
+
+def _thread_card(t: dict) -> str:
+    """A thread card: topic, participant chips, status badge, turn count, last activity."""
+    is_open = t["status"] != "closed"
+    foot: list[str] = [badge(t["status"], "active" if is_open else "")]
+    foot.append(chip(f"{t['turns']} turns"))
+    if t["last_activity"]:
+        rel, exact = humanize_time(t["last_activity"])
+        foot.append(f'<span class="badge date" title="{esc(exact)}">{esc(rel)}</span>')
+    chips = "".join(chip(p) for p in t["participants"])
+    parts_html = f'<div class="badges">{chips}</div>' if chips else ""
+    return (
+        f'<a class="card" href="/brain/threads/{esc(t["id"])}">'
+        f'<div class="card-head"><h3>{esc(t["topic"])}</h3></div>'
+        f"{parts_html}"
+        f'<div class="card-foot">{"".join(foot)}</div>'
+        "</a>"
+    )
+
+
+def _thread_bubbles(turns: list[tuple[dict, str]], participants: list[str], tid: str) -> str:
+    """Render turns as color- and side-alternated chat bubbles.
+
+    Each distinct sender gets a stable index by order of appearance (participants
+    seed the order so a two-party chat reads left/right from the first turn); even
+    indexes sit left, odd right, and the color cycles through four accents.
+    """
+    order: dict[str, int] = {}
+    for p in participants:
+        order.setdefault(p, len(order))
+    bubbles: list[str] = []
+    for meta, body in turns:
+        sender = str(meta.get("sender") or "unknown")
+        idx = order.setdefault(sender, len(order))
+        side = "right" if idx % 2 else "left"
+        color = idx % 4
+        ts = meta.get("timestamp")
+        time_html = ""
+        if ts:
+            rel, exact = humanize_time(ts)
+            time_html = f'<span class="btime" title="{esc(exact)}">{esc(rel)}</span>'
+        body_html = render_markdown(body.strip(), f"threads/{tid}/turns/_")
+        bubbles.append(
+            f'<div class="bubble {side} c{color}">'
+            f'<div class="bhead"><span class="bsender">{esc(sender)}</span>{time_html}</div>'
+            f'<div class="bbody md">{body_html}</div>'
+            "</div>"
+        )
+    return "".join(bubbles)
 
 
 # ---------------------------------------------------------------- routes
@@ -1428,11 +1584,19 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             )
         else:
             body_html = f'<div class="md">{render_markdown(body_md, rel)}</div>'
+        # A thread.md is a static transcript snapshot; offer the live watcher.
+        watch_html = ""
+        if str(meta.get("type") or "") == "thread" and rel.startswith("threads/"):
+            watch_html = (
+                f'<p><a class="chip" href="/brain/threads/{esc(target.parent.name)}">'
+                "▶ watch live</a></p>"
+            )
         body_parts = [
             *head_parts,
             _supersession_banner(meta, brain),
             properties_panel(meta, _today_utc()),
             provenance,
+            watch_html,
             body_html,
             _concept_footer(target, rel, brain),
         ]
@@ -1584,6 +1748,112 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         crumbs = [("brain", "/brain"), ("Artifacts", "/brain/artifacts")]
         return HTMLResponse(
             _shell(brain, "Artifacts", "".join(body), crumbs, "/brain/artifacts")
+        )
+
+    def _thread_not_found() -> Response:
+        body = (
+            '<div class="page-head">'
+            + stamp("message")
+            + '<div><p class="eyebrow">Threads</p><h1>No such thread</h1></div></div>'
+            '<p class="empty">That thread doesn&rsquo;t exist (or was never started). '
+            '<a href="/brain/threads">Back to all threads</a>.</p>'
+        )
+        crumbs = [("brain", "/brain"), ("Threads", "/brain/threads")]
+        return HTMLResponse(
+            _shell(brain, "No such thread", body, crumbs, "/brain/threads"), status_code=404
+        )
+
+    @mcp.custom_route("/brain/threads", ["GET"])
+    @guard
+    async def threads_view(request: Request) -> Response:
+        threads = await to_thread.run_sync(_thread_summaries, brain)
+        parts: list[str] = [
+            '<div class="page-head">',
+            stamp("message"),
+            '<div><p class="eyebrow">Live</p><h1>Threads</h1></div>',
+            "</div>",
+            '<p class="meta">Cross-session conversations — two Claude sessions talking through '
+            "the brain. Open threads refresh live as new turns land.</p>",
+        ]
+        if not threads:
+            parts.append(
+                '<p class="empty">No cross-session threads yet — two Claude sessions can start '
+                "one with kb_thread_post.</p>"
+            )
+        else:
+            parts.append(
+                '<div class="cards">' + "".join(_thread_card(t) for t in threads) + "</div>"
+            )
+        crumbs = [("brain", "/brain"), ("Threads", "/brain/threads")]
+        return HTMLResponse(
+            _shell(brain, "Threads", "\n".join(parts), crumbs, "/brain/threads")
+        )
+
+    @mcp.custom_route("/brain/threads/{thread_id}", ["GET"])
+    @guard
+    async def thread_view(request: Request) -> Response:
+        tid = str(request.path_params.get("thread_id", ""))
+        if not _SAFE_THREAD_RE.match(tid):
+            return _thread_not_found()
+        troot = (brain / "threads").resolve()
+        tdir = brain / "threads" / tid
+        try:
+            resolved = tdir.resolve()
+        except OSError:
+            return _thread_not_found()
+        # Belt over the kebab regex: the resolved dir must stay under threads/.
+        if not resolved.is_relative_to(troot) or not (tdir / "thread.md").is_file():
+            return _thread_not_found()
+
+        meta = await to_thread.run_sync(_thread_meta, tdir)
+        turns = await to_thread.run_sync(_thread_turns, tdir)
+        status = str(meta.get("status") or "open").strip().lower()
+        is_open = status != "closed"
+        topic = str(meta.get("topic") or meta.get("title") or tid)
+        participants = _thread_names(meta.get("participants"))
+
+        parts: list[str] = [
+            '<div class="page-head">',
+            stamp("message"),
+            f'<div><p class="eyebrow">Thread</p><h1>{esc(topic)}</h1></div>',
+            "</div>",
+        ]
+        row: list[str] = []
+        if is_open:
+            row.append('<span class="livebadge"><span class="pulse"></span>live · auto-refreshing</span>')
+        else:
+            row.append(badge("closed", ""))
+        row.extend(chip(p) for p in participants)
+        last = _thread_last_activity(meta, turns)
+        if last:
+            rel, exact = humanize_time(last)
+            row.append(f'<span class="badge date" title="{esc(exact)}">{esc(rel)}</span>')
+        parts.append(f'<div class="stat-row">{"".join(row)}</div>')
+
+        if turns:
+            parts.append(
+                f'<div class="thread-transcript">{_thread_bubbles(turns, participants, tid)}</div>'
+            )
+        else:
+            parts.append('<p class="empty">No turns yet — waiting for the first message.</p>')
+
+        if is_open:
+            parts.append(
+                '<footer class="concept-foot"><p class="meta">This transcript refreshes '
+                "automatically every 2 seconds while the thread is open.</p></footer>"
+            )
+        else:
+            ender = str(meta.get("closed_by") or "").strip() or "a session"
+            parts.append(
+                '<footer class="concept-foot"><p class="meta">Conversation ended by '
+                f"{esc(ender)}.</p></footer>"
+            )
+
+        # The ONLY dynamic mechanism: a zero-JS meta refresh, and only while open.
+        head_extra = '<meta http-equiv="refresh" content="2">\n' if is_open else ""
+        crumbs = [("brain", "/brain"), ("Threads", "/brain/threads"), (topic, f"/brain/threads/{tid}")]
+        return HTMLResponse(
+            _shell(brain, topic, "\n".join(parts), crumbs, "/brain/threads", head_extra=head_extra)
         )
 
     @mcp.custom_route("/brain/setup/engram-setup.ps1", ["GET"])
