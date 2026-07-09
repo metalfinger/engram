@@ -31,6 +31,7 @@ TYPE_GLYPHS = {
     "live-view": "📡",
     "presence": "📍",
     "handoff": "🤝",
+    "claim": "🔒",
 }
 _DEFAULT_GLYPH = "◆"
 

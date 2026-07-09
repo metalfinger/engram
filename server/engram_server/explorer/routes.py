@@ -1467,6 +1467,121 @@ def _handoff_row(f: Path, meta: dict, brain: Path) -> str:
     )
 
 
+# ---------------------------------------------------------------- claims (collision avoidance)
+
+
+def _claim_records(brain: Path) -> list[dict]:
+    """Every ``workspace/claims/*.md`` frontmatter (index.md excluded).
+
+    Returns [] when the workspace/claims/ tree is absent (feature unused yet) — the
+    route renders a friendly empty state rather than an error. Unreadable files are
+    skipped, not fatal.
+    """
+    cdir = brain / "workspace" / "claims"
+    if not cdir.is_dir():
+        return []
+    out: list[dict] = []
+    for f in sorted(cdir.glob("*.md")):
+        if f.name == "index.md":
+            continue
+        try:
+            meta, _body = split_frontmatter(_read(f))
+        except (OSError, UnicodeDecodeError):
+            continue
+        out.append(meta)
+    return out
+
+
+def _claim_rows(
+    brain: Path, now: dt.datetime, stale_after_min: float = 30.0
+) -> tuple[list[dict], list[dict]]:
+    """Split claim records into (active, stale) by claim age.
+
+    A claim is active when its ``claimed_at`` timestamp is within
+    ``stale_after_min`` of ``now``; everything else (including undated claims) is
+    stale — a claim nobody refreshed is a lock nobody should trust. Both lists are
+    most-recent first. Each row is the raw frontmatter plus a parsed ``_dt`` (aware
+    UTC or None) for the view to format.
+    """
+    active: list[dict] = []
+    stale: list[dict] = []
+    for meta in _claim_records(brain):
+        d = _to_utc(meta.get("claimed_at"))
+        row = dict(meta)
+        row["_dt"] = d
+        if d is not None and (now - d).total_seconds() <= stale_after_min * 60:
+            active.append(row)
+        else:
+            stale.append(row)
+    floor = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    active.sort(key=lambda r: r["_dt"] or floor, reverse=True)
+    stale.sort(key=lambda r: r["_dt"] or floor, reverse=True)
+    return active, stale
+
+
+def _claim_target(brain: Path, path: object) -> str | None:
+    """The repo-relative POSIX path when ``path`` names a real file in the brain, else
+    None (a free-text task string, not a concept path).
+
+    Traversal-proof: rejects ``..`` / ``.git`` segments and anything that resolves
+    outside the checkout root before touching the filesystem — the same guard the
+    file_view route uses. A None result is not an error; it just means the claim is a
+    task, not a file, and the caller renders it as an inert task chip.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    rel = raw.replace("\\", "/").strip("/")
+    segments = [p for p in rel.split("/") if p]
+    if not segments or any(p == ".." or p.lower() == ".git" for p in segments):
+        return None
+    root = brain.resolve()
+    try:
+        target = (root / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    if not target.is_relative_to(root) or not target.is_file():
+        return None
+    if any(p.lower() == ".git" for p in target.relative_to(root).parts):
+        return None
+    return target.relative_to(root).as_posix()
+
+
+def _claim_row(brain: Path, row: dict, *, stale: bool = False) -> str:
+    """One claim row: a lock glyph + the claimed target (linked concept when it is a
+    real file, else an inert task chip), the session holding it, its note, and a
+    'claimed N ago' time badge. This is who is editing what, right now."""
+    session = str(row.get("session") or "session")
+    raw_path = str(row.get("path") or "").strip()
+    tgt = _claim_target(brain, raw_path)
+    if tgt:
+        target_html = (
+            f'<a class="chip repo" href="/brain/f/{esc(tgt)}" title="{esc(tgt)}">'
+            f"🔒 {esc(tgt)}</a>"
+        )
+    else:
+        label = raw_path or "(unspecified)"
+        target_html = (
+            f'<span class="chip task" title="free task claim (not a file)">🔒 {esc(label)}</span>'
+        )
+    note = row.get("note")
+    note_html = f'<p class="cnote">{esc(str(note))}</p>' if note else ""
+    time_html = ""
+    if row.get("_dt") is not None:
+        rel, exact = humanize_time(row.get("claimed_at"))
+        time_html = f'<span class="badge date" title="{esc(exact)}">claimed {esc(rel)}</span>'
+    elif row.get("claimed_at"):
+        time_html = f'<span class="badge date">claimed {esc(str(row["claimed_at"]))}</span>'
+    cls = "claim stale" if stale else "claim"
+    return (
+        f'<div class="{cls}">'
+        f'<div class="chead">{target_html}'
+        f'<span class="cby">held by <b>{esc(session)}</b></span>{time_html}</div>'
+        f"{note_html}"
+        "</div>"
+    )
+
+
 # ---------------------------------------------------------------- routes
 
 
@@ -1960,6 +2075,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         now = dt.datetime.now(dt.timezone.utc)
         today = now.date()
         active, stale = await to_thread.run_sync(_presence_rows, brain, now)
+        active_claims, stale_claims = await to_thread.run_sync(_claim_rows, brain, now)
         threads = await to_thread.run_sync(_thread_summaries, brain)
         handoffs = await to_thread.run_sync(_handoff_records, brain)
 
@@ -1976,6 +2092,7 @@ def register(mcp: FastMCP, settings: Settings) -> None:
 
         counts = [
             chip(_count(len(active), "active session")),
+            chip(_count(len(active_claims), "active claim")),
             chip(_count(open_rooms, "open room")),
             chip(_count(handoffs_today, "handoff") + " today"),
         ]
@@ -2008,6 +2125,26 @@ def register(mcp: FastMCP, settings: Settings) -> None:
             parts.append(
                 f"<details><summary>Recently seen ({len(stale)})</summary>"
                 f'<div class="cards">{cards}</div></details>'
+            )
+
+        # ---- ACTIVE CLAIMS (collision avoidance, made visible)
+        parts.append('<p class="section-label">Active claims</p>')
+        if active_claims:
+            parts.append(
+                '<div class="claims">'
+                + "".join(_claim_row(brain, c) for c in active_claims)
+                + "</div>"
+            )
+        else:
+            parts.append(
+                '<p class="empty">No active claims — sessions claim a file with kb_claim '
+                "before editing it.</p>"
+            )
+        if stale_claims:
+            rows = "".join(_claim_row(brain, c, stale=True) for c in stale_claims)
+            parts.append(
+                f"<details><summary>Stale claims ({len(stale_claims)})</summary>"
+                f'<div class="claims">{rows}</div></details>'
             )
 
         # ---- ROOMS

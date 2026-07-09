@@ -114,6 +114,30 @@ def _write_handoff(
     _write(brain / "workspace" / "handoffs" / f"{fname}.md", "\n".join(fm) + "\n")
 
 
+def _write_claim(
+    brain: Path,
+    slug: str,
+    *,
+    path: str,
+    session: str,
+    claimed_at: str,
+    note: str = "Rewriting the roster card",
+) -> None:
+    fm = [
+        "---",
+        "type: claim",
+        f"path: {path}",
+        f"session: {session}",
+        f"note: {note}",
+        f"claimed_at: {claimed_at}",
+        "---",
+        "",
+        f"{session} is editing {path}.",
+        "",
+    ]
+    _write(brain / "workspace" / "claims" / f"{slug}.md", "\n".join(fm) + "\n")
+
+
 def _write_thread(brain: Path, tid: str, *, refs: tuple[str, ...] = ()) -> None:
     tdir = brain / "threads" / tid
     _write(
@@ -210,6 +234,97 @@ def test_workspace_empty_states_when_no_tree(settings: Settings) -> None:
     assert "No handoffs yet" in html
     # still auto-refreshes even when empty
     assert '<meta http-equiv="refresh" content="5">' in html
+
+
+# ------------------------------------------------------------ active claims
+
+
+def test_workspace_shows_fresh_claim_with_session_and_path(settings: Settings) -> None:
+    brain = settings.brain_path
+    # A claim on a REAL concept file links to its /brain/f/ view.
+    _write(
+        brain / "projects" / "engram" / "specs" / "workspace-coordination.md",
+        "---\ntype: spec\ntitle: Workspace coordination\n---\n\n# Workspace coordination\n",
+    )
+    _write_claim(
+        brain,
+        "alice-lock",
+        path="projects/engram/specs/workspace-coordination.md",
+        session="Alice-CC",
+        claimed_at=_iso(dt.timedelta(minutes=-3)),
+        note="Adding the claims panel",
+    )
+    html = _client(_open(settings)).get("/brain/workspace").text
+    assert "Active claims" in html
+    assert "Alice-CC" in html  # the holding session
+    assert "Adding the claims panel" in html  # the note
+    # real concept path is linked to its file view
+    assert "/brain/f/projects/engram/specs/workspace-coordination.md" in html
+    assert "claimed" in html  # 'claimed N ago' badge
+    assert "1 active claim" in html  # count chip
+
+
+def test_workspace_free_task_claim_is_not_a_link(settings: Settings) -> None:
+    brain = settings.brain_path
+    # A claim whose path is a free task string (not a file) renders as an inert chip.
+    _write_claim(
+        brain,
+        "bob-task",
+        path="reconcile the qdrant index by hand",
+        session="Bob-CC",
+        claimed_at=_iso(dt.timedelta(minutes=-2)),
+    )
+    html = _client(_open(settings)).get("/brain/workspace").text
+    assert "reconcile the qdrant index by hand" in html
+    assert "chip task" in html  # inert task chip class
+    # a task string never becomes a /brain/f/ link
+    assert "/brain/f/reconcile the qdrant index" not in html
+
+
+def test_workspace_stale_claim_is_collapsed(settings: Settings) -> None:
+    brain = settings.brain_path
+    _write_claim(
+        brain,
+        "fresh",
+        path="projects/engram/context.md",
+        session="Fresh-CC",
+        claimed_at=_iso(dt.timedelta(minutes=-5)),
+    )
+    _write_claim(
+        brain,
+        "old",
+        path="projects/engram/log.md",
+        session="Stale-CC",
+        claimed_at=_iso(dt.timedelta(minutes=-45)),  # older than the 30-min window
+    )
+    html = _client(_open(settings)).get("/brain/workspace").text
+    assert "Fresh-CC" in html and "Stale-CC" in html
+    assert "Stale claims (1)" in html
+    # the fresh claim shows above the collapsed stale block, which holds the stale one
+    assert html.index("Fresh-CC") < html.index("Stale claims")
+    assert html.index("Stale claims") < html.index("Stale-CC")
+    assert "claim stale" in html
+    assert "1 active claim" in html  # only the fresh one counts as active
+
+
+def test_workspace_claims_empty_state(settings: Settings) -> None:
+    html = _client(_open(settings)).get("/brain/workspace").text
+    assert "Active claims" in html
+    assert "No active claims" in html
+    assert "kb_claim" in html
+    assert "0 active claims" in html
+
+
+def test_workspace_claims_stay_guarded(settings: Settings) -> None:
+    _write_claim(
+        settings.brain_path,
+        "a",
+        path="projects/engram/context.md",
+        session="A",
+        claimed_at=_iso(dt.timedelta(minutes=-1)),
+    )
+    client = _client(settings)  # dev_no_access False → Access gate holds
+    assert client.get("/brain/workspace").status_code == 403
 
 
 # ------------------------------------------------------------ thread-turn refs

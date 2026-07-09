@@ -417,6 +417,16 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
 .handoff .hto { font-weight: 700; font-size: .92rem; color: var(--accent-ink); }
 .handoff p { margin: .3rem 0 .4rem; font-size: .87rem; color: var(--muted); }
 .handoff .hfoot { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.claim {
+  border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 9px;
+  background: var(--surface); padding: .55rem .85rem; margin: .5rem 0; box-shadow: var(--shadow);
+}
+.claim .chead { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.claim .cby { font-size: .82rem; color: var(--muted); }
+.claim .cby b { color: var(--fg); font-weight: 700; }
+.claim .cnote { margin: .35rem 0 0; font-size: .85rem; color: var(--muted); }
+.claim .chip.task { font-family: ui-monospace, Consolas, monospace; color: var(--muted); cursor: default; }
+.claim.stale { opacity: .55; border-left-color: var(--faint); }
 
 @media (max-width: 52rem) {
   .bubble { max-width: 92%; }
