@@ -250,15 +250,118 @@ def activity_events(brain: Path, limit: int = 40) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- rooms
+
+# The heartbeat gap (seconds) above which a session's history is read as a RETURN — it
+# was away long enough that reappearing is a "welcome back", not one continuous run.
+# Presence re-commits at most every ~5 min (staleness) or on a real change, so a gap this
+# size means the session genuinely went dark and came back.
+_RETURN_GAP_SEC = 20 * 60
+
+_UNASSIGNED_LABEL = "Unassigned / visiting"
+
+
+def _known_projects(brain: Path) -> dict[str, str]:
+    """Map of project id -> display title for every ``projects/<id>/`` dir.
+
+    Title is the project's context.md frontmatter ``title`` (falling back to the id).
+    Used only to give a session's room a human label and a deterministic layout — a room
+    is a VISUAL home, never an access boundary (any session reads any project via kb_*).
+    """
+    out: dict[str, str] = {}
+    proot = brain / "projects"
+    if not proot.is_dir():
+        return out
+    for pdir in sorted(proot.iterdir()):
+        if not pdir.is_dir() or pdir.name.startswith("."):
+            continue
+        title = pdir.name
+        ctx = pdir / "context.md"
+        if ctx.is_file():
+            try:
+                meta, _body = split_frontmatter(ctx.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                meta = {}
+            if isinstance(meta, dict) and meta.get("title"):
+                title = str(meta["title"])
+        out[pdir.name] = title
+    return out
+
+
+def _room_for(meta: dict, projects: dict[str, str]) -> tuple[str, str, str]:
+    """Resolve (room_id, room_label, kind) for a presence record.
+
+    Order: a non-empty presence ``project`` wins (its own room); else a ``repo`` that
+    matches a known projects/ dir folds into that project room; else the ``repo`` is its
+    own room; else ``unassigned``. kind ∈ project|repo|unassigned.
+    """
+    project = str(meta.get("project") or "").strip()
+    repo = str(meta.get("repo") or "").strip()
+    if project:
+        return project, projects.get(project, project), "project"
+    if repo and repo in projects:
+        return repo, projects[repo], "project"
+    if repo:
+        return repo, repo, "repo"
+    return "unassigned", _UNASSIGNED_LABEL, "unassigned"
+
+
+def _rooms_from(rows: list[dict]) -> list[dict]:
+    """The distinct rooms present across the session rows, project-first then repo.
+
+    Derived purely from the sessions so the frontend can lay out rooms even before any
+    character arrives; ordering is deterministic (kind, then label).
+    """
+    seen: dict[str, dict] = {}
+    for r in rows:
+        rid = r["room"]
+        if rid not in seen:
+            seen[rid] = {"id": rid, "label": r["room_label"], "kind": r["room_kind"]}
+    rank = {"project": 0, "repo": 1, "unassigned": 2}
+    return sorted(seen.values(), key=lambda x: (rank.get(x["kind"], 9), x["label"].lower()))
+
+
 # ---------------------------------------------------------------- sessions
 
 
-def _session_row(meta: dict, now: dt.datetime) -> dict:
-    """A presence frontmatter dict -> the sessions[] row shape (age_sec + live flag)."""
+def _first_seen_returning(brain: Path, sid: str, now: dt.datetime) -> tuple[str, bool]:
+    """(first_seen_iso, returning) from the presence file's commit history.
+
+    ``first_seen`` is the oldest presence commit's date; ``returning`` is true when any
+    consecutive gap in that history exceeds ``_RETURN_GAP_SEC`` (the session went dark and
+    came back). Empty/False when there is no git history — the caller falls back to
+    ``updated`` for first_seen.
+    """
+    if not sid or not _SAFE_SID_RE.match(sid):
+        return "", False
+    commits = _git_log_file(brain, f"workspace/presence/{sid}.md", 100)
+    dates = sorted(d for d in (_to_utc(c[1]) for c in commits) if d is not None)
+    if not dates:
+        return "", False
+    returning = any(
+        (dates[i + 1] - dates[i]).total_seconds() > _RETURN_GAP_SEC for i in range(len(dates) - 1)
+    )
+    return _iso_z(dates[0]), returning
+
+
+def _session_row(brain: Path, meta: dict, now: dt.datetime, projects: dict[str, str]) -> dict:
+    """A presence frontmatter dict -> the sessions[] row shape.
+
+    Adds age_sec + live, the returning-employee flags (first_seen + returning), and the
+    resolved visual room (room / room_label / room_kind).
+    """
     d = _to_utc(meta.get("updated"))
     age = _age_sec(d, now)
+    # Normalize to canonical ISO-Z: the YAML loader may hand back a datetime (it
+    # auto-parses timestamp scalars), so str() alone would emit a space-separated form.
+    updated = _iso_z(d) if d else str(meta.get("updated") or "")
+    sid = str(meta.get("session") or "")
+    room, room_label, room_kind = _room_for(meta, projects)
+    first_seen, returning = _first_seen_returning(brain, sid, now)
+    if not first_seen:
+        first_seen = updated  # fall back to the current heartbeat when there's no history
     return {
-        "session": str(meta.get("session") or ""),
+        "session": sid,
         "name": str(meta.get("name") or ""),
         "status": str(meta.get("status") or "unknown"),
         "working_on": str(meta.get("working_on") or ""),
@@ -267,17 +370,22 @@ def _session_row(meta: dict, now: dt.datetime) -> dict:
         "repo_remote": str(meta.get("repo_remote") or ""),
         "project": str(meta.get("project") or ""),
         "host": str(meta.get("host") or ""),
-        "updated": str(meta.get("updated") or ""),
+        "updated": updated,
         "age_sec": age,
         "live": age is not None and age <= _LIVE_WINDOW_SEC,
+        "first_seen": first_seen,
+        "returning": returning,
+        "room": room,
+        "room_label": room_label,
+        "room_kind": room_kind,
     }
 
 
-def _sessions(brain: Path, now: dt.datetime) -> list[dict]:
+def _sessions(brain: Path, now: dt.datetime, projects: dict[str, str]) -> list[dict]:
     """All presence records as sessions[] rows, live-first then newest-heartbeat first."""
     from engram_server.explorer import routes as _routes  # lazy: avoid import cycle
 
-    rows = [_session_row(m, now) for m in _routes._presence_records(brain)]
+    rows = [_session_row(brain, m, now, projects) for m in _routes._presence_records(brain)]
     big = 10**12
     rows.sort(key=lambda r: (not r["live"], r["age_sec"] if r["age_sec"] is not None else big))
     return rows
@@ -321,10 +429,13 @@ def _threads(brain: Path, now: dt.datetime) -> list[dict]:
 
 
 def office_payload(brain: Path, now: dt.datetime) -> dict:
-    """The /brain/api/office.json body: now + sessions + threads + activity."""
+    """The /brain/api/office.json body: now + sessions + rooms + threads + activity."""
+    projects = _known_projects(brain)
+    sessions = _sessions(brain, now, projects)
     return {
         "now": _iso_z(now),
-        "sessions": _sessions(brain, now),
+        "sessions": sessions,
+        "rooms": _rooms_from(sessions),
         "threads": _threads(brain, now),
         "activity": activity_events(brain, 40),
     }
@@ -465,7 +576,7 @@ def session_dossier(brain: Path, sid: str, now: dt.datetime) -> dict | None:
         except (ValueError, OSError, UnicodeDecodeError):
             meta = {}
         if isinstance(meta, dict) and meta:
-            current = _session_row(meta, now)
+            current = _session_row(brain, meta, now, _known_projects(brain))
             name = current["name"]
             if current["repo"]:
                 repos.add(current["repo"])

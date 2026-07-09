@@ -45,14 +45,30 @@ def _git(brain: Path, *args: str) -> None:
     assert proc.returncode == 0, f"git {' '.join(args)} failed: {proc.stderr}"
 
 
-def _commit(brain: Path, rel: str, content: str, message: str) -> None:
-    """Write ``rel`` under the checkout and commit it with ``message`` (no push)."""
+def _commit(brain: Path, rel: str, content: str, message: str, when: str | None = None) -> None:
+    """Write ``rel`` under the checkout and commit it with ``message`` (no push).
+
+    ``when`` (ISO) backdates the author + committer date so history-gap heuristics
+    (the returning-employee flag) can be exercised deterministically.
+    """
     target = brain / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     _git(brain, "add", "-A", "--", rel)
-    _git(brain, "commit", "-m", message)
+    env = None
+    if when is not None:
+        import os
+
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    proc = subprocess.run(
+        ["git", "-C", str(brain), "commit", "-m", message],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    assert proc.returncode == 0, f"git commit failed: {proc.stderr}"
 
 
 def _now() -> dt.datetime:
@@ -246,6 +262,132 @@ def test_session_dossier_traversal_sid_404(settings: Settings) -> None:
     for evil in ("..", "../alice-cc", "..%2falice-cc", "Alice-CC", "a/b", "a.b"):
         resp = client.get(f"/brain/api/session/{evil}")
         assert resp.status_code == 404, f"{evil!r} should 404, got {resp.status_code}"
+
+
+# ------------------------------------------------------------ rooms + returning
+
+
+def _iso_at(delta_min: float) -> str:
+    return (_now() + dt.timedelta(minutes=delta_min)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def test_session_with_project_lands_in_that_room(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/dev-a.md",
+        _presence_doc("dev-a", name="Dev-A", status="working", updated=_updated(-1),
+                      project="engram", repo="engram"),
+        "workspace: presence dev-a (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "dev-a")
+    assert row["room"] == "engram"
+    assert row["room_kind"] == "project"
+    # the room also appears in the top-level rooms list
+    room = next(r for r in body["rooms"] if r["id"] == "engram")
+    assert room["kind"] == "project"
+
+
+def test_session_repo_matches_known_project_room(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    # A known project dir with a human title; the session declares only a matching repo.
+    _commit(
+        brain,
+        "projects/myproj/context.md",
+        "---\ntype: project\ntitle: My Project\n---\n\n# My Project\n",
+        "kb: seed myproj",
+    )
+    _commit(
+        brain,
+        "workspace/presence/dev-b.md",
+        _presence_doc("dev-b", name="Dev-B", status="working", updated=_updated(-1),
+                      project="", repo="myproj"),
+        "workspace: presence dev-b (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "dev-b")
+    assert row["room"] == "myproj"
+    assert row["room_kind"] == "project"
+    assert row["room_label"] == "My Project"
+
+
+def test_session_repo_not_a_project_is_repo_room(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/dev-c.md",
+        _presence_doc("dev-c", name="Dev-C", status="working", updated=_updated(-1),
+                      project="", repo="randomtool"),
+        "workspace: presence dev-c (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "dev-c")
+    assert row["room"] == "randomtool"
+    assert row["room_kind"] == "repo"
+    assert row["room_label"] == "randomtool"
+
+
+def test_session_neither_project_nor_repo_is_unassigned(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/dev-d.md",
+        _presence_doc("dev-d", name="Dev-D", status="available", updated=_updated(-1),
+                      project="", repo=""),
+        "workspace: presence dev-d (available)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "dev-d")
+    assert row["room"] == "unassigned"
+    assert row["room_kind"] == "unassigned"
+    assert row["room_label"] == "Unassigned / visiting"
+    assert any(r["kind"] == "unassigned" for r in body["rooms"])
+
+
+def test_returning_flag_and_first_seen_from_history(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    # Two heartbeats 40 min apart → a gap wider than the return threshold.
+    _commit(
+        brain,
+        "workspace/presence/back-again.md",
+        _presence_doc("back-again", name="Back-Again", status="working", updated=_updated(-40)),
+        "workspace: presence back-again (working)",
+        when=_iso_at(-40),
+    )
+    _commit(
+        brain,
+        "workspace/presence/back-again.md",
+        _presence_doc("back-again", name="Back-Again", status="working", updated=_updated(-1)),
+        "workspace: presence back-again (working)",
+        when=_iso_at(-1),
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "back-again")
+    assert row["returning"] is True
+    assert row["first_seen"]  # populated from the oldest commit
+    # first_seen is well before the latest heartbeat
+    assert row["first_seen"] < row["updated"]
+
+
+def test_new_hire_is_not_returning(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/fresh-hire.md",
+        _presence_doc("fresh-hire", name="Fresh-Hire", status="working", updated=_updated(-1)),
+        "workspace: presence fresh-hire (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "fresh-hire")
+    assert row["returning"] is False
+    assert row["first_seen"]
 
 
 # ------------------------------------------------------------ /brain/office page
