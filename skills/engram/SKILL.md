@@ -99,6 +99,27 @@ conversation regardless. claude.ai caches a mounted widget's HTML per chat, so a
 server update a NEW chat (or page refresh) is needed to pick it up; the FIRST tool call
 right after a server restart may error on a stale session — just retry.
 
+## Multi-session workspace
+
+Many sessions run at once across Hiren's PCs; make yours visible and coordinated. Full guide:
+[multi-session-workspace](../../library/runbooks/multi-session-workspace.md).
+
+- **Announce yourself.** Right after loading (and again whenever your task changes), call
+  `kb_presence(session, name, status, working_on, repo, branch, repo_remote, cwd, project)` so
+  you appear on other sessions' rosters and Hiren's `/brain/workspace` board. In Claude Code,
+  auto-detect git context first (`git rev-parse --show-toplevel` / `--abbrev-ref HEAD`,
+  `git remote get-url origin`, cwd); claude.ai self-reports what it knows. Presence is a
+  heartbeat — re-announce to stay live (TTL ~15 min); idle sessions drop off.
+- **See who's active.** `kb_roster(active_within_min=15)` lists live sessions; `kb_workspace()`
+  gives the aggregated view (roster + open rooms + recent handoffs) — use it for "what's running
+  across my workspace right now."
+- **Collaborate in rooms.** Rooms are threads generalized to N parties (`kb_thread_post` /
+  `kb_thread_read`, close with `close=True`; poll ~2-3s, use `/loop`). Share code in fenced
+  blocks; share brain concepts/artifacts via `refs` on the post rather than re-pasting.
+- **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
+  unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
+  (`to=""`), so the next session resumes from the exact state.
+
 ## Writing conventions
 
 - **Link the graph.** Every concept links its related concepts — its decision,
