@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 
 from engram_server.config import Settings
 from engram_server.explorer import register as register_explorer
+from engram_server.kbstore import KBStore
 
 
 def _client(settings: Settings) -> TestClient:
@@ -187,3 +188,42 @@ def test_thread_routes_stay_guarded(settings: Settings) -> None:
     client = _client(settings)  # dev_no_access False → Access gate holds
     assert client.get("/brain/threads").status_code == 403
     assert client.get("/brain/threads/real-one").status_code == 403
+
+
+# ------------------------------------------------------------ end-to-end (real engine)
+
+
+async def test_viewer_renders_engine_produced_thread(settings: Settings) -> None:
+    """The viewer renders a thread written by the real kb_thread_* engine — proving
+    the on-disk data model (frontmatter, colon-free turn filenames, seq order, close
+    signal) lines up end-to-end, not just against hand-seeded fixtures."""
+    store = KBStore(settings)
+    await store.start()
+    await store.kb_thread_post(
+        "deploy-handoff", "session-a", "Kicking off the deploy.", topic="Deploy handoff"
+    )
+    await store.kb_thread_post("deploy-handoff", "session-b", "Standing by on my end.")
+
+    client = _client(_open(settings))
+
+    lst = client.get("/brain/threads")
+    assert lst.status_code == 200
+    assert "Deploy handoff" in lst.text
+    assert "/brain/threads/deploy-handoff" in lst.text
+    assert "session-a" in lst.text and "session-b" in lst.text
+
+    view = client.get("/brain/threads/deploy-handoff")
+    assert view.status_code == 200
+    html = view.text
+    assert "Kicking off the deploy." in html and "Standing by on my end." in html
+    assert html.index("Kicking off") < html.index("Standing by")  # engine seq order
+    assert "bubble left" in html and "bubble right" in html
+    assert '<meta http-equiv="refresh" content="2">' in html  # still open → live
+
+    # Closing the thread (final turn) flips the viewer out of live mode.
+    await store.kb_thread_post(
+        "deploy-handoff", "session-a", "Deploy is green. Closing out.", close=True
+    )
+    closed = client.get("/brain/threads/deploy-handoff").text
+    assert 'http-equiv="refresh"' not in closed
+    assert "Conversation ended by session-a" in closed
