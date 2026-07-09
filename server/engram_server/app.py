@@ -182,13 +182,24 @@ async def kb_read(path: str, depth: int = 0) -> dict[str, Any]:
     every concept the file links to (one hop; dangling links come back missing: true)
     AND backlinks — every concept that cites this one — so the graph walks both ways.
 
-    Returns {path, content, meta} plus links + backlinks when depth=1.
+    The result carries `hash` (sha256 of the content). For a safe concurrent edit, pass it
+    back as kb_write's `base_hash` so a conflicting write between your read and write is
+    rejected instead of silently lost.
+
+    Returns {path, content, meta, hash} plus links + backlinks when depth=1.
     """
     return await store.kb_read(path, depth)
 
 
 @mcp.tool()
-async def kb_write(path: str, content: str, message: str, description: str = "") -> dict[str, Any]:
+async def kb_write(
+    path: str,
+    content: str,
+    message: str,
+    description: str = "",
+    base_hash: str = "",
+    session: str = "",
+) -> dict[str, Any]:
     """Create or update a concept. Call IMMEDIATELY when something durable is settled
     in conversation — a decision, spec, runbook, person note — don't batch to session
     end. If the user corrects stored knowledge mid-session, update the concept then and
@@ -218,11 +229,16 @@ async def kb_write(path: str, content: str, message: str, description: str = "")
     edge walkable from kb_read depth=1 — never leave a superseded decision looking current.
     `message` is the git commit
     message. If the write fails on a conflict, re-read the file, merge intent
-    manually, and retry — never overwrite blind.
+    manually, and retry — never overwrite blind. For safe concurrent edits in a
+    multi-session workspace, pass kb_read's returned `hash` as `base_hash`: the write is
+    then REJECTED (nothing overwritten) if the file changed on disk since you read it, so a
+    conflicting concurrent write can't be silently lost — re-read, merge, retry. Pass
+    `session` (this session's id) so a foreign kb_claim on the path surfaces a heads-up
+    warning that you may be colliding.
 
     Returns {path, created, no_change, sha, pushed, warnings, indexes_updated, superseded}.
     """
-    return await store.kb_write(path, content, message, description)
+    return await store.kb_write(path, content, message, description, base_hash, session)
 
 
 @mcp.tool()
@@ -233,6 +249,7 @@ async def kb_edit(
     find: str | None = None,
     section: str | None = None,
     occurrence: int | str = 1,
+    session: str = "",
 ) -> dict[str, Any]:
     """Surgically edit part of a concept without rewriting the whole file — append/prepend/
     find_replace/replace_section/insert; body only, use kb_write for frontmatter or new
@@ -251,11 +268,12 @@ async def kb_edit(
     The frontmatter fence is never touched — an edit whose anchor lives in the frontmatter
     is refused with a pointer to kb_write. index.md, log.md and messages/ are not editable
     here (same rules as kb_write). The concept must already exist; create new ones with
-    kb_write.
+    kb_write. Pass `session` (this session's id) so a foreign kb_claim on the path surfaces
+    a heads-up warning that you may be colliding.
 
     Returns {path, sha, pushed, operation, warnings}.
     """
-    return await store.kb_edit(path, operation, content, find, section, occurrence)
+    return await store.kb_edit(path, operation, content, find, section, occurrence, session)
 
 
 @mcp.tool()
@@ -391,6 +409,7 @@ async def kb_thread_post(
     close: bool = False,
     topic: str = "",
     refs: list[str] | None = None,
+    allow_secrets: bool = False,
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -412,9 +431,13 @@ async def kb_thread_post(
     final one and further posts are refused. The user can run /loop to drive the polling
     hands-free.
 
-    Returns {thread, seq, status, participants, posted, pushed}.
+    The message is scanned for likely secrets before it commits — threads are private but
+    written to GIT HISTORY permanently — and refused if any are found (pass allow_secrets=True
+    to override a placeholder). A `refs` path that doesn't exist is warned about, not blocked.
+
+    Returns {thread, seq, status, participants, posted, pushed, warnings}.
     """
-    return await store.kb_thread_post(thread, sender, message, close, topic, refs)
+    return await store.kb_thread_post(thread, sender, message, close, topic, refs, allow_secrets)
 
 
 @mcp.tool()
@@ -483,7 +506,8 @@ async def kb_roster(active_within_min: int = 15) -> list[dict[str, Any]]:
     projects, and what each is working on (repo/branch/task) — the 'who's online' board.
     Call when the user asks what's running, before handing off work, or to coordinate.
     Sessions that haven't heartbeat within `active_within_min` (default 15) are filtered
-    out (their records are kept, not deleted). Most-recently-updated first.
+    out (their records are kept, not deleted); pass active_within_min<=0 to disable the
+    filter and see every recorded session. Most-recently-updated first.
 
     Returns [{session, name, status, working_on, repo, branch, repo_remote, cwd, project,
     host, updated, age_min}].
@@ -502,6 +526,7 @@ async def kb_handoff(
     refs: list[str] | None = None,
     to: str = "any",
     room: str = "",
+    allow_secrets: bool = False,
 ) -> dict[str, Any]:
     """Hand your current work to another session (or leave it for whoever picks it up):
     captures repo / branch / state / next-steps / refs so they resume exactly where you left
@@ -512,10 +537,15 @@ async def kb_handoff(
     (default 'any'). Pass `room` (a kebab-case thread id) to ALSO drop a pointer into that
     room so a watching session is notified immediately.
 
-    Returns {path, sha, pushed}.
+    summary and next_steps are scanned for likely secrets before the record commits —
+    handoffs are private but written to GIT HISTORY permanently — and refused if any are found
+    (pass allow_secrets=True to override a placeholder). `notified` reports whether the room
+    pointer posted; `room_error` carries the reason when it didn't.
+
+    Returns {path, sha, pushed, notified, room_error?}.
     """
     return await store.kb_handoff(
-        from_session, summary, repo, branch, state, next_steps, refs, to, room
+        from_session, summary, repo, branch, state, next_steps, refs, to, room, allow_secrets
     )
 
 
@@ -531,6 +561,44 @@ async def kb_workspace() -> dict[str, Any]:
     created, status}]}.
     """
     return await store.kb_workspace()
+
+
+@mcp.tool()
+async def kb_claim(session: str, path: str, note: str = "") -> dict[str, Any]:
+    """Claim a concept/file/task in a multi-session workspace so OTHER sessions know you're
+    working on it and don't clobber you — an ADVISORY lock (it never blocks anyone). Call it
+    BEFORE you start editing a file or concept when more than one session is live; release it
+    when done. `session` is your session id; `path` is the repo-relative concept path you're
+    editing (e.g. 'projects/alt/specs/api.md') or a short free-text task string. One record
+    per path, overwritten on re-claim. If a DIFFERENT session already holds a live claim on it,
+    this still succeeds but returns already_claimed_by so you can warn the user and coordinate
+    (kb_thread_post) rather than collide. Claims older than 30 min are treated as stale.
+
+    Returns {path, session, claimed_at, already_claimed_by?}.
+    """
+    return await store.kb_claim(session, path, note)
+
+
+@mcp.tool()
+async def kb_release(session: str, path: str) -> dict[str, Any]:
+    """Release your advisory claim on a path once you're done editing it, so other sessions
+    know it's free. Only removes the claim if YOUR session holds it (otherwise a no-op that
+    reports who does). `session` is your session id; `path` is the same path you claimed.
+
+    Returns {path, released, note?}.
+    """
+    return await store.kb_release(session, path)
+
+
+@mcp.tool()
+async def kb_claims() -> list[dict[str, Any]]:
+    """List the current advisory claims across all sessions — what each session has flagged
+    as theirs to work on. Use before starting on a file, or to see if a path you want is
+    already claimed. Active (claimed within 30 min) first, then stale.
+
+    Returns [{path, session, note, claimed_at, age_min, stale}].
+    """
+    return await store.kb_claims()
 
 
 @mcp.tool()

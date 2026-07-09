@@ -9,6 +9,7 @@ threads via anyio.to_thread. Every tool-visible path is repo-relative POSIX.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import posixpath
 import re
@@ -52,7 +53,10 @@ _ARCHIVE_INDEX = "# Archive\n\nRead messages land here.\n"
 _LINK_CAP = 50
 _SLUG_MAX = 60
 _THREAD_ID_RE = re.compile(r"^[a-z0-9-]+$")
+_ALNUM_RE = re.compile(r"[a-z0-9]")
 _PRESENCE_STATUSES = ("working", "idle", "blocked", "available", "done")
+# A claim older than this (minutes) is stale — ignored by the roster/warnings, like presence.
+_CLAIM_TTL_MIN = 30
 
 
 def _utcnow() -> datetime:
@@ -64,6 +68,18 @@ def _slug(value: str, fallback: str = "") -> str:
     capped. Returns ``fallback`` when nothing slug-able survives."""
     s = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")[:_SLUG_MAX].strip("-")
     return s or fallback
+
+
+def _has_alnum(value: str) -> bool:
+    """True when ``value`` contains at least one [a-z0-9] — the minimum for a usable id.
+    Rejects empty / all-hyphen / all-punctuation ids that would slug to nothing."""
+    return bool(_ALNUM_RE.search((value or "").lower()))
+
+
+def _sha256(text: str) -> str:
+    """Content hash of a concept's on-disk text — the token kb_read hands back and kb_write
+    checks as base_hash for optimistic-concurrency (lost-update) safety."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _parse_ts(value: str) -> datetime | None:
@@ -261,6 +277,20 @@ def _scan_secrets(body: str) -> list[tuple[str, int]]:
             if rx.search(line):
                 hits.append((kind, lineno))
     return hits
+
+
+def _secret_refusal(what: str, findings: list[tuple[str, int]], override: str) -> str:
+    """Teaching refusal for a secret found in git-permanent text (thread post / handoff).
+    Names the KINDS and line numbers, never the value, and points at the override flag."""
+    kinds = sorted({kind for kind, _ in findings})
+    lines = sorted({ln for _, ln in findings})
+    return (
+        f"Refusing to write this {what}: it contains what look like secrets "
+        f"({', '.join(kinds)}) on line(s) {', '.join(map(str, lines))}. Threads and handoffs "
+        "are private but COMMITTED TO GIT HISTORY permanently — a key here stays recoverable "
+        f"forever, even after deletion. Remove the secret(s), or pass {override} to override "
+        "deliberately (e.g. a placeholder)."
+    )
 
 
 # ------------------------------------------------------------------ surgical body edits (kb_edit)
@@ -901,8 +931,10 @@ class KBStore:
         return out
 
     async def kb_read(self, path: str, depth: int = 0) -> dict[str, Any]:
-        """Read one file: {path, content, meta}. depth=1 adds links — the frontmatter of
-        every relative .md link target (or {missing: true}), capped at 50."""
+        """Read one file: {path, content, meta, hash}. depth=1 adds links — the frontmatter of
+        every relative .md link target (or {missing: true}), capped at 50. `hash` is the
+        sha256 of the returned content: pass it back as kb_write's base_hash so a conflicting
+        concurrent edit is rejected instead of silently lost."""
         if depth not in (0, 1):
             raise KBError("depth must be 0 or 1.")
         await self._refresh()
@@ -923,7 +955,12 @@ class KBStore:
             content = _read_text_retry(abs_path)
         except UnicodeDecodeError as exc:
             raise KBError(f"'{rel}' is not a UTF-8 text file — kb_read serves text only.") from exc
-        result: dict[str, Any] = {"path": rel, "content": content, "meta": read_meta(abs_path)}
+        result: dict[str, Any] = {
+            "path": rel,
+            "content": content,
+            "meta": read_meta(abs_path),
+            "hash": _sha256(content),
+        }
         if depth == 1:
             links = self._neighbor_links(rel, content)
             self._add_supersede_links(rel, result["meta"], links)
@@ -1134,10 +1171,21 @@ class KBStore:
     # ------------------------------------------------------------------ writes
 
     async def kb_write(
-        self, path: str, content: str, message: str, description: str = ""
+        self,
+        path: str,
+        content: str,
+        message: str,
+        description: str = "",
+        base_hash: str = "",
+        session: str = "",
     ) -> dict[str, Any]:
         """Create or update one concept file; on create the parent index chain is updated.
-        Returns {path, created, no_change, sha, pushed, warnings, indexes_updated}."""
+        Returns {path, created, no_change, sha, pushed, warnings, indexes_updated}.
+
+        base_hash: for safe concurrent edits, pass kb_read's returned `hash` — the write is
+        rejected (nothing overwritten) if the file changed on disk since you read it. session:
+        this session's id; when set, a foreign active kb_claim on the path adds a heads-up
+        warning."""
         abs_path, rel = self._resolve(path)
         name = posixpath.basename(rel)
         if not rel.endswith(".md"):
@@ -1219,7 +1267,19 @@ class KBStore:
                     state["drift"] = (drift_doc.body, [str(s) for s in sources])
             created = not abs_path.exists()
             state["created"] = created
-            main_unchanged = not created and _read_text_retry(abs_path) == normalized
+            current_text = None if created else _read_text_retry(abs_path)
+            # Optimistic-concurrency backstop: if the caller passed the hash they read, refuse
+            # to overwrite blind when the on-disk content no longer matches it (another session
+            # edited it in between). Empty base_hash keeps today's last-writer-wins behavior.
+            if base_hash:
+                disk_hash = _sha256(current_text if current_text is not None else "")
+                if disk_hash != base_hash:
+                    raise KBError(
+                        "This concept changed since you read it (another session may have "
+                        "edited it). Re-read it (kb_read) and merge your change into the current "
+                        "content, then retry — nothing was overwritten."
+                    )
+            main_unchanged = not created and current_text == normalized
             if main_unchanged and not superseded:
                 state["no_change"] = True
                 return []
@@ -1257,6 +1317,12 @@ class KBStore:
             )
             if drift_warning:
                 state["warnings"].append(drift_warning)
+        # Cooperative collision signal: a live foreign claim on this path means another
+        # session flagged it as theirs. Never blocks — just a heads-up on the result.
+        if not state["no_change"]:
+            claim_warn = await to_thread.run_sync(lambda: self._claim_collision_warning(rel, session))
+            if claim_warn:
+                state["warnings"].append(claim_warn)
         return {
             "path": rel,
             "created": state["created"] and not state["no_change"],
@@ -1412,10 +1478,12 @@ class KBStore:
         find: str | None = None,
         section: str | None = None,
         occurrence: int | str = 1,
+        session: str = "",
     ) -> dict[str, Any]:
         """Surgically edit ONE concept's body without rewriting the whole file. Operations:
         append, prepend, find_replace, replace_section, insert_after, insert_before. Never
-        touches the frontmatter fence. Returns {path, sha, pushed, operation, warnings}."""
+        touches the frontmatter fence. Returns {path, sha, pushed, operation, warnings}.
+        session: when set, a foreign active kb_claim on the path adds a heads-up warning."""
         abs_path, rel = self._resolve(path)
         name = posixpath.basename(rel)
         if operation not in _EDIT_OPERATIONS:
@@ -1464,6 +1532,9 @@ class KBStore:
         self._log_mutation("kb_edit", [rel], sha, pushed)
         if not state["no_change"]:
             self._schedule_index(upserts=[rel])
+            claim_warn = await to_thread.run_sync(lambda: self._claim_collision_warning(rel, session))
+            if claim_warn:
+                state["warnings"].append(claim_warn)
         return {
             "path": rel,
             "sha": sha,
@@ -1749,11 +1820,11 @@ class KBStore:
     def _thread_dir(self, thread: str) -> tuple[str, str]:
         """Validate a kebab thread id and return (thread-id, 'threads/<id>' rel dir)."""
         tid = (thread or "").strip()
-        if not tid or not _THREAD_ID_RE.fullmatch(tid):
+        if not tid or not _THREAD_ID_RE.fullmatch(tid) or not _has_alnum(tid):
             raise KBError(
                 f"Invalid thread id {thread!r} — thread ids are kebab-case (lowercase "
-                "letters, digits, hyphens), e.g. 'deploy-handoff'. Call kb_threads to list "
-                "the open threads."
+                "letters, digits, hyphens) with at least one letter or digit, e.g. "
+                "'deploy-handoff'. Call kb_threads to list the open threads."
             )
         return tid, f"threads/{tid}"
 
@@ -1834,21 +1905,40 @@ class KBStore:
         close: bool = False,
         topic: str = "",
         refs: list[str] | None = None,
+        allow_secrets: bool = False,
     ) -> dict[str, Any]:
         """Post one turn to a bundle-root cross-session thread (auto-creates it on first
         post). Appends a turn file, adds the sender to participants, regenerates the
         thread.md transcript, and — when close=True — marks the thread closed with this as
         the final turn. Optional `refs` are repo-relative concept/artifact paths shared into
         the room: they land in the turn's refs: frontmatter and render as a 'shared:' line in
-        the transcript. To share a CODE snippet, put a fenced code block in `message` — it
-        renders verbatim. Returns {thread, seq, status, participants, posted, pushed}."""
+        the transcript (a ref that doesn't exist is warned, not blocked). To share a CODE
+        snippet, put a fenced code block in `message` — it renders verbatim. The message is
+        scanned for secrets before it is committed (threads are private but git-permanent);
+        pass allow_secrets=True to override. Returns {thread, seq, status, participants,
+        posted, pushed, warnings}."""
         tid, tdir_rel = self._thread_dir(thread)
         if not sender or not sender.strip():
             raise KBError("A thread post needs a sender — the name of the session posting (e.g. 'session-a').")
         if not message or not message.strip():
             raise KBError("Empty thread message — pass what you want the other session to read.")
+        if not allow_secrets:
+            findings = _scan_secrets(message)
+            if findings:
+                raise KBError(_secret_refusal("thread message", findings, "allow_secrets=True"))
         sender = sender.strip()
         refs_list = [str(r).strip() for r in (refs or []) if str(r).strip()]
+        # Warn (never block) on a ref that doesn't resolve to an existing file — a shared
+        # path the other session couldn't open is a coordination bug worth surfacing.
+        warnings: list[str] = []
+        for r in refs_list:
+            try:
+                abs_ref, _rr = self._resolve(r)
+            except KBError:
+                warnings.append(f"shared ref {r!r} is not a valid repo path — the other session can't open it.")
+                continue
+            if not abs_ref.is_file():
+                warnings.append(f"shared ref {r!r} does not exist (yet) — the other session can't open it.")
         sender_slug = re.sub(r"[^a-z0-9]+", "-", sender.lower()).strip("-")[:_SLUG_MAX].strip("-") or "anon"
         clean = message.replace("\r\n", "\n").replace("\r", "\n").strip()
         now = _utcnow()
@@ -1882,7 +1972,9 @@ class KBStore:
                 }
                 created = True
 
-            seq = len(existing)
+            # Next sequence = max seen + 1, NOT len(existing): robust to a skipped/corrupt
+            # turn file (which _read_turns drops) so seq numbers never collide or rewind.
+            seq = (max(t["seq"] for t in existing) + 1) if existing else 0
             participants = list(tmeta.get("participants") or [])
             if sender not in participants:
                 participants.append(sender)
@@ -1947,6 +2039,7 @@ class KBStore:
             "participants": state["participants"],
             "posted": timestamp,
             "pushed": pushed,
+            "warnings": warnings,
         }
 
     async def kb_thread_read(self, thread: str, since: str | None = None) -> dict[str, Any]:
@@ -2100,7 +2193,8 @@ class KBStore:
     async def kb_roster(self, active_within_min: int = 15) -> list[dict[str, Any]]:
         """List sessions active within the window (default 15 min), most-recently-updated
         first — the 'who's online' board across all of Hiren's PCs and projects. Stale
-        records are filtered out (not deleted). Returns [{session, name, status, working_on,
+        records are filtered out (not deleted); pass active_within_min<=0 to disable the
+        filter and list every record. Returns [{session, name, status, working_on,
         repo, branch, repo_remote, cwd, project, host, updated, age_min}]."""
         await self._refresh()
         return await to_thread.run_sync(lambda: self._presence_records_sync(active_within_min))
@@ -2108,7 +2202,8 @@ class KBStore:
     def _presence_records_sync(self, active_within_min: int | None) -> list[dict[str, Any]]:
         """Every presence record, newest-updated first, TTL-filtered. age_min is minutes
         since `updated` (None when the timestamp is missing/unparseable). A record with an
-        unusable timestamp is treated as stale and excluded when a window is set."""
+        unusable timestamp is treated as stale and excluded when a window is set. A window
+        <= 0 (or None) means NO filter — every record, stale or not, is returned."""
         pdir = self.root / "workspace" / "presence"
         out: list[dict[str, Any]] = []
         if not pdir.is_dir():
@@ -2123,7 +2218,7 @@ class KBStore:
             updated = str(meta.get("updated") or "")
             dt = _parse_ts(updated)
             age_min = round((now - dt).total_seconds() / 60.0, 1) if dt is not None else None
-            if active_within_min is not None and active_within_min >= 0:
+            if active_within_min is not None and active_within_min > 0:
                 if age_min is None or age_min > active_within_min:
                     continue
             out.append(
@@ -2156,18 +2251,26 @@ class KBStore:
         refs: list[str] | None = None,
         to: str = "any",
         room: str = "",
+        allow_secrets: bool = False,
     ) -> dict[str, Any]:
         """Write a structured, append-only handoff record (repo/branch/state/next-steps/refs)
         so another session resumes exactly where this one left off. When `room` is given, ALSO
-        posts a short pointer into that thread so a watching session is notified. Returns
-        {path, sha, pushed}."""
+        posts a short pointer into that thread so a watching session is notified. summary and
+        next_steps are scanned for secrets before the record is committed (handoffs are private
+        but git-permanent); pass allow_secrets=True to override. Returns {path, sha, pushed,
+        notified, room_error?}."""
         frm = (from_session or "").strip()
-        if not frm:
+        if not frm or not _has_alnum(frm):
             raise KBError(
-                "A handoff needs from_session — the name of the session handing off (e.g. 'session-a')."
+                "A handoff needs from_session — the name of the session handing off, with at "
+                "least one letter or digit (e.g. 'session-a')."
             )
         if not summary or not summary.strip():
             raise KBError("Empty handoff summary — say what work is being handed off.")
+        if not allow_secrets:
+            findings = _scan_secrets(summary) + _scan_secrets(next_steps)
+            if findings:
+                raise KBError(_secret_refusal("handoff", findings, "allow_secrets=True"))
         room_id = (room or "").strip()
         if room_id and not _THREAD_ID_RE.fullmatch(room_id):
             # Validate up front so a bad room id can't leave a committed handoff whose
@@ -2220,20 +2323,29 @@ class KBStore:
         self._log_mutation("kb_handoff", [result["rel"]], sha, pushed)
         self._schedule_index(upserts=[result["rel"]])
 
+        notified = False
+        room_error = ""
         if room_id:
             # Notify a watching session. The handoff already committed; a room-post failure
-            # (e.g. the room is closed) must not fail the handoff — log and move on.
+            # (e.g. the room is closed) must not fail the handoff — log, report, move on.
             pointer = f"Handoff from {frm}: {summary_clean}"
             if next_steps.strip():
                 pointer += f"\n\n**Next:** {next_steps.strip()}"
             try:
+                # allow_secrets carries through: summary/next_steps already passed the scan
+                # above, so the pointer built from them won't be spuriously refused.
                 await self.kb_thread_post(
-                    room_id, frm, pointer, refs=[result["rel"], *refs_list]
+                    room_id, frm, pointer, refs=[result["rel"], *refs_list], allow_secrets=True
                 )
-            except KBError:
+                notified = True
+            except KBError as exc:
+                room_error = str(exc)
                 log.warning("kb_handoff: could not post pointer into room %r", room_id, exc_info=True)
 
-        return {"path": result["rel"], "sha": sha, "pushed": pushed}
+        out: dict[str, Any] = {"path": result["rel"], "sha": sha, "pushed": pushed, "notified": notified}
+        if room_error:
+            out["room_error"] = room_error
+        return out
 
     @staticmethod
     def _render_handoff(meta: dict[str, Any]) -> str:
@@ -2308,6 +2420,179 @@ class KBStore:
             }
 
         return await to_thread.run_sync(_snapshot)
+
+    # ------------------------------------------------------------------ claims (advisory locks)
+
+    def _claim_slug(self, path: str) -> str:
+        """Filename stem for a claim on ``path`` — one file per claimed path/task, upserted."""
+        return _slug(path, "claim")
+
+    async def kb_claim(self, session: str, path: str, note: str = "") -> dict[str, Any]:
+        """Claim a concept/file/task so other sessions know you're working on it (advisory).
+        Upserts one record per path. If a live claim by a DIFFERENT session already exists,
+        still succeeds but returns already_claimed_by. Returns {path, session, claimed_at,
+        already_claimed_by?}."""
+        sid = _slug(session)
+        if not sid:
+            raise KBError(
+                "A claim needs a session id — a short kebab-case handle for THIS session, "
+                "e.g. 'pc1-claude-code'."
+            )
+        p = (path or "").strip().replace("\\", "/")
+        if not p or not _has_alnum(p):
+            raise KBError(
+                "A claim needs a path or task with at least one letter/digit — pass the "
+                "repo-relative concept path you're editing (e.g. 'projects/alt/specs/api.md') "
+                "or a short task string."
+            )
+        slug = self._claim_slug(p)
+        now = _utcnow()
+        claimed_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        clean_note = (note or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        state: dict[str, Any] = {}
+
+        def _mutate() -> list[str]:
+            rel = f"workspace/claims/{slug}.md"
+            abs_claim = self.root / rel
+            # A live foreign claim on this path? Report it (advisory) before we upsert ours.
+            if abs_claim.is_file():
+                prior = read_meta(abs_claim)
+                if str(prior.get("type") or "") == "claim":
+                    prior_sess = str(prior.get("session") or "")
+                    dt = _parse_ts(str(prior.get("claimed_at") or ""))
+                    age = (now - dt).total_seconds() / 60.0 if dt is not None else None
+                    if age is not None and age <= _CLAIM_TTL_MIN and prior_sess and prior_sess != sid:
+                        state["already_claimed_by"] = prior_sess
+            title = f"Claim: {p}"
+            desc = (clean_note or p)[: _SLUG_MAX * 3]
+            meta: dict[str, Any] = {
+                "type": "claim",
+                "title": title,
+                "description": desc,
+                "path": p,
+                "session": sid,
+                "note": clean_note,
+                "claimed_at": claimed_at,
+            }
+            body = f"{clean_note}\n" if clean_note else ""
+            _write_text(abs_claim, serialize(Doc(meta=meta, body=body)))
+            state["rel"] = rel
+            paths = [rel]
+            paths.extend(ensure_indexed(self.root, rel, title, desc))
+            return paths
+
+        sha, pushed = await self._locked_commit(_mutate, f"workspace: claim {slug}")
+        self._log_mutation("kb_claim", [state["rel"]], sha, pushed)
+        out: dict[str, Any] = {"path": p, "session": sid, "claimed_at": claimed_at}
+        if "already_claimed_by" in state:
+            out["already_claimed_by"] = state["already_claimed_by"]
+        return out
+
+    async def kb_release(self, session: str, path: str) -> dict[str, Any]:
+        """Release your claim on a path (only if you own it; else a no-op with a note).
+        Returns {path, released, note?}."""
+        sid = _slug(session)
+        if not sid:
+            raise KBError("A release needs the session id that made the claim.")
+        p = (path or "").strip().replace("\\", "/")
+        if not p or not _has_alnum(p):
+            raise KBError("A release needs the claimed path/task string.")
+        slug = self._claim_slug(p)
+        state: dict[str, Any] = {"released": False, "note": ""}
+
+        def _mutate() -> list[str]:
+            rel = f"workspace/claims/{slug}.md"
+            abs_claim = self.root / rel
+            if not abs_claim.is_file():
+                state["note"] = "no active claim on that path — nothing to release"
+                return []
+            meta = read_meta(abs_claim)
+            owner = str(meta.get("session") or "")
+            if owner and owner != sid:
+                state["note"] = f"claim is held by {owner}, not {sid} — left in place"
+                return []
+            index_rel = _remove_index_bullet(self.root, rel)
+            abs_claim.unlink()
+            state["released"] = True
+            paths = [rel]
+            if index_rel:
+                paths.append(index_rel)
+            return paths
+
+        sha, pushed = await self._locked_commit(_mutate, f"workspace: release {slug}")
+        if state["released"]:
+            self._log_mutation("kb_release", [f"workspace/claims/{slug}.md"], sha, pushed)
+        out: dict[str, Any] = {"path": p, "released": state["released"]}
+        if state["note"]:
+            out["note"] = state["note"]
+        return out
+
+    async def kb_claims(self) -> list[dict[str, Any]]:
+        """List current claims (active first, then stale), so a session can see what other
+        sessions are already working on. Returns [{path, session, note, claimed_at, age_min,
+        stale}]."""
+        await self._refresh()
+        return await to_thread.run_sync(self._claims_sync)
+
+    def _claims_sync(self) -> list[dict[str, Any]]:
+        """Every claim record; age_min is minutes since claimed_at (None when unparseable),
+        stale True past the TTL. Active (non-stale) first, then newest-claimed first."""
+        cdir = self.root / "workspace" / "claims"
+        out: list[dict[str, Any]] = []
+        if not cdir.is_dir():
+            return out
+        now = _utcnow()
+        for f in sorted(cdir.glob("*.md")):
+            if f.name == "index.md":
+                continue
+            meta = read_meta(f)
+            if str(meta.get("type") or "") != "claim":
+                continue
+            claimed_at = str(meta.get("claimed_at") or "")
+            dt = _parse_ts(claimed_at)
+            age_min = round((now - dt).total_seconds() / 60.0, 1) if dt is not None else None
+            stale = age_min is None or age_min > _CLAIM_TTL_MIN
+            out.append(
+                {
+                    "path": str(meta.get("path") or ""),
+                    "session": str(meta.get("session") or ""),
+                    "note": str(meta.get("note") or ""),
+                    "claimed_at": claimed_at,
+                    "age_min": age_min,
+                    "stale": stale,
+                }
+            )
+        out.sort(key=lambda c: str(c.get("claimed_at") or ""), reverse=True)
+        out.sort(key=lambda c: bool(c.get("stale")))  # active (stale=False) first, stable
+        return out
+
+    def _claim_collision_warning(self, rel: str, writer: str) -> str | None:
+        """Heads-up string when ``rel`` carries a live claim by a session other than
+        ``writer`` (advisory — never blocks a write). None when clear. An empty writer means
+        the caller didn't identify itself, so any live claim is flagged."""
+        slug = self._claim_slug(rel)
+        if not slug:
+            return None
+        f = self.root / "workspace" / "claims" / f"{slug}.md"
+        if not f.is_file():
+            return None
+        meta = read_meta(f)
+        if str(meta.get("type") or "") != "claim":
+            return None
+        dt = _parse_ts(str(meta.get("claimed_at") or ""))
+        if dt is None:
+            return None
+        age = (_utcnow() - dt).total_seconds() / 60.0
+        if age > _CLAIM_TTL_MIN:
+            return None
+        sess = str(meta.get("session") or "")
+        wid = _slug(writer) if writer else ""
+        if wid and sess == wid:
+            return None
+        return (
+            f"heads up: {sess or 'another session'} claimed this path {int(round(age))}m ago — "
+            "you may be colliding; coordinate in a room (kb_thread_post)."
+        )
 
     # ------------------------------------------------------------------ importers
 

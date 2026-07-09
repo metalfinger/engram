@@ -38,6 +38,9 @@ EXPECTED_TOOLS = frozenset(
         "kb_roster",
         "kb_handoff",
         "kb_workspace",
+        "kb_claim",
+        "kb_release",
+        "kb_claims",
     }
 )
 
