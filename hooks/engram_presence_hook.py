@@ -78,10 +78,12 @@ def main():
 
     # Status vocab must match the server's (working|idle|blocked|available|done);
     # anything else coerces to "working", so write the canonical value directly.
-    if event == "SessionStart":
+    # PostToolUse heartbeats while Claude grinds through long turns (no user prompt
+    # needed); Stop marks the turn done -> available (idling at the desk, still live).
+    if event in ("SessionStart", "UserPromptSubmit", "PostToolUse"):
         status = "working"
-    elif event == "UserPromptSubmit":
-        status = "working"
+    elif event == "Stop":
+        status = "available"
     elif event == "SessionEnd":
         status = "done"
     else:
