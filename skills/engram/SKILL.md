@@ -124,6 +124,10 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   reply from the browser. When a collaboration is blocked on his input, post a turn starting
   `@hiren: <question>` with `wait_for_reply=True` — the office flags the room "needs Hiren"
   and his browser reply comes back as your reply turn. Use it for real decisions, not chatter.
+- **Widgets (claude.ai chats).** `kb_meetings` mounts the meeting-rooms card — Hiren watches
+  live transcripts and replies as himself from desktop or phone. `kb_office` mounts the
+  glanceable live-office card (desks/meetings, watch-only). Call them when he asks about
+  meetings / the office in a claude.ai chat; after a widget mounts, say ONE short line and stop.
 - **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.

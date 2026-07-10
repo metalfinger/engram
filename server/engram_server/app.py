@@ -40,6 +40,7 @@ from engram_server.meetings_widget import (
     register_meetings_widget,
 )
 from engram_server.navigator import navigator_tool_meta, register_navigator
+from engram_server.office_widget import register_office_widget
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server.oauth.store import InMemoryOAuthStore
@@ -925,6 +926,7 @@ if _AUTH_ENABLED:
 register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
+register_office_widget(mcp, settings, store)
 
 
 # ------------------------------------------------------------------ entrypoint

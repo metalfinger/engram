@@ -33,11 +33,13 @@ CURRENT_TOOLS = (
     "kb_presence", "kb_roster", "kb_handoff", "kb_workspace",
     "kb_claim", "kb_release", "kb_claims",
     "kb_meetings", "meetings_state", "meeting_transcript", "meeting_reply",
+    "kb_office", "office_state",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so
 # a resuming session (any PC) learns the current protocol without re-reading the skill.
 CHANGES = (
+    "kb_office: glanceable live-office card in chat (desks/meetings, watch-only)",
     "kb_meetings: watch + reply to live threads from any claude.ai chat (mobile too)",
     "threads: long-poll — use wait_for_reply=True / wait_seconds, never 2-3s polling",
     "kb_load: lite=True for cheap resumes",
