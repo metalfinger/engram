@@ -95,6 +95,20 @@
   #dossier .tlrow .tsum{font-size:12.5px;color:var(--ink);word-break:break-word}
   #dossier .tlrow .tage{font-size:11px;color:var(--ink-soft);margin-top:2px;font-variant-numeric:tabular-nums}
   #dossier .tlempty{color:var(--ink-soft);font-size:12.5px;padding:14px 2px}
+  #dossier .dinfo{padding:10px 16px 2px;display:flex;flex-direction:column;gap:5px}
+  #dossier .irow{display:flex;align-items:baseline;gap:8px;font-size:12px;color:var(--ink);min-width:0}
+  #dossier .irow .ilbl{flex:0 0 auto;color:var(--ink-soft);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;width:56px;padding-top:1px}
+  #dossier .irow .ival{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text}
+  #dossier .irow a.ival{color:#2f6f4a;text-decoration:underline}
+  #dossier .irow .badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;background:#ecdfc4;border:1px solid #d0bd97;color:#7a6a4a}
+  #dossier .irow .dim{color:var(--ink-soft)}
+  #hoverCard{position:absolute;z-index:40;pointer-events:none;max-width:236px;padding:7px 10px;border-radius:9px;
+    background:rgba(28,22,14,.95);color:#f4ecda;font-size:11.5px;line-height:1.36;box-shadow:0 5px 16px rgba(0,0,0,.32);
+    opacity:0;transition:opacity .12s;border:1px solid rgba(184,152,102,.32);white-space:nowrap}
+  #hoverCard.show{opacity:1}
+  #hoverCard .hcname{font-weight:800;font-size:12.5px;display:flex;align-items:center;gap:6px}
+  #hoverCard .hcrow{color:#d8cbaf;margin-top:2px;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+  #hoverCard .hcdot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:0 0 auto}
   .sd{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 
   #help{position:absolute;inset:0;background:rgba(20,25,15,.55);backdrop-filter:blur(2px);z-index:30;
@@ -185,9 +199,11 @@
         <div class="dstat" id="dStat"></div>
         <button class="dclose" id="dClose" title="Close (Esc)">✕</button>
       </div>
+      <div class="dinfo" id="dInfo"></div>
       <div class="chips-row" id="dChips"></div>
       <div class="tl" id="dTl"></div>
     </aside>
+    <div id="hoverCard"></div>
 
     <aside id="meeting" aria-hidden="true">
       <div class="mhead">
@@ -242,9 +258,9 @@ const DEMO=params.has("demo");
    1 lights-off building (charcha — only a recent[] visitor), 2 meetings,
    1 returning session (tower/engram) + 1 done session (metal/notes). */
 const SAMPLE={"now":"2026-07-09T15:10:00Z","sessions":[
- {"session":"361982f9-2a62-4254-a687-339b30aa1833","name":"metal/engram","status":"working","working_on":"living office UI","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"metal","updated":"2026-07-09T15:09:35Z","age_sec":25,"first_seen":"2026-07-09T09:22:00Z","returning":false,"live":true},
+ {"session":"361982f9-2a62-4254-a687-339b30aa1833","name":"metal/engram","status":"working","working_on":"living office UI","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","cwd":"C:/Users/Admin/Documents/code/engram/server/engram_server/explorer","room":"engram","room_label":"engram","host":"metal","updated":"2026-07-09T15:09:35Z","age_sec":25,"first_seen":"2026-07-09T09:22:00Z","returning":false,"live":true},
  {"session":"bb31ff90","name":"tower/engram","status":"available","working_on":"reviewing the office PR","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"tower","updated":"2026-07-09T15:06:30Z","age_sec":210,"first_seen":"2026-07-09T12:00:00Z","returning":true,"live":true},
- {"session":"aa72b1c0","name":"metal/aeos","status":"blocked","working_on":"waiting on API key","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"metal","updated":"2026-07-09T15:07:20Z","age_sec":160,"first_seen":"2026-07-09T13:10:00Z","returning":false,"live":true},
+ {"session":"aa72b1c0","name":"metal/aeos","status":"blocked","working_on":"waiting on API key","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","cwd":"D:/work/aeos-service","room":"aeos","room_label":"aeos","host":"metal","updated":"2026-07-09T15:07:20Z","age_sec":160,"first_seen":"2026-07-09T13:10:00Z","returning":false,"live":true},
  {"session":"cc9012aa","name":"tower/aeos","status":"working","working_on":"scheduler tick","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"tower","updated":"2026-07-09T15:09:52Z","age_sec":8,"first_seen":"2026-07-09T15:09:00Z","returning":false,"live":true},
  {"session":"dd4408bb","name":"lap/metalfinger","status":"working","working_on":"portfolio redesign","repo":"metalfinger.xyz","branch":"main","repo_remote":"","project":"metalfinger","room":"metalfinger","room_label":"metalfinger","host":"lap","updated":"2026-07-09T15:09:20Z","age_sec":40,"first_seen":"2026-07-09T11:30:00Z","returning":false,"live":true},
  {"session":"11aa22bb","name":"dev/aeos","status":"working","working_on":"queue worker","repo":"aeos","branch":"main","project":"aeos","host":"dev","updated":"2026-07-09T15:09:48Z","age_sec":12,"first_seen":"2026-07-09T14:40:00Z","returning":false,"live":true},
@@ -341,6 +357,7 @@ let L={desks:[],confRooms:[],confById:new Map(),lounge:null,
   door:{x:184,y:344},coffee:null,aquarium:null,board:null,
   ground:{x:0,y:0,w:544,h:352},inMeeting:new Set(),queuedThreads:[]};
 let selectedId=null, hoverId=null, firstIngest=true, curSig="", nextBird=0;
+let cat=null;   // the office cat (procedural; naps on the lounge sofa, wanders, visits the longest-working desk)
 let meetingOpen=null, meetingTimer=null, meetingCursor=null, meetingSeen=new Set(), meetingContent=new Set();
 let cameo=null, demoExtra={}, localLastTurn={};
 let nowBase=Date.now(), nowPerf=performance.now(), lastUserInteract=-1e9;
@@ -750,12 +767,35 @@ canvas.addEventListener("pointerup",endPointer);
 canvas.addEventListener("pointercancel",endPointer);
 canvas.addEventListener("wheel",e=>{e.preventDefault();const r=canvas.getBoundingClientRect();lastUserInteract=performance.now();
   zoomAt((e.clientX-r.left)*dpr,(e.clientY-r.top)*dpr, e.deltaY<0?1.12:1/1.12);},{passive:false});
+const hoverCardEl=document.getElementById("hoverCard");
+const CAN_HOVER = !(window.matchMedia && window.matchMedia("(hover: none)").matches);
+function hideHoverCard(){ hoverCardEl.classList.remove("show"); }
+function updateHoverCard(cx,cy){
+  if(!CAN_HOVER || !hoverId || hoverId===selectedId){ hideHoverCard(); return; }
+  const e=entities.get(hoverId), s=e?e.data:null;
+  if(!s){ hideHoverCard(); return; }
+  const rb=s.repo?(esc(s.repo)+(s.branch?"@"+esc(s.branch):"")):"";
+  const mid=(s.project?'🏷 '+esc(s.project):'')+(s.project&&rb?'  ':'')+(rb?'⎇ '+rb:'');
+  hoverCardEl.innerHTML='<div class="hcname"><span class="hcdot" style="background:'+statusColor(s.status||"unknown")+'"></span>'+esc(s.name||shortSid(hoverId))+'</div>'
+    +'<div class="hcrow">'+esc(s.status||"unknown")+(s.working_on?' · '+esc(trunc(s.working_on,38)):'')+'</div>'
+    +(mid?'<div class="hcrow">'+mid+'</div>':'')
+    +'<div class="hcrow">💻 '+esc(s.host||"—")+'</div>';
+  const pad=15, w=hoverCardEl.offsetWidth||200, h=hoverCardEl.offsetHeight||60;
+  let x=cx+pad, y=cy+pad;
+  if(x+w>window.innerWidth-6) x=cx-w-pad;
+  if(y+h>window.innerHeight-6) y=cy-h-pad;
+  hoverCardEl.style.left=Math.max(4,x)+"px"; hoverCardEl.style.top=Math.max(4,y)+"px";
+  hoverCardEl.classList.add("show");
+}
 canvas.addEventListener("mousemove",e=>{
-  if(pointers.size) return; const r=canvas.getBoundingClientRect();
+  if(pointers.size){ hideHoverCard(); return; } const r=canvas.getBoundingClientRect();
   const wx=invX((e.clientX-r.left)*dpr), wy=invY((e.clientY-r.top)*dpr);
   hoverId=pickEntity(wx,wy);
   canvas.style.cursor=hoverId?"pointer":"grab";
+  updateHoverCard(e.clientX,e.clientY);
 });
+canvas.addEventListener("mouseleave",hideHoverCard);
+canvas.addEventListener("pointerdown",hideHoverCard);
 function pickEntity(wx,wy){ let best=null,bd=1e9;
   for(const [,en] of entities){ if(en.alpha<0.3) continue; const dx=Math.abs(wx-en.x);
     if(dx<11 && wy>en.y-30 && wy<en.y+12){ const d=dx+Math.abs(wy-(en.y-8)); if(d<bd){bd=d;best=en;} } }
@@ -765,6 +805,8 @@ function handleClick(e){
   const r=canvas.getBoundingClientRect();
   const px_=(e.clientX-r.left)*dpr, py_=(e.clientY-r.top)*dpr;
   const wx=invX(px_), wy=invY(py_);
+  // the office cat → a quick "meow" bubble, no dossier
+  if(cat && Math.abs(wx-cat.x)<11 && Math.abs(wy-(cat.y-5))<12){ cat.bubble={text:"meow 🐾",born:performance.now(),ttl:2200}; return; }
   const pid=pickEntity(wx,wy); if(pid){ openDossier(pid); return; }
   // an ACTIVE conference room → open its live meeting chat panel + focus it
   for(const cr of L.confRooms){ if(cr.thread && wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoomPanel(cr); openMeeting(cr.thread,true); return; } }
@@ -790,6 +832,7 @@ async function openDossier(sid){
   document.getElementById("dSub").textContent=s?((s.host?s.host+" · ":"")+[s.repo,s.branch].filter(Boolean).join(" · ")+(s.project?" · "+s.project:"")):"";
   const dStat=document.getElementById("dStat");
   dStat.innerHTML='<span class="sd" style="background:'+statusColor(s?s.status:"unknown")+'"></span>'+esc(s?(s.status||"unknown"):"unknown")+(s&&s.working_on?' — '+esc(trunc(s.working_on,48)):'');
+  renderInfoCard(s);
   document.getElementById("dChips").innerHTML='<span class="tag">loading…</span>';
   document.getElementById("dTl").innerHTML='<div class="tlempty">fetching timeline…</div>';
   dossierEl.classList.add("open"); dossierEl.setAttribute("aria-hidden","false");
@@ -798,6 +841,22 @@ async function openDossier(sid){
   else{ try{const r=await fetch(SESSION_URL(sid),{credentials:"same-origin",cache:"no-store"});if(r.ok)dos=await r.json();}catch(_){} if(!dos)dos=demoDossier(sid); }
   if(selectedId!==sid) return;
   renderDossier(dos,e);
+}
+function midTrunc(s,n){ s=String(s||""); if(s.length<=n) return s; const h=Math.ceil((n-1)/2); return s.slice(0,h)+"…"+s.slice(s.length-(n-1-h)); }
+function agoOf(iso,fallbackSec){ let sec=null; if(iso){ const t=Date.parse(iso); if(!isNaN(t)) sec=(serverNow()-t)/1000; } if(sec==null&&fallbackSec!=null) sec=fallbackSec; return sec==null?"—":timeAgo(Math.max(0,sec))+" ago"; }
+function renderInfoCard(s){
+  const el=document.getElementById("dInfo"); if(!s){ el.innerHTML=""; return; }
+  const rows=[];
+  const row=(lbl,valHtml,title)=>rows.push('<div class="irow"><span class="ilbl">'+lbl+'</span><span class="ival"'+(title?' title="'+esc(title)+'"':'')+'>'+valHtml+'</span></div>');
+  row('💻 PC', esc(s.host||'—'));
+  if(s.cwd) row('📁 Folder', esc(midTrunc(s.cwd,36)), s.cwd);
+  row('⎇ Repo', esc(s.repo||'—')+(s.branch?' <span class="dim">@ '+esc(s.branch)+'</span>':''));
+  if(s.repo_remote && /^https?:\/\//i.test(s.repo_remote))
+    rows.push('<div class="irow"><span class="ilbl">GitHub</span><a class="ival" href="'+esc(s.repo_remote)+'" target="_blank" rel="noopener" title="'+esc(s.repo_remote)+'">'+esc(s.repo_remote.replace(/^https?:\/\//i,'').replace(/\.git$/,''))+'</a></div>');
+  else rows.push('<div class="irow"><span class="ilbl">GitHub</span><span class="ival"><span class="badge">local only</span></span></div>');
+  row('🏷 Project', esc(s.project||'—'));
+  row('🕐 Seen', 'first '+esc(agoOf(s.first_seen))+' <span class="dim">·</span> heartbeat '+esc(agoOf(s.updated, s.age_sec)));
+  el.innerHTML=rows.join("");
 }
 function renderDossier(dos,e){
   const chips=[]; const arr=(l,v)=>{if(v&&v.length)chips.push('<span class="tag"><b>'+l+'</b>'+esc(v.join(", "))+'</span>');};
@@ -1025,7 +1084,7 @@ function frame(t){
   const k=1-Math.exp(-dt*0.011);
   cam.x+=(cam.tx-cam.x)*k; cam.y+=(cam.ty-cam.y)*k; cam.zoom+=(cam.tzoom-cam.zoom)*k;
   try{
-    updateEntities(dt); updateParticles(dt);
+    updateEntities(dt); updateCat(dt,performance.now()); updateParticles(dt);
     draw(t); drawMinimap();
   }catch(err){ if(!frame._warned){ frame._warned=true; console.error("frame error (loop continues):", err); } }
   const d=new Date(serverNow());
@@ -1067,6 +1126,88 @@ function updateEntities(dt){
 }
 function onArrive(e){ e.walking=false; if(e.wandering){ e.wandering=false; e.nextWander=performance.now()+60000+Math.random()*60000; } }
 
+/* ---------------- the office cat ---------------- */
+const CAT_FAST=params.has("catfast");   // speeds up the behaviour loop for screenshots
+function initCat(){
+  const sofa=(MF.lounge&&MF.lounge.sofa)||{x:32,y:275,w:32,h:32};
+  const home={x:sofa.x+sofa.w*0.5, y:sofa.y+sofa.h*0.42};
+  cat={x:home.x,y:home.y,tx:home.x,ty:home.y,home,state:"sleep",dest:"sofa",
+    facing:1,frame:0,moving:false,bubble:null,nextChange:performance.now()+(CAT_FAST?1500:14000+Math.random()*12000)};
+}
+function catFreePoint(){   // a spot on the open floor, clear of the desk rects, along the aisle band
+  for(let i=0;i<24;i++){ const x=46+Math.random()*298, y=AISLE_Y-8+Math.random()*56;
+    if(!MF.desks.some(d=>x>d.desk.x-10&&x<d.desk.x+d.desk.w+10&&y>d.desk.y-10&&y<d.desk.y+d.desk.h+10)) return {x,y}; }
+  return {x:180,y:AISLE_Y};
+}
+function catLongestDesk(){   // the working session that's been here longest (oldest first_seen)
+  let best=null,bt=Infinity;
+  for(const d of (L.desks||[])){ if(!d.sid) continue; const e=entities.get(d.sid); if(!e||!e.data||e.data.status!=="working") continue;
+    const ft=Date.parse(e.data.first_seen||""); const k=isNaN(ft)?serverNow():ft; if(k<bt){bt=k;best=d;} }
+  return best;
+}
+function updateCat(dt,now){
+  if(!cat){ if(MF&&MF.lounge) initCat(); else return; }
+  const dwell=f=>now+f*(CAT_FAST?0.12:1);
+  if(cat.moving){
+    const dx=cat.tx-cat.x, dy=cat.ty-cat.y, dist=Math.hypot(dx,dy);
+    const spd=(CAT_FAST?0.10:0.032)*dt;
+    if(dist>spd){ cat.x+=dx/dist*spd; cat.y+=dy/dist*spd; if(Math.abs(dx)>0.25)cat.facing=dx>0?1:-1; cat.frame=Math.floor(now/190)%2; }
+    else{ cat.x=cat.tx; cat.y=cat.ty; cat.moving=false; cat.frame=0;
+      cat.state=(cat.dest==="sofa")?"sleep":"sit";
+      cat.nextChange=dwell(cat.state==="sleep"?(42000+Math.random()*48000):(9000+Math.random()*13000)); }
+  } else if(now>cat.nextChange){
+    if(cat.state==="sleep"){                       // wake → wander, or go sit by the longest-working desk
+      let picked=false;
+      if(Math.random()<0.5){ const d=catLongestDesk(); if(d){ cat.tx=clamp(d.rect.x+d.rect.w+16,46,300); cat.ty=d.rect.y+d.rect.h-4; cat.dest="deskside"; picked=true; } }
+      if(!picked){ const p=catFreePoint(); cat.tx=p.x; cat.ty=p.y; cat.dest="wander"; }
+      cat.moving=true;
+    } else {                                        // sitting out → head home to the sofa
+      cat.tx=cat.home.x; cat.ty=cat.home.y; cat.dest="sofa"; cat.moving=true;
+    }
+    cat.nextChange=now+1e9;   // re-set on arrival
+  }
+  if(cat.bubble && now-cat.bubble.born>cat.bubble.ttl) cat.bubble=null;
+}
+function drawCat(t){
+  if(!cat) return;
+  const x=Math.round(cat.x), y=Math.round(cat.y), d=cat.facing>=0?1:-1;
+  const OLc="#2b2830", C1="#8f8c99", C2="#66647a", C3="#c8c5d0", WH="#e7e4ec";
+  ctx.fillStyle="rgba(20,14,6,.16)"; ctx.beginPath(); ctx.ellipse(sx(cat.x),sy(cat.y+1),5*cam.zoom,1.8*cam.zoom,0,0,6.283); ctx.fill();
+  if(cat.state==="sleep"){
+    // curled loaf, head tucked left, tail wrapping, sleepy z
+    px(x-6,y-4,12,5,OLc); px(x-5,y-3,10,3,C1); px(x-5,y-3,10,1,C3);
+    px(x-2,y-2,7,1,C2);
+    px(x-7,y-5,5,4,OLc); px(x-6,y-4,3,3,C1);                        // tucked head
+    px(x-6,y-6,1,1,OLc); px(x-4,y-6,1,1,OLc);                       // ears
+    px(x-5,y-3,2,1,C2);                                            // closed eye
+    px(x+4,y-2,3,1,OLc); px(x+4,y-2,2,1,C1);                        // tail tip
+    if(Math.floor(t/700)%2){ ctx.fillStyle="#cbd2dd"; ctx.font=Math.max(6,4*cam.zoom)+"px system-ui"; ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.fillText("z",sx(x+5),sy(y-7)); }
+  } else if(cat.moving){
+    // walking: horizontal quadruped, head forward, tail up, 2-frame legs
+    const hx=x+d*4;
+    px(x-4,y-5,9,4,OLc); px(x-3,y-4,7,2,C1); px(x-3,y-4,7,1,C3);    // body
+    px(x-1,y-4,4,1,C2);                                            // stripe
+    px(hx-2,y-6,4,4,OLc); px(hx-1,y-5,2,2,C1);                      // head (front)
+    px(hx-1,y-7,1,1,OLc); px(hx+1,y-7,1,1,OLc);                     // ears
+    px(hx,y-5,1,1,OLc);                                            // eye
+    px(hx-1,y-2,2,1,WH);                                           // white chest
+    px(x-d*4,y-7,2,3,OLc); px(x-d*4,y-7,1,2,C1);                    // tail up (back)
+    const s=cat.frame?1:0;                                         // legs
+    px(x-3+s,y-1,1,2,OLc); px(x-1-s,y-1,1,2,OLc); px(x+1+s,y-1,1,2,OLc); px(x+3-s,y-1,1,2,OLc);
+  } else {
+    // sitting: upright, white chest, curled tail with a slow flick
+    px(x-3,y-6,6,6,OLc); px(x-2,y-5,4,4,C1); px(x-2,y-5,4,1,C3);    // body
+    px(x-2,y-3,4,1,C2);
+    px(x+(d>0?0:-4),y-10,5,4,OLc); px(x+(d>0?1:-3),y-9,3,2,C1);     // head (facing side)
+    px(x+(d>0?0:-4),y-11,1,1,OLc); px(x+(d>0?2:-2),y-11,1,1,OLc);   // ears
+    px(x+(d>0?1:-3),y-9,1,1,OLc);                                  // eye
+    px(x-1,y-4,2,2,WH);                                            // white chest
+    const tf=Math.sin(t*0.005)>0?0:-1;
+    px(x+d*3,y-5+tf,1,4,OLc); px(x+d*3,y-1,2,1,OLc);               // tail curl + flick
+  }
+  if(cat.bubble) drawBubble(cat.x, cat.y-10, cat.bubble.text, "#3a2f24", "cat"+cat.bubble.born);
+}
+
 function draw(t){
   const W=canvas.width,H=canvas.height;
   ctx.imageSmoothingEnabled=false;
@@ -1083,6 +1224,7 @@ function draw(t){
   for(const e of ents){ drawShadow(e); drawCharacter(e,t,lod); }
   // 4. floor FRONT layer (desks/tables/sofa/plants) on top of characters
   drawFloorLayer(FLOOR.front);
+  drawCat(t);   // the office cat rides on top of the furniture (naps on the sofa, wanders the aisle)
   // 5. status screens recoloured onto the baked monitors, empty/asleep room tints, project board
   drawDeskScreens(t);
   drawConfRoomStates(t);
