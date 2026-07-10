@@ -143,11 +143,18 @@ async def kb_projects() -> list[dict[str, Any]]:
 
 
 @mcp.tool(meta=_nav_meta)
-async def kb_load(project: str) -> dict[str, Any]:
+async def kb_load(project: str, lite: bool = False) -> dict[str, Any]:
     """Load a project's working context. Call when the user names a project to work on
     ('load alt', "let's do hyprlocl work"). Returns state + navigation indexes + unread
     inter-session messages — NOT concept bodies; fetch those individually with kb_read
     as needed (navigate, never ingest: a good session touches ~5 files).
+
+    Pass lite=True when RESUMING a project you already know this session (or just loaded) —
+    a token-thrifty view that drops the index_tree and every message body, returning only
+    context_md, the last log entry, an unread COUNT + message titles, active_concepts, and
+    the server manifest. Use the full load (lite=False, the default) only on the FIRST touch
+    of a project, when you actually need the navigation tree and message bodies. Re-loading
+    full when you already have the shape just re-buys those tokens.
 
     Surface unread messages to the user FIRST — they are instructions from a previous
     session, possibly addressed to a surface via their `to` field: 'claude-code' means
@@ -171,7 +178,7 @@ async def kb_load(project: str) -> dict[str, Any]:
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_load(project)
+    return await store.kb_load(project, lite)
 
 
 @mcp.tool()
@@ -410,6 +417,8 @@ async def kb_thread_post(
     topic: str = "",
     refs: list[str] | None = None,
     allow_secrets: bool = False,
+    wait_for_reply: bool = False,
+    wait_seconds: int = 25,
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -419,41 +428,54 @@ async def kb_thread_post(
     'deploy-handoff'); `sender` is this session's name (e.g. 'session-a') so the other side
     knows who spoke.
 
+    PREFER wait_for_reply=True (with wait_seconds=25) over posting then polling — it makes
+    ONE tool call = post + await the answer: the server holds the call open and long-polls
+    for the first turn from a DIFFERENT sender (or a close), returning it as `reply` (or
+    `reply: null` + `waited: true` on timeout). Every separate kb_thread_read poll costs the
+    user tokens (each result lands in the conversation); long-poll is FREE — it sleeps
+    server-side. Loop this one call to hold a whole conversation at ~1/10th the tool calls.
+
     Share concepts/artifacts INTO the room with `refs` — a list of repo-relative paths (e.g.
     ['projects/alt/specs/api.md']); they attach to the turn and show as a 'shared:' line the
     other session can kb_read. To share a CODE snippet, drop a fenced ``` code block ``` into
     `message` — it renders verbatim in the transcript, no special param needed.
 
-    After posting, POLL with kb_thread_read(since=cursor) every couple of seconds until a
-    new turn from a DIFFERENT sender appears or status is 'closed', then reply or stop —
-    reads are cheap local file reads (no git pull), so tight ~2-3s polling is fine. Set
-    close=True to END the thread — that is the agreed stop signal; the turn you post is the
-    final one and further posts are refused. The user can run /loop to drive the polling
-    hands-free.
+    Set close=True to END the thread — that is the agreed stop signal; the turn you post is
+    the final one and further posts are refused. If you are NOT using wait_for_reply, poll
+    with kb_thread_read(since=cursor, wait_seconds=25) — its own long-poll is likewise free,
+    far cheaper than tight 2-3s polling. The user can run /loop to drive it hands-free.
 
     The message is scanned for likely secrets before it commits — threads are private but
     written to GIT HISTORY permanently — and refused if any are found (pass allow_secrets=True
     to override a placeholder). A `refs` path that doesn't exist is warned about, not blocked.
 
-    Returns {thread, seq, status, participants, posted, pushed, warnings}.
+    Returns {thread, seq, status, participants, posted, pushed, warnings} plus {reply, waited?}
+    when wait_for_reply=True.
     """
-    return await store.kb_thread_post(thread, sender, message, close, topic, refs, allow_secrets)
+    return await store.kb_thread_post(
+        thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
+    )
 
 
 @mcp.tool()
-async def kb_thread_read(thread: str, since: str | None = None) -> dict[str, Any]:
-    """Poll a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
-    Call it repeatedly with since=cursor from the prior read — every couple of seconds
-    (~2-3s) — until a new turn from ANOTHER sender arrives or status == 'closed', then act.
-    This read is instant (a local file read, no git pull), so poll tightly. `since` is a
-    cursor (the last timestamp you saw); the response's `cursor` is the newest turn's
-    timestamp — pass it as the next `since`. A thread that was never created returns
-    {status: 'none', turns: []} (not an error — a joiner may read before the opener posts).
+async def kb_thread_read(thread: str, since: str | None = None, wait_seconds: int = 0) -> dict[str, Any]:
+    """Read a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
+    PREFER wait_seconds=25 over tight polling: it long-polls SERVER-SIDE and returns the
+    instant a new turn from another sender arrives (or the thread closes), or empty at
+    timeout. One waiting call replaces a whole loop of reads — and each separate poll costs
+    the user tokens (every result lands in the conversation), while the long-poll wait is
+    FREE (it sleeps on the server). Loop this one call to keep waiting.
+
+    ALWAYS pass the previous read's `cursor` as `since` — it returns only turns AFTER that
+    point. Re-reading with no cursor re-buys every old turn in tokens on every poll. The
+    response's `cursor` is the newest turn's timestamp; feed it back as the next `since`.
+    A thread that was never created returns {status: 'none', turns: []} (not an error — a
+    joiner may read before the opener posts), and long-poll keeps waiting through it.
 
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?}.
     """
-    return await store.kb_thread_read(thread, since)
+    return await store.kb_thread_read(thread, since, wait_seconds)
 
 
 @mcp.tool()

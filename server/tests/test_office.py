@@ -159,8 +159,9 @@ def test_office_json_shape_and_seeded_session(settings: Settings) -> None:
     resp = _client(_open(settings)).get("/brain/api/office.json")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(("now", "sessions", "threads", "activity")) <= set(body)
+    assert set(("now", "sessions", "recent", "rooms", "threads", "activity")) <= set(body)
     assert isinstance(body["sessions"], list)
+    assert isinstance(body["recent"], list)
     row = next(s for s in body["sessions"] if s["session"] == "alice-cc")
     assert row["name"] == "Alice-CC"
     assert row["status"] == "working"
@@ -388,6 +389,61 @@ def test_new_hire_is_not_returning(settings: Settings) -> None:
     row = next(s for s in body["sessions"] if s["session"] == "fresh-hire")
     assert row["returning"] is False
     assert row["first_seen"]
+
+
+# ------------------------------------------------------------ live vs recent (stale) split
+
+
+def test_office_json_excludes_stale_from_sessions_lists_in_recent(settings: Settings) -> None:
+    """A live session spawns a character (sessions[]); a stale one is dossier-only (recent[])."""
+    _seed_repo(settings)
+    brain = settings.brain_path
+    # Live: heartbeat 2 min old. Stale: 40 min old (past the 15-min live window).
+    _commit(
+        brain,
+        "workspace/presence/live-one.md",
+        _presence_doc("live-one", name="Live-One", status="working", updated=_updated(-2)),
+        "workspace: presence live-one (working)",
+    )
+    _commit(
+        brain,
+        "workspace/presence/stale-one.md",
+        _presence_doc("stale-one", name="Stale-One", status="idle", updated=_updated(-40),
+                      project="pixelpuri", repo="pixelpuri"),
+        "workspace: presence stale-one (idle)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+
+    live_ids = {s["session"] for s in body["sessions"]}
+    recent_ids = {s["session"] for s in body["recent"]}
+    assert "live-one" in live_ids
+    assert "live-one" not in recent_ids
+    assert "stale-one" in recent_ids
+    assert "stale-one" not in live_ids
+    # every sessions[] row is genuinely live; every recent[] row is not
+    assert all(s["live"] is True for s in body["sessions"])
+    assert all(s["live"] is False for s in body["recent"])
+    # recent rows keep the full row shape so the UI can list them
+    stale = next(s for s in body["recent"] if s["session"] == "stale-one")
+    assert stale["name"] == "Stale-One"
+    assert stale["room"] == "pixelpuri"
+
+
+def test_office_json_rooms_derived_from_live_only(settings: Settings) -> None:
+    """A room whose only session is stale must NOT appear in rooms[] (empty office stays empty)."""
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/ghost.md",
+        _presence_doc("ghost", name="Ghost", status="idle", updated=_updated(-40),
+                      project="stellar-ux-exploration", repo="stellar-ux-exploration"),
+        "workspace: presence ghost (idle)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    room_ids = {r["id"] for r in body["rooms"]}
+    assert "stellar-ux-exploration" not in room_ids
+    assert body["sessions"] == []  # no live session → no characters at all
 
 
 # ------------------------------------------------------------ /brain/office page

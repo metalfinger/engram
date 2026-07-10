@@ -19,6 +19,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import anyio
 from anyio import to_thread
 
 from .config import Settings
@@ -806,19 +807,55 @@ class KBStore:
             if f.name != "index.md" and str(read_meta(f).get("status") or "") == "unread"
         )
 
-    async def kb_load(self, project: str) -> dict[str, Any]:
+    async def kb_load(self, project: str, lite: bool = False) -> dict[str, Any]:
         """Load a project's working context: {project, context_md, index_tree, recent_log,
-        unread_messages, active_concepts}. No concept bodies — fetch those with kb_read."""
+        unread_messages, active_concepts}. No concept bodies — fetch those with kb_read.
+        lite=True returns a token-thrifty resume view (context_md, last log entry, unread
+        COUNT + titles only, active_concepts, server) — no index_tree, no message bodies."""
         await self._refresh()
-        return await to_thread.run_sync(lambda: self._load_sync(project))
+        return await to_thread.run_sync(lambda: self._load_sync(project, lite))
 
-    def _load_sync(self, project: str) -> dict[str, Any]:
+    def _load_sync(self, project: str, lite: bool = False) -> dict[str, Any]:
         proot_rel = self._project_rel(project)
         proot = self.root / proot_rel
         pid = proot_rel.split("/")[-1]
 
         ctx_path = proot / "context.md"
         context_md = _read_text_retry(ctx_path) if ctx_path.is_file() else None
+
+        log_path = proot / "log.md"
+        log_entries = _parse_log_entries(_read_text_retry(log_path)) if log_path.is_file() else []
+
+        # Live capability manifest so a stale chat can detect it's behind (see version.py).
+        # Read fresh every load — the one channel that reaches already-open sessions whose
+        # tool list is frozen.
+        manifest = server_manifest()
+
+        if lite:
+            # Resume view for a project you already know: skip the (large) index_tree and
+            # every message body. Unread messages collapse to a count + title-only stubs so
+            # the session still knows something is waiting without re-buying the bodies.
+            unread = self._unread_messages(proot_rel)
+            unread_titles = [
+                {
+                    "path": m["path"],
+                    "title": m["title"],
+                    "to": m["to"],
+                    "priority": m["priority"],
+                    "expired": m["expired"],
+                }
+                for m in unread
+            ]
+            return {
+                "project": pid,
+                "lite": True,
+                "context_md": context_md,
+                "recent_log": log_entries[:1],
+                "unread_count": len(unread),
+                "unread_titles": unread_titles,
+                "active_concepts": self._active_concepts(proot, proot_rel),
+                "server": manifest,
+            }
 
         if proot_rel == "metalfinger":
             parent_entries = _index_entries(self.root / "index.md")
@@ -827,24 +864,14 @@ class KBStore:
         title, description = parent_entries.get(pid, (None, None))
         index_tree = self._tree_node(proot, proot_rel, title, description)
 
-        log_path = proot / "log.md"
-        recent_log = (
-            _parse_log_entries(_read_text_retry(log_path))[:3]
-            if log_path.is_file()
-            else []
-        )
-
         return {
             "project": pid,
             "context_md": context_md,
             "index_tree": index_tree,
-            "recent_log": recent_log,
+            "recent_log": log_entries[:3],
             "unread_messages": self._unread_messages(proot_rel),
             "active_concepts": self._active_concepts(proot, proot_rel),
-            # Live capability manifest so a stale chat can detect it's behind (see
-            # version.py). Read fresh every load — the one channel that reaches
-            # already-open sessions whose tool list is frozen.
-            "server": server_manifest(),
+            "server": manifest,
         }
 
     def _tree_node(
@@ -1906,6 +1933,8 @@ class KBStore:
         topic: str = "",
         refs: list[str] | None = None,
         allow_secrets: bool = False,
+        wait_for_reply: bool = False,
+        wait_seconds: int = 25,
     ) -> dict[str, Any]:
         """Post one turn to a bundle-root cross-session thread (auto-creates it on first
         post). Appends a turn file, adds the sender to participants, regenerates the
@@ -1915,8 +1944,16 @@ class KBStore:
         the transcript (a ref that doesn't exist is warned, not blocked). To share a CODE
         snippet, put a fenced code block in `message` — it renders verbatim. The message is
         scanned for secrets before it is committed (threads are private but git-permanent);
-        pass allow_secrets=True to override. Returns {thread, seq, status, participants,
-        posted, pushed, warnings}."""
+        pass allow_secrets=True to override.
+
+        wait_for_reply=True makes this ONE call = post + await the answer: after posting, the
+        server long-polls (`wait_seconds`, clamped 1..55) for the first turn from a DIFFERENT
+        sender (or a close) and returns it as `reply` (the turn dict), or `reply: null` +
+        `waited: true` on timeout. This is the token-cheap way to hold a two-session
+        conversation — one tool call per exchange instead of a post plus a poll loop.
+
+        Returns {thread, seq, status, participants, posted, pushed, warnings} plus
+        {reply, waited?} when wait_for_reply=True."""
         tid, tdir_rel = self._thread_dir(thread)
         if not sender or not sender.strip():
             raise KBError("A thread post needs a sender — the name of the session posting (e.g. 'session-a').")
@@ -2032,7 +2069,7 @@ class KBStore:
         sha, pushed = await self._locked_commit(_mutate, f"thread: {tid} {sender} {verb}")
         self._log_mutation("kb_thread_post", [f"{tdir_rel}/thread.md"], sha, pushed)
         self._schedule_index(upserts=[f"{tdir_rel}/thread.md"])
-        return {
+        result: dict[str, Any] = {
             "thread": tid,
             "seq": state["seq"],
             "status": state["status"],
@@ -2041,12 +2078,54 @@ class KBStore:
             "pushed": pushed,
             "warnings": warnings,
         }
+        # Post-and-await: hold the same call open for the other session's reply. A closed
+        # thread (we just closed it, or it already was) can't receive a reply, so skip.
+        if wait_for_reply and not close and state["status"] != "closed":
+            w = max(1, min(int(wait_seconds or 25), 55))
+            deadline = time.monotonic() + w
+            cursor = timestamp  # our own post — turns after it are candidate replies
+            reply: dict[str, Any] | None = None
+            closed = False
+            # Long-poll the read, advancing the cursor past any SAME-sender turns until a
+            # DIFFERENT sender speaks (the reply) or the thread closes — each read chunk is
+            # itself a server-side wait, so this is all free to the caller.
+            while time.monotonic() < deadline:
+                chunk = min(55, int(deadline - time.monotonic()))
+                if chunk < 1:
+                    break
+                rr = await self.kb_thread_read(thread, since=cursor, wait_seconds=chunk)
+                new_turns = rr.get("turns", [])
+                if rr.get("cursor"):
+                    cursor = rr["cursor"]
+                diff = [t for t in new_turns if t.get("sender") != sender]
+                if diff:
+                    reply = diff[0]
+                    result["status"] = rr["status"]  # may have flipped to closed
+                    break
+                if rr.get("status") == "closed":
+                    closed = True
+                    break
+                if not new_turns:
+                    break  # the read timed out with nothing new → overall timeout
+            result["reply"] = reply
+            if reply is None and not closed:
+                result["waited"] = True
+        return result
 
-    async def kb_thread_read(self, thread: str, since: str | None = None) -> dict[str, Any]:
+    async def kb_thread_read(
+        self, thread: str, since: str | None = None, wait_seconds: int = 0
+    ) -> dict[str, Any]:
         """Read a cross-session thread — poll for the other session's turns. `since` is a
         cursor (a prior read's `cursor`); only turns AFTER it are returned. An unknown
         thread returns {status: 'none', turns: []}. Returns {thread, status, topic,
         participants, turns: [{seq, sender, timestamp, message}], cursor, closed_by?}.
+
+        `wait_seconds` (clamped 0..55) turns this into a server-side LONG-POLL: when > 0 and
+        there are no new turns after `since`, the server loops (1s sleep + re-read) and
+        returns the INSTANT a new turn arrives or the thread closes, or the empty result at
+        timeout. This is free to the caller — one tool call covers the whole wait instead of
+        N tight polls, each of which would cost the user tokens. Zero busy CPU (it sleeps),
+        zero extra pulls (read is local file IO).
 
         Deliberately does NOT trigger a git pull: both sessions post THROUGH this same
         server to the same local checkout, so a turn is on disk the instant its post
@@ -2083,7 +2162,19 @@ class KBStore:
                 out["closed_by"] = str(tmeta.get("closed_by") or "")
             return out
 
-        return await to_thread.run_sync(_read)
+        result = await to_thread.run_sync(_read)
+        wait = max(0, min(int(wait_seconds or 0), 55))
+        # A new turn or a closed thread means there is nothing to wait for — return now.
+        # (status 'none' keeps waiting: a joiner may read before the opener's first post.)
+        if wait <= 0 or result["turns"] or result["status"] == "closed":
+            return result
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            await anyio.sleep(1.0)
+            result = await to_thread.run_sync(_read)
+            if result["turns"] or result["status"] == "closed":
+                return result
+        return result  # timeout — the normal empty result
 
     async def kb_threads(self) -> list[dict[str, Any]]:
         """List cross-session threads (newest activity first) so a session can discover or
@@ -2495,14 +2586,32 @@ class KBStore:
 
     async def kb_workspace(self) -> dict[str, Any]:
         """One-shot snapshot of the whole workspace: {roster, rooms, recent_handoffs}. Single
-        refresh, then reads presence (active 15 min), open threads, and the last ~5 handoffs."""
+        refresh, then reads presence (active 15 min), open threads, and the last ~5 handoffs.
+        recent_handoffs carries summaries (from/to/summary/status/path), NOT the full
+        state/next_steps bodies — kb_read the handoff path when you need the full detail."""
         await self._refresh()
 
         def _snapshot() -> dict[str, Any]:
+            # Handoffs are trimmed to their summary here: a workspace glance wants "who
+            # handed what to whom", not the full state + next_steps prose (which can be
+            # paragraphs). The path is kept so a session can kb_read the full record.
+            handoffs = [
+                {
+                    "path": h["path"],
+                    "from": h["from"],
+                    "to": h["to"],
+                    "summary": h["summary"],
+                    "repo": h["repo"],
+                    "branch": h["branch"],
+                    "created": h["created"],
+                    "status": h["status"],
+                }
+                for h in self._handoffs_sync(5)
+            ]
             return {
                 "roster": self._presence_records_sync(15),
                 "rooms": self._threads_sync(),
-                "recent_handoffs": self._handoffs_sync(5),
+                "recent_handoffs": handoffs,
             }
 
         return await to_thread.run_sync(_snapshot)

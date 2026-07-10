@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from engram_server.config import Settings
@@ -137,3 +140,115 @@ async def test_alternating_posters_ordered(store: KBStore) -> None:
     assert [t["seq"] for t in read["turns"]] == [0, 1, 2, 3, 4]
     assert [t["sender"] for t in read["turns"]] == senders
     assert [t["message"] for t in read["turns"]] == [f"msg-{i}" for i in range(5)]
+
+
+# ------------------------------------------------------------ long-poll (wait_seconds)
+
+
+async def test_read_long_poll_returns_early_on_new_turn(store: KBStore) -> None:
+    """A long-poll read wakes the instant a turn arrives — well before the timeout."""
+    await store.kb_thread_post("lp-early", "a", "opener")
+    first = await store.kb_thread_read("lp-early")
+    cursor = first["cursor"]
+
+    async def _post_soon() -> None:
+        await asyncio.sleep(1.2)
+        await store.kb_thread_post("lp-early", "b", "the reply")
+
+    start = time.monotonic()
+    poster = asyncio.create_task(_post_soon())
+    res = await store.kb_thread_read("lp-early", since=cursor, wait_seconds=30)
+    elapsed = time.monotonic() - start
+    await poster
+
+    assert [t["message"] for t in res["turns"]] == ["the reply"]
+    assert elapsed < 30, f"long-poll should return early, took {elapsed:.1f}s"
+
+
+async def test_read_long_poll_times_out_empty(store: KBStore) -> None:
+    """No new turn within the window → the normal empty result at timeout."""
+    await store.kb_thread_post("lp-timeout", "a", "solo")
+    first = await store.kb_thread_read("lp-timeout")
+    cursor = first["cursor"]
+
+    start = time.monotonic()
+    res = await store.kb_thread_read("lp-timeout", since=cursor, wait_seconds=2)
+    elapsed = time.monotonic() - start
+
+    assert res["turns"] == []
+    assert res["cursor"] == cursor
+    assert elapsed >= 1.5, "should have waited out the (short) window, not returned instantly"
+
+
+async def test_read_long_poll_returns_immediately_when_closed(store: KBStore) -> None:
+    """A closed thread with nothing new returns at once — no point waiting."""
+    await store.kb_thread_post("lp-closed", "a", "working")
+    closed = await store.kb_thread_post("lp-closed", "b", "done", close=True)
+    cursor = closed["posted"]
+
+    start = time.monotonic()
+    res = await store.kb_thread_read("lp-closed", since=cursor, wait_seconds=30)
+    elapsed = time.monotonic() - start
+
+    assert res["status"] == "closed"
+    assert elapsed < 5, "closed thread must not block on the full window"
+
+
+# ------------------------------------------------------------ post + wait_for_reply
+
+
+async def test_post_wait_for_reply_returns_the_reply(store: KBStore) -> None:
+    """post(wait_for_reply=True) is one call = post + await the other session's answer."""
+    await store.kb_thread_post("wfr-ok", "a", "kick off")
+
+    async def _reply_soon() -> None:
+        await asyncio.sleep(1.2)
+        await store.kb_thread_post("wfr-ok", "b", "here is my answer")
+
+    replier = asyncio.create_task(_reply_soon())
+    res = await store.kb_thread_post("wfr-ok", "a", "what do you think?", wait_for_reply=True, wait_seconds=30)
+    await replier
+
+    assert res["reply"] is not None
+    assert res["reply"]["sender"] == "b"
+    assert res["reply"]["message"] == "here is my answer"
+    assert res.get("waited") is not True
+
+
+async def test_post_wait_for_reply_times_out_null(store: KBStore) -> None:
+    """No reply within the window → reply: null + waited: true, post still committed."""
+    res = await store.kb_thread_post("wfr-timeout", "a", "anyone there?", wait_for_reply=True, wait_seconds=2)
+    assert res["reply"] is None
+    assert res["waited"] is True
+    # The post itself landed regardless of the (failed) wait.
+    read = await store.kb_thread_read("wfr-timeout")
+    assert [t["message"] for t in read["turns"]] == ["anyone there?"]
+
+
+async def test_post_wait_for_reply_ignores_own_turn(store: KBStore) -> None:
+    """The reply must be from a DIFFERENT sender — our own later post never counts."""
+    async def _same_sender_then_other() -> None:
+        await asyncio.sleep(0.8)
+        await store.kb_thread_post("wfr-self", "a", "still me")  # must be skipped
+        await asyncio.sleep(0.8)
+        await store.kb_thread_post("wfr-self", "b", "finally them")
+
+    helper = asyncio.create_task(_same_sender_then_other())
+    res = await store.kb_thread_post("wfr-self", "a", "opening", wait_for_reply=True, wait_seconds=30)
+    await helper
+
+    assert res["reply"]["sender"] == "b"
+    assert res["reply"]["message"] == "finally them"
+
+
+async def test_post_close_does_not_wait_for_reply(store: KBStore) -> None:
+    """Closing the thread can't receive a reply — wait_for_reply is a no-op, returns at once."""
+    await store.kb_thread_post("wfr-close", "a", "opener")
+    start = time.monotonic()
+    res = await store.kb_thread_post(
+        "wfr-close", "a", "closing now", close=True, wait_for_reply=True, wait_seconds=30
+    )
+    elapsed = time.monotonic() - start
+    assert res["status"] == "closed"
+    assert "reply" not in res
+    assert elapsed < 5

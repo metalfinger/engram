@@ -429,13 +429,23 @@ def _threads(brain: Path, now: dt.datetime) -> list[dict]:
 
 
 def office_payload(brain: Path, now: dt.datetime) -> dict:
-    """The /brain/api/office.json body: now + sessions + rooms + threads + activity."""
+    """The /brain/api/office.json body: now + sessions + recent + rooms + threads + activity.
+
+    ``sessions`` holds ONLY live rows (heartbeat within the 15-min window) — these are the
+    characters the office renders. Stale rows move to ``recent`` (same row shape) so the UI
+    can list who was recently around WITHOUT spawning a ghost character for a dead session.
+    ``rooms`` is derived from the LIVE sessions only, so an office with only stale sessions
+    stays empty rather than showing a populated-looking room.
+    """
     projects = _known_projects(brain)
-    sessions = _sessions(brain, now, projects)
+    all_rows = _sessions(brain, now, projects)
+    live = [r for r in all_rows if r["live"]]
+    recent = [r for r in all_rows if not r["live"]]
     return {
         "now": _iso_z(now),
-        "sessions": sessions,
-        "rooms": _rooms_from(sessions),
+        "sessions": live,
+        "recent": recent,
+        "rooms": _rooms_from(live),
         "threads": _threads(brain, now),
         "activity": activity_events(brain, 40),
     }

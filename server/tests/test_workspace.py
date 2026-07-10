@@ -205,6 +205,28 @@ async def test_workspace_snapshot(store: KBStore) -> None:
     assert snap["recent_handoffs"][0]["from"] == "session-a"
 
 
+async def test_workspace_handoffs_are_summary_only(store: KBStore) -> None:
+    """kb_workspace trims handoffs to a summary — the full state/next_steps prose is dropped
+    (kb_read the path for detail), keeping the glance cheap in tokens."""
+    await store.kb_handoff(
+        "session-a",
+        "leaving notes",
+        state="A very long running-state paragraph that must not be echoed in the glance.",
+        next_steps="Another long next-steps block the workspace view should omit.",
+    )
+    snap = await store.kb_workspace()
+    h = snap["recent_handoffs"][0]
+    # summary shape: identity + summary + path, no bulky bodies
+    assert set(h) == {"path", "from", "to", "summary", "repo", "branch", "created", "status"}
+    assert "state" not in h
+    assert "next_steps" not in h
+    assert h["path"].startswith("workspace/handoffs/")
+    # the trimmed prose is genuinely absent from the payload
+    import json
+
+    assert "running-state paragraph" not in json.dumps(snap, default=str)
+
+
 # ------------------------------------------------------------------ reconcile exemption
 
 

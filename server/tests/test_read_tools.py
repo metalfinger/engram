@@ -209,3 +209,43 @@ async def test_kb_load_carries_server_manifest(store):
     assert "kb_edit" in r["server"]["tools"]
     assert set(r["server"]["tools"]) == set(CURRENT_TOOLS)
     assert "stale tool list" in r["server"]["note"]
+
+
+async def test_load_lite_drops_tree_and_message_bodies(store: KBStore) -> None:
+    """lite=True is a token-thrifty resume: no index_tree, no message bodies, but it still
+    carries context, the last log line, an unread count + titles, active_concepts, server."""
+    # Seed an unread message so the count/title path is exercised (and the body dropped).
+    await store.kb_leave_message(
+        "alt", "Verify DNS Tuesday", "The full instruction body that lite must NOT return.",
+        to="claude-code", priority="high",
+    )
+
+    full = await store.kb_load("alt")
+    lite = await store.kb_load("alt", lite=True)
+
+    # Shape: lite omits the heavy keys, adds the collapsed ones.
+    assert lite["lite"] is True
+    assert "index_tree" not in lite
+    assert "unread_messages" not in lite
+    assert lite["context_md"] == full["context_md"]
+    assert lite["active_concepts"] == full["active_concepts"]
+    assert lite["server"]["version"] == full["server"]["version"]
+    assert len(lite["recent_log"]) <= 1
+
+    # Unread collapses to a count + title-only stubs — bodies never appear.
+    assert lite["unread_count"] == 1
+    stub = lite["unread_titles"][0]
+    assert stub["title"] == "Verify DNS Tuesday"
+    assert stub["to"] == "claude-code"
+    assert stub["priority"] == "high"
+    assert "body" not in stub
+    assert "The full instruction body" not in _json(lite)
+
+    # And it is genuinely smaller than the full load.
+    assert len(_json(lite)) < len(_json(full))
+
+
+def _json(obj) -> str:
+    import json
+
+    return json.dumps(obj, default=str, ensure_ascii=False)

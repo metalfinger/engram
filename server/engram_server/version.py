@@ -11,7 +11,7 @@ Bump SERVER_VERSION + CURRENT_TOOLS on any tool-surface change.
 
 from __future__ import annotations
 
-SERVER_VERSION = "2026-07-09.collision-safety.autopresence.office"
+SERVER_VERSION = "2026-07-10.smooth-threads"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
