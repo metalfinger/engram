@@ -368,7 +368,7 @@ function relayout(){
     const nlive=g.live.length, lit=nlive>0;
     let cols,rows,w,h;
     if(lit){ cols=Math.min(5,Math.max(2,Math.ceil(Math.sqrt(nlive)))); rows=Math.max(1,Math.ceil(nlive/cols));
-      w=cols*CELL_W+PADX*2; h=HEADER+PADY+rows*CELL_H+PADY+6; }  // +6: desks off the back wall
+      w=cols*CELL_W+PADX*2; h=HEADER+PADY+rows*CELL_H+PADY+14; }  // +14: a full tile between desks and the back wall
     else { cols=2; rows=1; w=2*CELL_W+PADX*2; h=HEADER+PADY+CELL_H+PADY; }  // small closed office
     bldgs.push({key,label:g.label,live:nlive,liveMembers:g.live,recentMembers:g.recent,
       cols,rows,w,h,lit,accent,unassigned:key==="unassigned"});
@@ -1006,7 +1006,8 @@ function draw(t){
   drawParticles();
   // labels, painted low→high z: nameplate < header/sign < needs-Hiren badge < speech bubble
   frameSignRects=[]; framePlaced=[];
-  for(const b of L.bldgs) if(roomVisible(b)) frameSignRects.push(signRectOf(b));
+  for(const b of L.bldgs){ if(!roomVisible(b)) continue; frameSignRects.push(signRectOf(b));
+    if(b.recentMembers&&b.recentMembers.length){ const x=sx(b.x), y=sy(b.y+b.h-14); frameSignRects.push({x,y,w:sx(b.x+b.w)-x,h:sy(b.y+b.h)-y}); } }
   for(const cr of L.confRooms) if(roomVisible(cr)) frameSignRects.push(confHeaderRect(cr));
   if(lod>=1){
     for(const e of ents) drawNameplate(e,lod);
@@ -1482,11 +1483,8 @@ function drawSpeechBubbles(t){
   const open=(payload.threads||[]).filter(x=>x.status==="open"&&x.last_turn&&x.last_turn.message);
   for(const th of open){
     const cr=L.confById.get(th.thread); if(!cr||!roomVisible(cr)||cr.dim) continue;  // asleep rooms show no bubble
-    let speaker=null;
-    for(const [,e] of entities){ if(e.meetingThread===th.thread){ const nm=e.data?e.data.name:"";
-      if(norm(nm)===norm(th.last_turn.sender)||(norm(th.last_turn.sender).length>3&&norm(th.last_turn.sender).includes(norm(nm)))){ speaker=e; break; } } }
-    if(speaker && !speaker.walking) drawBubble(speaker.x,speaker.y-27,trunc(th.last_turn.message,80),"#3a2f24","t"+th.thread+(th.last_turn.timestamp||""));
-    else drawBubble(cr.cx,cr.cy-cr.tableRy-14,trunc(th.last_turn.message,70),"#3a2f24","t"+th.thread+(th.last_turn.timestamp||""));
+    // anchor the room's latest line ABOVE the header (on the lawn) so it never covers the sign/pills
+    drawBubble(cr.cx, cr.y-6, trunc(th.last_turn.message,72), "#3a2f24", "t"+th.thread+(th.last_turn.timestamp||""));
   }
   for(const [,e] of entities){ if(e.bubble && !e.walking) drawBubble(e.x,e.y-27,e.bubble.text,"#3a2f24","b"+e.id+e.bubble.born); }
 }
