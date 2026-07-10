@@ -392,8 +392,26 @@ function loadAnim(name,fw,fh){ const img=new Image(); const rec={img:null,frames
   img.onload=()=>{ rec.img=img; rec.frames=Math.max(1,(img.width/fw)|0); rec.ok=true; };
   img.onerror=()=>{ rec.ok=false; };
   img.src=ASSET_BASE+"/limezu/animated/"+name+".png"; }
+const INTERIORS={};
+function loadInterior(name){ const img=new Image(); const rec={img:null,ok:false}; INTERIORS[name]=rec;
+  img.onload=()=>{rec.img=img;rec.ok=true;}; img.onerror=()=>{rec.ok=false;}; img.src=ASSET_BASE+"/limezu/interiors/"+name+".png"; }
 function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_cuckoo_clock",32,32);
-  loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16); }
+  loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16);
+  loadInterior("13_Conference_Hall_16x16"); }
+// LimeZu conference table (src rect in the Conference_Hall tileset) scaled to the room; false → caller draws the oval
+function drawConfTable(cr){
+  const it=INTERIORS["13_Conference_Hall_16x16"]; if(!it||!it.ok) return false;
+  // the big rounded wooden table, pixel-measured from the tileset (NOT the yellow stage at 80,100)
+  const SX=11,SY=24,SW=59,SH=39;
+  const worldW=cr.tableRx*2.6, worldH=worldW*(SH/SW);
+  const W=Math.max(1,Math.round(worldW*cam.zoom)), H=Math.max(1,Math.round(worldH*cam.zoom));
+  ctx.fillStyle="rgba(35,22,10,.16)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+4),(cr.tableRx+4)*cam.zoom,(cr.tableRy+3)*cam.zoom,0,0,6.283); ctx.fill();
+  const px_=Math.round(sx(cr.cx)-W/2), py_=Math.round(sy(cr.cy)-H*0.60);
+  const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false;
+  try{ ctx.drawImage(it.img, SX,SY,SW,SH, px_,py_,W,H); }
+  catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
+  ctx.imageSmoothingEnabled=prev; return true;
+}
 // draw an animated prop at world (wx,wy); scale is world-px-per-source-px; anchorBottom feet-aligns
 function drawAnim(name,wx,wy,scale,t,ms,anchorBottom){
   const a=ANIM[name]; if(!a||!a.ok) return false;
@@ -1277,9 +1295,11 @@ function drawConfRoom(cr,t){
   ctx.strokeStyle="rgba(137,160,178,.4)"; ctx.lineWidth=1;
   for(let gx=cr.x+cr.w*0.33; gx<cr.x+cr.w; gx+=cr.w*0.33){ ctx.beginPath(); ctx.moveTo(sx(gx),Y+HEADER*cam.zoom); ctx.lineTo(sx(gx),Y+Hd-2); ctx.stroke(); }
   px(cr.x+2,cr.y+1,cr.w-4,HEADER-2, dim?"#42505c":"#5f7d9e"); px(cr.x+2,cr.y+1,cr.w-4,2, dim?"#556370":"#7a97b4");
-  ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+3),(cr.tableRx+2)*cam.zoom,(cr.tableRy+2)*cam.zoom,0,0,6.283); ctx.fill();
-  ctx.fillStyle="#8a6b45"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),cr.tableRx*cam.zoom,cr.tableRy*cam.zoom,0,0,6.283); ctx.fill();
-  ctx.fillStyle="#a5824f"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy-2),(cr.tableRx-4)*cam.zoom,(cr.tableRy-3)*cam.zoom,0,0,6.283); ctx.fill();
+  if(!drawConfTable(cr)){   // real LimeZu conference table, procedural oval as fallback
+    ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+3),(cr.tableRx+2)*cam.zoom,(cr.tableRy+2)*cam.zoom,0,0,6.283); ctx.fill();
+    ctx.fillStyle="#8a6b45"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),cr.tableRx*cam.zoom,cr.tableRy*cam.zoom,0,0,6.283); ctx.fill();
+    ctx.fillStyle="#a5824f"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy-2),(cr.tableRx-4)*cam.zoom,(cr.tableRy-3)*cam.zoom,0,0,6.283); ctx.fill();
+  }
   // "needs Hiren" — an agent asked him something: amber wash + pulsing frame
   if(threadNeedsHiren(confThread(cr.thread))){
     const pulse=0.5+0.5*Math.sin(t*0.005);
