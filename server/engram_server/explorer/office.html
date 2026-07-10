@@ -247,6 +247,11 @@ const SAMPLE={"now":"2026-07-09T15:10:00Z","sessions":[
  {"session":"aa72b1c0","name":"metal/aeos","status":"blocked","working_on":"waiting on API key","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"metal","updated":"2026-07-09T15:07:20Z","age_sec":160,"first_seen":"2026-07-09T13:10:00Z","returning":false,"live":true},
  {"session":"cc9012aa","name":"tower/aeos","status":"working","working_on":"scheduler tick","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"tower","updated":"2026-07-09T15:09:52Z","age_sec":8,"first_seen":"2026-07-09T15:09:00Z","returning":false,"live":true},
  {"session":"dd4408bb","name":"lap/metalfinger","status":"working","working_on":"portfolio redesign","repo":"metalfinger.xyz","branch":"main","repo_remote":"","project":"metalfinger","room":"metalfinger","room_label":"metalfinger","host":"lap","updated":"2026-07-09T15:09:20Z","age_sec":40,"first_seen":"2026-07-09T11:30:00Z","returning":false,"live":true},
+ {"session":"11aa22bb","name":"dev/aeos","status":"working","working_on":"queue worker","repo":"aeos","branch":"main","project":"aeos","host":"dev","updated":"2026-07-09T15:09:48Z","age_sec":12,"first_seen":"2026-07-09T14:40:00Z","returning":false,"live":true},
+ {"session":"22bb33cc","name":"sam/notes","status":"idle","working_on":"reading docs","repo":"notes","branch":"main","project":"notes","host":"sam","updated":"2026-07-09T15:03:00Z","age_sec":420,"first_seen":"2026-07-09T13:50:00Z","returning":true,"live":true},
+ {"session":"33cc44dd","name":"kai/engram","status":"working","working_on":"kb_search tuning","repo":"engram","branch":"main","project":"engram","host":"kai","updated":"2026-07-09T15:09:30Z","age_sec":30,"first_seen":"2026-07-09T12:20:00Z","returning":false,"live":true},
+ {"session":"44dd55ee","name":"rin/charcha","status":"blocked","working_on":"waiting on review","repo":"Charcha-26","branch":"v2","project":"charcha","host":"rin","updated":"2026-07-09T15:04:10Z","age_sec":350,"first_seen":"2026-07-09T14:00:00Z","returning":false,"live":true},
+ {"session":"55ee66ff","name":"guest/lab","status":"available","working_on":"pairing","repo":"lab","branch":"main","project":"lab","host":"guest","updated":"2026-07-09T15:08:40Z","age_sec":80,"first_seen":"2026-07-09T15:00:00Z","returning":false,"live":true},
  {"session":"ee5519cc","name":"metal/notes","status":"done","working_on":"","repo":"notes","branch":"main","repo_remote":"","project":"","room":"unassigned","room_label":"open desks","host":"metal","updated":"2026-07-09T15:05:00Z","age_sec":300,"first_seen":"2026-07-09T14:20:00Z","returning":false,"live":true}
 ],"recent":[
  {"session":"old-charcha","name":"metal/Charcha-26","status":"idle","working_on":"","repo":"Charcha-26","branch":"v2","project":"charcha","room":"charcha","room_label":"charcha","host":"metal","updated":"2026-07-09T14:30:00Z","age_sec":2400,"live":false},
@@ -349,7 +354,7 @@ const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bouncer","Bruce","Confere
   "Dan","Edward","Lucy","Molly","Old_woman_Jenny","Pier","Roki","Samuel"];
 const SPRITE_EGGS=["Witch","Zombie","Prisoner_1","Prisoner_2","Prisoner_3"];
 const SPRITE_TYPES=["idle_anim","run","sit","sit2","sit3","phone","reading"];  // 'idle' static omitted (only 1 char ships it; idle_anim is universal)
-const SPR_SCALE=1.4, FOOT_OFF=1;   // 16x32 frames; feet-anchored at e.y
+const SPR_SCALE=1.0, FOOT_OFF=1;   // fixed floor is native 16px; 16x32 sprites match LimeZu proportions, feet at e.y
 const sheets={};                     // sheets[char][type] = {img, ok}; loaded lazily per active char
 function ensureCharLoaded(char){
   if(!char || sheets[char]) return; sheets[char]={};
@@ -387,68 +392,56 @@ const cam={x:400,y:300,zoom:1,tx:400,ty:300,tzoom:1,vx:0,vy:0};
 let view={cx:0,cy:0};
 
 /* ---------- animated LimeZu props (self-contained frame strips; drawImage) ---------- */
-const ANIM={}, butterflies=[];
+const ANIM={};
 function loadAnim(name,fw,fh){ const img=new Image(); const rec={img:null,frames:1,fw,fh,ok:false}; ANIM[name]=rec;
   img.onload=()=>{ rec.img=img; rec.frames=Math.max(1,(img.width/fw)|0); rec.ok=true; };
   img.onerror=()=>{ rec.ok=false; };
   img.src=ASSET_BASE+"/limezu/animated/"+name+".png"; }
-const INTERIORS={};
-function loadInterior(name){ const img=new Image(); const rec={img:null,ok:false}; INTERIORS[name]=rec;
-  img.onload=()=>{rec.img=img;rec.ok=true;}; img.onerror=()=>{rec.ok=false;}; img.src=ASSET_BASE+"/limezu/interiors/"+name+".png"; }
-function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_cuckoo_clock",32,32);
-  loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16);
-  loadInterior("13_Conference_Hall_16x16"); loadInterior("5_Classroom_and_library_16x16"); }
-// LimeZu computer-workstation desk (baked CRT monitor + tower + keyboard + wood front), visually picked, whole unit
-const DESK_SHEET="5_Classroom_and_library_16x16";
-const DESK_SX=48, DESK_SY=169, DESK_SW=22, DESK_SH=43;
-const DESK_FRONT_FRAC=0.52;   // lower slice (keyboard + wood front + legs) redrawn over the seated sprite's lap
-// monitor-screen glass within the tile (normalized) — where the per-status recolor is painted over the baked screen
-const DESK_SCR={x0:0.27,x1:0.68,y0:0.05,y1:0.24};
-function deskTilePlace(d){
-  const w=CELL_W-18, x=d.dx+9, y=d.dy+CELL_H*0.56;
-  const DW=w+2, DH=32;                 // foreshortened so the tall workstation reads in the wide, short cell
-  const topX=x+w/2-DW/2, topY=y-4;     // monitor rides at chest height → head/face show above it, screen stays glanceable
-  const Ws=Math.max(1,Math.round(DW*cam.zoom)), Hs=Math.max(1,Math.round(DH*cam.zoom));
-  const pxs=Math.round(sx(topX)), pys=Math.round(sy(topY));
-  return {Ws,Hs,pxs,pys,w,x,y,DW,DH,topX,topY};
+
+/* ---------- fixed office floor (baked LimeZu layers + manifest geometry) ----------
+   Characters render BETWEEN back and front, so desks/tables occlude laps by construction.
+   Manifest is the source of truth for geometry; inlined default = the committed 544x352 bake,
+   overridden by a fresh fetch if the floor was re-baked. */
+const MF_DEFAULT={"world":{"w":544,"h":352},"wallH":48,
+ "desks":[
+  {"desk":{"x":35,"y":73,"w":32,"h":48},"seat":{"x":51,"y":115},"screen":{"x":43,"y":81,"w":16,"h":12}},
+  {"desk":{"x":115,"y":73,"w":32,"h":48},"seat":{"x":131,"y":115},"screen":{"x":123,"y":81,"w":16,"h":12}},
+  {"desk":{"x":195,"y":73,"w":32,"h":48},"seat":{"x":211,"y":115},"screen":{"x":203,"y":81,"w":16,"h":12}},
+  {"desk":{"x":275,"y":73,"w":32,"h":48},"seat":{"x":291,"y":115},"screen":{"x":283,"y":81,"w":16,"h":12}},
+  {"desk":{"x":35,"y":156,"w":32,"h":48},"seat":{"x":51,"y":198},"screen":{"x":43,"y":164,"w":16,"h":12}},
+  {"desk":{"x":115,"y":156,"w":32,"h":48},"seat":{"x":131,"y":198},"screen":{"x":123,"y":164,"w":16,"h":12}},
+  {"desk":{"x":195,"y":156,"w":32,"h":48},"seat":{"x":211,"y":198},"screen":{"x":203,"y":164,"w":16,"h":12}},
+  {"desk":{"x":275,"y":156,"w":32,"h":48},"seat":{"x":291,"y":198},"screen":{"x":283,"y":164,"w":16,"h":12}}],
+ "confRooms":[
+  {"rect":{"x":356,"y":48,"w":172,"h":144},"table":{"x":411,"y":101,"w":59,"h":39},"center":{"x":440,"y":120},
+   "seats":[{"x":398,"y":120},{"x":482,"y":120},{"x":398,"y":146},{"x":482,"y":146},{"x":440,"y":98},{"x":440,"y":162}],"sign":{"x":360,"y":52}},
+  {"rect":{"x":356,"y":192,"w":172,"h":144},"table":{"x":411,"y":245,"w":59,"h":39},"center":{"x":440,"y":264},
+   "seats":[{"x":398,"y":264},{"x":482,"y":264},{"x":398,"y":290},{"x":482,"y":290},{"x":440,"y":242},{"x":440,"y":306}],"sign":{"x":360,"y":196}}],
+ "lounge":{"sofa":{"x":32,"y":275,"w":32,"h":32},"seats":[{"x":46,"y":297},{"x":66,"y":297},{"x":118,"y":322},{"x":140,"y":322}]},
+ "door":{"x":184,"y":344},"coffee":{"x":278.4,"y":270.4},"aquarium":{"x":243.2,"y":265.6},"board":{"x":115.2,"y":8.8,"w":48,"h":32}};
+let MF=MF_DEFAULT;
+const FLOOR={back:null,front:null,backOk:false,frontOk:false};
+function loadFloor(){
+  const base=ASSET_BASE+"/limezu/floor/";
+  const b=new Image(); b.onload=()=>{FLOOR.back=b;FLOOR.backOk=true;}; b.onerror=()=>{FLOOR.backOk=false;}; b.src=base+"office_back.png";
+  const f=new Image(); f.onload=()=>{FLOOR.front=f;FLOOR.frontOk=true;}; f.onerror=()=>{FLOOR.frontOk=false;}; f.src=base+"office_front.png";
+  fetch(base+"manifest.json",{cache:"no-store"}).then(r=>r.ok?r.json():null).then(m=>{ if(m&&m.desks){ MF=m; if(payload) relayout(); } }).catch(_=>{});
 }
-function drawDeskTile(d,frontOnly){
-  const dk=INTERIORS[DESK_SHEET]; if(!dk||!dk.ok) return false;
-  const p=deskTilePlace(d);
+function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_fishtank_orange",32,32); loadFloor(); }
+// draw a full floor layer (back or front) at world origin; false → caller paints the plain-floor fallback
+function drawFloorLayer(img){
+  if(!img) return false;
+  const w=MF.world.w, h=MF.world.h;
   const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false;
-  try{
-    if(frontOnly){
-      const sfy=DESK_SY+DESK_SH*DESK_FRONT_FRAC, sfh=DESK_SH*(1-DESK_FRONT_FRAC);
-      const doff=Math.round(p.Hs*DESK_FRONT_FRAC), dh=p.Hs-doff;
-      ctx.drawImage(dk.img, DESK_SX,sfy,DESK_SW,sfh, p.pxs,p.pys+doff,p.Ws,dh);
-    } else {
-      ctx.drawImage(dk.img, DESK_SX,DESK_SY,DESK_SW,DESK_SH, p.pxs,p.pys,p.Ws,p.Hs);
-    }
-  }catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
-  ctx.imageSmoothingEnabled=prev; return true;
-}
-// crisp per-status recolor painted over the baked monitor screen (green working / red blocked / dim away / off)
-function drawDeskScreen(d,screenCol){
-  const p=deskTilePlace(d);
-  const sx0=p.topX+DESK_SCR.x0*p.DW, sy0=p.topY+DESK_SCR.y0*p.DH;
-  const sw=(DESK_SCR.x1-DESK_SCR.x0)*p.DW, sh=(DESK_SCR.y1-DESK_SCR.y0)*p.DH;
-  px(sx0-0.6,sy0-0.6,sw+1.2,sh+1.2,OL);
-  px(sx0,sy0,sw,sh,screenCol);
-  px(sx0,sy0+sh*0.62,sw,sh*0.16,"rgba(255,255,255,.10)");   // faint scanline sheen
-}
-// LimeZu conference table (src rect in the Conference_Hall tileset) scaled to the room; false → caller draws the oval
-function drawConfTable(cr){
-  const it=INTERIORS["13_Conference_Hall_16x16"]; if(!it||!it.ok) return false;
-  // the big rounded wooden table, pixel-measured from the tileset (NOT the yellow stage at 80,100)
-  const SX=11,SY=24,SW=59,SH=39;
-  const worldW=cr.tableRx*2.6, worldH=worldW*(SH/SW);
-  const W=Math.max(1,Math.round(worldW*cam.zoom)), H=Math.max(1,Math.round(worldH*cam.zoom));
-  ctx.fillStyle="rgba(35,22,10,.16)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+4),(cr.tableRx+4)*cam.zoom,(cr.tableRy+3)*cam.zoom,0,0,6.283); ctx.fill();
-  const px_=Math.round(sx(cr.cx)-W/2), py_=Math.round(sy(cr.cy)-H*0.60);
-  const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false;
-  try{ ctx.drawImage(it.img, SX,SY,SW,SH, px_,py_,W,H); }
+  try{ ctx.drawImage(img, 0,0,w,h, Math.round(sx(0)),Math.round(sy(0)), Math.round(w*cam.zoom),Math.round(h*cam.zoom)); }
   catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
   ctx.imageSmoothingEnabled=prev; return true;
+}
+// crisp per-status recolor painted onto the baked monitor screen (manifest screen rect), drawn over the front layer
+function drawDeskScreen(scr,col){
+  px(scr.x-0.5,scr.y-0.5,scr.w+1,scr.h+1,OL);
+  px(scr.x,scr.y,scr.w,scr.h,col);
+  px(scr.x,scr.y+scr.h*0.6,scr.w,Math.max(1,scr.h*0.18),"rgba(255,255,255,.10)");   // faint scanline sheen
 }
 // draw an animated prop at world (wx,wy); scale is world-px-per-source-px; anchorBottom feet-aligns
 function drawAnim(name,wx,wy,scale,t,ms,anchorBottom){
@@ -462,142 +455,79 @@ function drawAnim(name,wx,wy,scale,t,ms,anchorBottom){
   ctx.imageSmoothingEnabled=prev; return true;
 }
 
-/* ============================ grouping ============================ */
-function groupKey(s){
-  if(s.room && s.room.trim() && s.room!=="unassigned") return s.room.trim();
-  if(s.project && s.project.trim()) return s.project.trim();
-  if(s.repo && s.repo.trim()) return s.repo.trim();
-  return "unassigned";
-}
-function groupLabel(s,key){ return s.room_label || s.project || s.repo || (key==="unassigned"?"open desks":key); }
-
-/* ============================ layout — the campus ============================ */
+/* ============================ layout — the fixed office floor ============================ */
+// stable assignments persist across polls while a session/thread is live
+let deskAssign=new Map();   // session id → desk index (hash + linear-probe, kept until session leaves)
+let roomAssign=new Map();   // thread name → conference-room index (0/1)
+const AISLE_Y=228;          // clear horizontal corridor below the desk rows (open floor)
+const DESK_SEAT_RAISE=24;   // px to lift a desk sitter so head/shoulders read above the tall baked desk
 function relayout(){
-  if(!payload) return;
-  /* --- gather groups from live (desk owners) + recent (lights-off tenants) --- */
-  const groups=new Map();
-  const addG=(s,live)=>{ const k=groupKey(s);
-    if(!groups.has(k)) groups.set(k,{key:k,label:groupLabel(s,k),live:[],recent:[]});
-    (live?groups.get(k).live:groups.get(k).recent).push(s); };
-  for(const s of liveSessions){ if(s.status==="done") continue; addG(s,true); }
-  for(const s of recentSessions) addG(s,false);
-  if(groups.size===0) groups.set("campus",{key:"campus",label:"the campus",live:[],recent:[]});
+  if(!payload || !MF) return;
+  const world=MF.world;
+  const desks=MF.desks.map((d,i)=>({idx:i,rect:d.desk,seat:d.seat,screen:d.screen,sid:null}));
+  const confRooms=MF.confRooms.map((c,i)=>({idx:i,rect:c.rect,table:c.table,center:c.center,seats:c.seats,sign:c.sign,
+    thread:null,topic:null,participants:[],present:0,th:null,
+    x:c.rect.x,y:c.rect.y,w:c.rect.w,h:c.rect.h,cx:c.center.x,cy:c.center.y}));
+  const lounge=MF.lounge;
 
-  /* --- size each building --- */
-  const bldgs=[];
-  for(const [key,g] of groups){
-    const accent=projectAccent(key,key==="unassigned");
-    const nlive=g.live.length, lit=nlive>0;
-    let cols,rows,w,h;
-    if(lit){ cols=Math.min(5,Math.max(2,Math.ceil(Math.sqrt(nlive)))); rows=Math.max(1,Math.ceil(nlive/cols));
-      w=cols*CELL_W+PADX*2; h=HEADER+PADY+rows*CELL_H+PADY+14; }  // +14: a full tile between desks and the back wall
-    else { cols=2; rows=1; w=2*CELL_W+PADX*2; h=HEADER+PADY+CELL_H+PADY; }  // small closed office
-    bldgs.push({key,label:g.label,live:nlive,liveMembers:g.live,recentMembers:g.recent,
-      cols,rows,w,h,lit,accent,unassigned:key==="unassigned"});
-  }
-  // stable alphabetical order — lit-ness is a visual state, not a sort key,
-  // so a building never jumps position when its live count crosses 0<->1
-  bldgs.sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
+  /* --- stable desk assignment (hash → linear probe), overflow → lounge --- */
+  const liveIds=liveSessions.filter(s=>s.status!=="done").map(s=>s.session);
+  const liveSet=new Set(liveIds);
+  for(const sid of [...deskAssign.keys()]) if(!liveSet.has(sid)) deskAssign.delete(sid);
+  const N=desks.length, taken=new Set(deskAssign.values());
+  for(const sid of liveIds){ if(deskAssign.has(sid)) continue;
+    let idx=hash32(sid)%N, probes=0;
+    while(taken.has(idx)&&probes<N){ idx=(idx+1)%N; probes++; }
+    if(probes<N){ deskAssign.set(sid,idx); taken.add(idx); } }
+  const overflow=[];
+  for(const sid of liveIds){ const e=entities.get(sid); if(!e) continue;
+    const di=deskAssign.get(sid);
+    if(di!=null && desks[di]){ desks[di].sid=sid; e.deskIdx=di; e.screen=desks[di].screen;
+      // raise the sitter so head+shoulders clear the (baked, tall) desk — the front layer still occludes the lap
+      e.home={x:desks[di].seat.x,y:desks[di].seat.y-DESK_SEAT_RAISE}; e.atLounge=false; }
+    else overflow.push(e); }
+  overflow.forEach((e,i)=>{ const seat=lounge.seats[i%lounge.seats.length];
+    const extra=Math.floor(i/lounge.seats.length)*14;
+    e.home={x:seat.x+extra,y:seat.y}; e.deskIdx=null; e.screen=null; e.atLounge=true; });
 
-  /* --- pack buildings into rows across the campus (landscape: fill the viewport) --- */
-  const widest=bldgs.reduce((a,r)=>Math.max(a,r.w),0);
-  const avgW=bldgs.reduce((a,r)=>a+r.w,0)/Math.max(1,bldgs.length);
-  const vAsp=Math.max(1.3,(window.innerWidth||1440)/(window.innerHeight||820));
-  const perRow=Math.max(2,Math.round(Math.sqrt(bldgs.length*vAsp*0.8)));
-  const targetW=Math.max(widest,(avgW+CAMPUS_GAP)*Math.min(perRow,bldgs.length));
-  let cx=0,cy=0,rowH=0,right=0,bottom=0;
-  for(const r of bldgs){ if(cx>0 && cx+r.w>targetW){ cx=0; cy+=rowH+CAMPUS_GAP; rowH=0; }
-    r.x=cx; r.y=cy; cx+=r.w+CAMPUS_GAP; rowH=Math.max(rowH,r.h);
-    right=Math.max(right,r.x+r.w); bottom=Math.max(bottom,r.y+r.h); }
+  /* --- conference rooms: 2 most-recently-active claim the rooms; extras queue --- */
+  const lastMs=t=>{ const a=Date.parse(t.last_activity||""); if(!isNaN(a)) return a;
+    const b=t.last_turn&&Date.parse(t.last_turn.timestamp||t.last_turn.ts||""); return isNaN(b)?0:b; };
+  const open=(payload.threads||[]).filter(t=>t.status==="open").sort((a,b)=>lastMs(b)-lastMs(a));
+  const active=open.slice(0,confRooms.length), queued=open.slice(confRooms.length);
+  const activeNames=new Set(active.map(t=>t.thread));
+  for(const th of [...roomAssign.keys()]) if(!activeNames.has(th)) roomAssign.delete(th);
+  const usedRooms=new Set(roomAssign.values());
+  const freeRoom=()=>{ for(let i=0;i<confRooms.length;i++) if(!usedRooms.has(i)){ usedRooms.add(i); return i; } return null; };
+  for(const th of active){ if(!roomAssign.has(th.thread)){ const r=freeRoom(); if(r!=null) roomAssign.set(th.thread,r); } }
+  const confById=new Map();
+  for(const th of active){ const ri=roomAssign.get(th.thread); if(ri==null||!confRooms[ri]) continue;
+    const cr=confRooms[ri]; cr.thread=th.thread; cr.topic=th.topic; cr.participants=th.participants||[]; cr.th=th; confById.set(th.thread,cr); }
 
-  /* --- interior desks + door + coffee corner --- */
-  const bldgById=new Map();
-  for(const b of bldgs){ bldgById.set(b.key,b); b.desks=[];
-    b.doorX=b.x+b.w/2; b.doorIn={x:b.doorX,y:b.y+b.h-12};
-    b.coffee={x:b.x+b.w-15,y:b.y+HEADER+13};
-    if(b.lit){ b.liveMembers.forEach((s,i)=>{ const col=i%b.cols,row=Math.floor(i/b.cols);
-      const dx=b.x+PADX+col*CELL_W, dy=b.y+HEADER+PADY+row*CELL_H;
-      const seat={x:dx+CELL_W/2,y:dy+CELL_H*0.60};
-      b.desks.push({dx,dy,seat,sid:s.session});
-      const e=entities.get(s.session); if(e){ e.home={x:seat.x,y:seat.y}; e.homeBldgKey=b.key; e.deskDx=dx; e.deskDy=dy; } }); }
-  }
+  const inMeeting=new Set();
+  L={desks,confRooms,confById,lounge,door:MF.door,coffee:MF.coffee,aquarium:MF.aquarium,board:MF.board,
+     queuedThreads:queued,inMeeting,world,ground:{x:0,y:0,w:world.w,h:world.h}};
 
-  /* --- conference wing (glass meeting rooms), sized to occupants --- */
-  const openThreads=(payload.threads||[]).filter(t=>t.status==="open");
-  const openNames=new Set(openThreads.map(t=>t.thread));
-  for(const k of [...threadSlots.keys()]) if(!openNames.has(k)) threadSlots.delete(k);
-  const usedSlots=new Set(threadSlots.values());
-  const nextFreeSlot=()=>{let i=0;while(usedSlots.has(i))i++;usedSlots.add(i);return i;};
-  const confMeta=[]; let maxCW=0,maxCH=0; const CTOP=32,CBOT=20;
-  for(const th of openThreads){ const P=th.participants||[]; const n=Math.max(2,P.length);
-    const tableRx=clamp(22+n*4,28,56), tableRy=clamp(15+n*2,18,34);
-    const seatRx=tableRx+18, seatRy=tableRy+15;
-    const w=Math.round(seatRx*2+42), h=Math.round(HEADER+CTOP+seatRy*2+CBOT);
-    confMeta.push({th,P,tableRx,tableRy,seatRx,seatRy,w,h}); maxCW=Math.max(maxCW,w); maxCH=Math.max(maxCH,h); }
-  const wingX=right+CONF_CORRIDOR;
-  const wingCols=Math.max(1,openThreads.length<=4?1:2);
-  const confRooms=[];
-  confMeta.forEach(m=>{ let slot=threadSlots.get(m.th.thread); if(slot==null){slot=nextFreeSlot();threadSlots.set(m.th.thread,slot);}
-    const col=slot%wingCols,row=Math.floor(slot/wingCols);
-    // +28 top pad keeps the first row's header + speech bubbles on the lawn
-    const x=wingX+col*(maxCW+34), y=28+row*(maxCH+34);
-    const cxc=x+m.w/2, cyc=y+HEADER+CTOP+m.seatRy;
-    const seats=[]; const cnt=Math.max(m.P.length,1);
-    // seats fan from the BOTTOM (PI/2, half-step offset) so nobody sits directly
-    // under the room header — headers, bubbles and nameplates stop fighting
-    // keep a 16x32 sprite (at SPR_SCALE) fully inside the glass walls
-    const halfW=16*SPR_SCALE*0.5+4, sprTop=32*SPR_SCALE*0.62;
-    for(let i=0;i<cnt;i++){const a=Math.PI/2+((i+0.5)/cnt)*Math.PI*2;
-      const sxpos=clamp(cxc+Math.cos(a)*m.seatRx, x+halfW, x+m.w-halfW);
-      const sypos=clamp(cyc+Math.sin(a)*m.seatRy, y+HEADER+sprTop, y+m.h-6);
-      seats.push({x:sxpos,y:sypos});}
-    const cr={thread:m.th.thread,topic:m.th.topic,x,y,w:m.w,h:m.h,cx:cxc,cy:cyc,tableRx:m.tableRx,tableRy:m.tableRy,seats,participants:m.P,th:m.th};
-    cr.doorX=x+m.w/2; cr.doorIn={x:cr.doorX,y:y+m.h-12};
-    confRooms.push(cr); right=Math.max(right,x+m.w); bottom=Math.max(bottom,y+m.h); });
-  const confById=new Map(); for(const cr of confRooms) confById.set(cr.thread,cr);
-
-  /* --- walkway spine + campus gate + ground bounds --- */
-  const spineY=bottom+SPINE_DROP;
-  const entrance={x:-46,y:spineY+42};
-  const gx0=entrance.x-46, gx1=right+64, gy0=-66, gy1=Math.max(bottom,spineY)+92;
-  const ground={x:gx0,y:gy0,w:gx1-gx0,h:gy1-gy0};
-
-  /* --- deterministic trees dotted on the lawn (kept off buildings + spine) --- */
-  const trees=[];
-  const free=(x,y)=>{ for(const b of bldgs){ if(x>b.x-26&&x<b.x+b.w+26&&y>b.y-34&&y<b.y+b.h+16) return false; }
-    for(const cr of confRooms){ if(x>cr.x-26&&x<cr.x+cr.w+26&&y>cr.y-34&&y<cr.y+cr.h+16) return false; }
-    if(Math.abs(y-spineY)<26) return false; return true; };
-  for(let gy=ground.y+34; gy<ground.y+ground.h-24 && trees.length<16; gy+=54){
-    for(let gx=ground.x+30; gx<ground.x+ground.w-24 && trees.length<16; gx+=66){
-      const hs=hash32(gx+","+gy); const jx=gx+(hs%24-12), jy=gy+((hs>>3)%20-10);
-      if(free(jx,jy)) trees.push({x:jx,y:jy,k:hs%3,s:0.8+((hs>>5)%50)/100}); } }
-
-  // pick which office gets the fish tank (busiest) and which gets the cuckoo clock (first lit)
-  let fishBldg=null,fishN=-1,clockBldg=null;
-  for(const b of bldgs){ if(!b.lit) continue; if(b.live>fishN){fishN=b.live;fishBldg=b.key;} if(!clockBldg&&b.key!==fishBldg)clockBldg=b.key; }
-  if(!clockBldg) clockBldg=fishBldg;
-  L={bldgs,bldgById,confRooms,confById,entrance,spineY,ground,trees,fishBldg,clockBldg,inMeeting:new Set()};
-
-  /* --- seat live participants in meetings (LIVE-ONLY: no ghost guests) --- */
+  /* --- seat live participants into their meeting rooms (live-only, no ghosts) --- */
   const matchLive=(pname)=>{ const key=norm(pname);
     for(const s of liveSessions){ if(s.status==="done") continue; const e=entities.get(s.session); if(!e||e.gone) continue;
       const n=norm(s.name);
       if(n===key || norm(s.session).startsWith(key) || (key.length>3&&n.includes(key)) || (n.length>3&&key.includes(n))) return e; }
     return null; };
-  for(const cr of confRooms){ cr.present=0; cr.participants.forEach((p,i)=>{ const seat=cr.seats[i]||cr.seats[0];
-    const e=matchLive(p); if(e){ e.seatTarget={x:seat.x,y:seat.y}; e.meetingThread=cr.thread; e.lastConfKey=cr.thread; L.inMeeting.add(e.id); cr.present++; } }); }
+  for(const cr of confRooms){ if(!cr.thread) continue; cr.present=0;
+    cr.participants.forEach((p,i)=>{ const seat=cr.seats[i]||cr.seats[0]; const e=matchLive(p);
+      if(e){ e.seatTarget={x:seat.x,y:seat.y}; e.meetingThread=cr.thread; e.lastConfKey=cr.thread; inMeeting.add(e.id); cr.present++; } }); }
 
-  /* --- assign each live entity a destination (route along walkways on change) --- */
+  /* --- route each live entity to its destination --- */
   for(const [id,e] of entities){
-    if(e.isHiren) continue;   // the cameo manages its own seat + lifetime
+    if(e.isHiren) continue;
     const s=e.data;
-    if(!s || e.gone || (s&&s.status==="done")){
+    if(!s || e.gone || s.status==="done"){
       if(e.dest!=="leave"){ e.dest="leave"; routeLeave(e); }
-      e.leaving=true; e.mode="leaving"; if(s&&s.status==="done") e.doneWalk=true;
-      continue;
+      e.leaving=true; e.mode="leaving"; if(s&&s.status==="done") e.doneWalk=true; continue;
     }
     e.leaving=false; e.doneWalk=false;
-    if(L.inMeeting.has(id) && e.seatTarget){
+    if(inMeeting.has(id) && e.seatTarget){
       const key="meet:"+e.meetingThread;
       if(e.dest!==key){ e.dest=key; routeToMeeting(e); }
       e.mode="meeting";
@@ -608,30 +538,20 @@ function relayout(){
         if(wasMeet) routeFromMeeting(e);
         else if(e.home){ e.path=null; e.tx=e.home.x; e.ty=e.home.y; }
       }
-      e.mode="desk";
+      e.mode="desk";   // seated at their workstation (or lounge seat, for overflow)
     }
   }
 }
-function routeToMeeting(e){
-  const b=L.bldgById.get(e.homeBldgKey), conf=L.confById.get(e.meetingThread);
-  if(!b||!conf){ e.path=[{x:e.seatTarget.x,y:e.seatTarget.y}]; return; }
-  e.path=[b.doorIn,{x:b.doorX,y:L.spineY},{x:conf.doorX,y:L.spineY},conf.doorIn,{x:e.seatTarget.x,y:e.seatTarget.y}];
-}
-function routeFromMeeting(e){
-  const b=L.bldgById.get(e.homeBldgKey), conf=L.confById.get(e.lastConfKey);
-  const pts=[];
-  if(conf){ pts.push(conf.doorIn,{x:conf.doorX,y:L.spineY}); }
-  if(b && e.home){ pts.push({x:b.doorX,y:L.spineY},b.doorIn,{x:e.home.x,y:e.home.y}); }
-  else if(e.home){ pts.push({x:e.home.x,y:e.home.y}); }
-  e.path=pts.length?pts:null;
-}
-function routeLeave(e){
-  const b=L.bldgById.get(e.homeBldgKey);
-  const pts=[];
-  if(b){ pts.push(b.doorIn,{x:b.doorX,y:L.spineY}); }
-  pts.push({x:L.entrance.x,y:L.spineY},{x:L.entrance.x,y:L.entrance.y});
-  e.path=pts;
-}
+// paths across the single floor: out to the aisle, along it, then in to the target
+function routeToMeeting(e){ const cr=L.confById.get(e.meetingThread), t=e.seatTarget;
+  if(!t){ e.path=null; return; }
+  const ax=cr?cr.rect.x-8:t.x;
+  e.path=[{x:e.x,y:AISLE_Y},{x:ax,y:AISLE_Y},{x:ax,y:t.y},{x:t.x,y:t.y}]; }
+function routeFromMeeting(e){ const cr=L.confById.get(e.lastConfKey), h=e.home; if(!h){ e.path=null; return; }
+  const ax=cr?cr.rect.x-8:h.x; const pts=[];
+  if(cr) pts.push({x:ax,y:cr.center.y},{x:ax,y:AISLE_Y});
+  pts.push({x:h.x,y:AISLE_Y},{x:h.x,y:h.y}); e.path=pts; }
+function routeLeave(e){ const d=L.door; e.path=[{x:e.x,y:AISLE_Y},{x:d.x,y:AISLE_Y},{x:d.x,y:d.y}]; }
 
 /* ============================ entities ============================ */
 function pickSprite(s){
@@ -642,11 +562,12 @@ function pickSprite(s){
 function pickTint(s){ return 0; } // 47-char roster gives natural variety; no hue tint needed
 function makeEntity(s){
   const now=performance.now();
+  const dr=(L&&L.door)?L.door:(MF?MF.door:{x:184,y:344});
   return {id:s.session,data:s,
-    x:(L.entrance?L.entrance.x:0),y:(L.entrance?L.entrance.y:0),tx:0,ty:0,
+    x:dr.x,y:dr.y,tx:0,ty:0,
     facing:1,alpha:0,gone:false,leaving:false,doneWalk:false,mode:"enter",
-    home:null,homeBldgKey:null,seatTarget:null,meetingThread:null,lastConfKey:null,
-    deskDx:0,deskDy:0,path:null,dest:null,wandering:false,
+    home:null,deskIdx:null,screen:null,atLounge:false,seatTarget:null,meetingThread:null,lastConfKey:null,
+    path:null,dest:null,wandering:false,
     phase:(hash32(s.session)%1000)/1000*Math.PI*2, color:paletteFor(s.host,s.session),
     spriteChar:pickSprite(s), tintHue:pickTint(s),
     born:now,walking:false,walkPhase:Math.random()*Math.PI*2,
@@ -671,11 +592,10 @@ function ingest(data){
   applyLocalLastTurns();
 
   for(const e of newborns){
-    e.x=L.entrance.x; e.y=L.entrance.y; e.alpha=0; e.dest="desk";
-    const b=L.bldgById.get(e.homeBldgKey);
-    e.path=[{x:L.entrance.x,y:L.spineY}];
-    if(b) e.path.push({x:b.doorX,y:L.spineY},b.doorIn);
-    if(e.home) e.path.push({x:e.home.x,y:e.home.y});
+    // walk in from the door, along the aisle, to the assigned desk/lounge seat
+    e.x=L.door.x; e.y=L.door.y; e.alpha=0; e.dest="desk";
+    e.path=[{x:L.door.x,y:AISLE_Y}];
+    if(e.home) e.path.push({x:e.home.x,y:AISLE_Y},{x:e.home.x,y:e.home.y});
     const s=e.data;
     if(s&&s.returning) e.bubble={text:"welcome back 👋",born:performance.now(),ttl:3400,kind:"welcome"};
     else { e.sparkleUntil=performance.now()+2600; e.bubble={text:"new here ✨",born:performance.now(),ttl:2600,kind:"new"}; }
@@ -711,7 +631,8 @@ function spawnActivitySparkles(activity){
   if(seenActivity.size>400){ seenActivity=new Set([...seenActivity].slice(-200)); }
 }
 function maybeRefit(){
-  const sig=L.bldgs.map(b=>b.key+":"+b.lit).sort().join(",")+"|"+L.confRooms.map(c=>c.thread).sort().join(",");
+  // the floor is fixed, so a full refit is rarely needed; only re-fit when the roster/rooms change a lot
+  const sig=(L.desks||[]).map(d=>d.sid?"1":"0").join("")+"|"+(L.confRooms||[]).map(c=>c.thread||"-").join(",");
   if(sig!==curSig){ const first=curSig===""; curSig=sig;
     if(!first && performance.now()-lastUserInteract>6000) fitAll(false); }
 }
@@ -842,17 +763,16 @@ function handleClick(e){
   const px_=(e.clientX-r.left)*dpr, py_=(e.clientY-r.top)*dpr;
   const wx=invX(px_), wy=invY(py_);
   const pid=pickEntity(wx,wy); if(pid){ openDossier(pid); return; }
-  // conference room (or its header) → open the live meeting chat panel + focus it
-  for(const cr of L.confRooms){ if(wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoomPanel(cr); openMeeting(cr.thread,true); return; } }
-  for(const b of L.bldgs){ if(wx>=b.x&&wx<=b.x+b.w&&wy>=b.y-WALL&&wy<=b.y+b.h){ lastUserInteract=performance.now(); zoomToRoom(b); return; } }
+  // an ACTIVE conference room → open its live meeting chat panel + focus it
+  for(const cr of L.confRooms){ if(cr.thread && wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoomPanel(cr); openMeeting(cr.thread,true); return; } }
   closeDossier(); closeMeeting();
 }
 mini.addEventListener("click",e=>{
-  const r=mini.getBoundingClientRect(); const b=L.ground; lastUserInteract=performance.now();
-  const s=Math.min((mini.width)/b.w,(mini.height)/b.h)*0.92;
+  const r=mini.getBoundingClientRect(); const b=L.ground; if(!b) return; lastUserInteract=performance.now();
+  const s=Math.min((mini.width)/b.w,(mini.height)/b.h)*0.94;
   const ox=(mini.width-b.w*s)/2, oy=(mini.height-b.h*s)/2;
   const mx=(e.clientX-r.left)*(mini.width/r.width), my=(e.clientY-r.top)*(mini.height/r.height);
-  cam.tx=b.x+(mx-ox)/s; cam.ty=b.y+(my-oy)/s; cam.vx=cam.vy=0;
+  cam.tx=(mx-ox)/s; cam.ty=(my-oy)/s; cam.vx=cam.vy=0;
 });
 document.getElementById("zin").onclick=()=>{lastUserInteract=performance.now();zoomAt(view.cx,view.cy,1.25);};
 document.getElementById("zout").onclick=()=>{lastUserInteract=performance.now();zoomAt(view.cx,view.cy,1/1.25);};
@@ -880,12 +800,6 @@ function renderDossier(dos,e){
   const chips=[]; const arr=(l,v)=>{if(v&&v.length)chips.push('<span class="tag"><b>'+l+'</b>'+esc(v.join(", "))+'</span>');};
   arr("projects",dos.projects_touched); arr("repos",dos.repos_touched); arr("threads",dos.threads_joined);
   if(dos.first_seen){const ago=(serverNow()-Date.parse(dos.first_seen))/1000; if(!isNaN(ago))chips.push('<span class="tag"><b>first seen</b>'+timeAgo(ago)+' ago</span>');}
-  // "recently left" building-mates (recent[] never gets a character)
-  const b=e?L.bldgById.get(e.homeBldgKey):null;
-  if(b&&b.recentMembers&&b.recentMembers.length){
-    const list=b.recentMembers.map(r=>(r.name||shortSid(r.session)).split("/").pop()+" ("+recentAgo(r)+")");
-    chips.push('<span class="tag"><b>recently left</b>'+esc(list.join(", "))+'</span>');
-  }
   document.getElementById("dChips").innerHTML=chips.join("")||'<span class="tag">no cross-session trail yet</span>';
   const tl=dos.timeline||[];
   document.getElementById("dTl").innerHTML=tl.length?tl.map(t=>{
@@ -1070,7 +984,7 @@ document.getElementById("mClose").onclick=closeMeeting;
 function triggerHirenCameo(id){
   const cr=L.confById.get(id); if(!cr) return;
   const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
-  const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+cr.tableRy+12};
+  const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+30};
   let e=entities.get("__hiren__");
   if(!e){ e=makeEntity({session:"__hiren__",name:"Hiren",host:"hiren-boss",status:"available"}); entities.set("__hiren__",e); }
   e.isHiren=true; e.spriteChar="Edward"; e.data={session:"__hiren__",name:"Hiren",host:"hiren-boss",status:"available"};
@@ -1086,9 +1000,6 @@ function resize(){
   canvas.width=Math.max(1,Math.round(r.width*dpr)); canvas.height=Math.max(1,Math.round(r.height*dpr));
   view.cx=canvas.width/2; view.cy=canvas.height/2;
   const mr=mini.getBoundingClientRect(); mini.width=Math.round(mr.width*dpr); mini.height=Math.round(mr.height*dpr);
-  if(dust.length===0){ for(let i=0;i<64;i++) dust.push({x:Math.random(),y:Math.random(),s:0.4+Math.random()*1.1,ph:Math.random()*6.28,sp:0.2+Math.random()*0.5}); }
-  if(clouds.length===0){ for(let i=0;i<5;i++) clouds.push({x:Math.random(),y:0.08+Math.random()*0.84,r:70+Math.random()*90,sp:0.5+Math.random()}); }
-  if(butterflies.length===0){ for(let i=0;i<3;i++) butterflies.push({ph:Math.random()*6.28,sp:0.6+Math.random()*0.7}); }
 }
 window.addEventListener("resize",resize);
 
@@ -1120,7 +1031,7 @@ function updateEntities(dt){
     if(e.isHiren){   // Hiren cameo: sit at the room's hiren seat, fade out after its window
       const cr=L.confById.get(e.meetingThread);
       if(cr){ const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
-        const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+cr.tableRy+12};
+        const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+30};
         e.x=e.tx=seat.x; e.y=e.ty=seat.y; }
       if(now>e.hirenUntil){ e.alpha-=dt*0.005; if(e.alpha<=0){ entities.delete(id); } }
       continue;
@@ -1135,11 +1046,11 @@ function updateEntities(dt){
       else e.walking=false;
     }
     if(e.leaving && (!e.path||!e.path.length) && dist<4){ e.alpha-=dt*0.005; if(e.alpha<=0){ if(selectedId===id)closeDossier(); entities.delete(id); continue; } }
-    // ambient wander to the coffee corner and back (rare)
-    if(!e.path && !e.leaving && e.mode==="desk" && now>e.nextWander){
+    // ambient wander to the coffee machine and back (rare), desk sessions only
+    if(!e.path && !e.leaving && e.mode==="desk" && !e.atLounge && now>e.nextWander){
       e.nextWander=now+60000+Math.random()*60000;
-      const b=L.bldgById.get(e.homeBldgKey);
-      if(b&&b.coffee&&e.home){ e.path=[{x:b.coffee.x,y:b.coffee.y},{x:e.home.x,y:e.home.y}]; e.wandering=true; }
+      if(L.coffee&&e.home){ e.path=[{x:e.home.x,y:AISLE_Y},{x:L.coffee.x,y:AISLE_Y},{x:L.coffee.x,y:L.coffee.y+14},
+        {x:e.home.x,y:AISLE_Y},{x:e.home.x,y:e.home.y}]; e.wandering=true; }
     }
     // occasional stand-up-and-stretch while seated
     if(!e.walking && !e.leaving && e.mode==="desk" && now>e.nextStretch){
@@ -1154,206 +1065,109 @@ function draw(t){
   const W=canvas.width,H=canvas.height;
   ctx.imageSmoothingEnabled=false;
   const dusk=duskTint(); const live=onlineCount(); const asleep=live===0;
-  const nightF=clamp(asleep?0.95:dusk.a/0.26,0,1);
-  // base
-  ctx.fillStyle=asleep?"#10131f":"#1a2314"; ctx.fillRect(0,0,W,H);
-  drawGround(t,nightF);
-  drawWalkways();
-  for(const b of L.bldgs) if(roomVisible(b)) drawBuildingGlow(b,t,nightF);
-  for(const tr of L.trees) if(onScreen(tr.x,tr.y-24)) drawTree(tr,t);
-  drawGate(t);
-  for(const b of L.bldgs) if(roomVisible(b)) drawBuilding(b,t,nightF);
-  for(const cr of L.confRooms) if(roomVisible(cr)) drawConfRoom(cr,t);
-  if(cam.zoom>=0.4) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks) drawDesk(d,entities.get(d.sid),t); }
-  // characters (depth-sorted + culled)
+  // neutral dark backdrop the floor sits on
+  ctx.fillStyle="#0d0f16"; ctx.fillRect(0,0,W,H);
+  // 1. floor BACK layer (floor/walls/decor) — plain-floor fallback if the png 404s
+  if(!drawFloorLayer(FLOOR.back)) drawFloorFallback();
+  // 2. animated props under the furniture (coffee machine, aquarium)
+  drawFloorProps(t);
+  // 3. characters BETWEEN layers, depth-sorted → the front layer occludes laps by construction
   const ents=[...entities.values()].filter(e=>e.alpha>0.02&&onScreen(e.x,e.y)).sort((a,b)=>a.y-b.y);
   const lod = cam.zoom>=0.7?2 : cam.zoom>=0.38?1 : 0;
   for(const e of ents){ drawShadow(e); drawCharacter(e,t,lod); }
-  // desk fronts on top of seated occupants → they sit BEHIND the desk, not on it
-  if(cam.zoom>=0.4) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue;
-    for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.alpha>0.2&&o.mode==="desk"&&!o.walking) drawDeskFront(d); } }
+  // 4. floor FRONT layer (desks/tables/sofa/plants) on top of characters
+  drawFloorLayer(FLOOR.front);
+  // 5. status screens recoloured onto the baked monitors, empty/asleep room tints, project board
+  drawDeskScreens(t);
+  drawConfRoomStates(t);
+  drawBoardPins(t);
   drawParticles();
-  // labels, painted low→high z: nameplate < header/sign < needs-Hiren badge < speech bubble
+  // 6. labels: nameplates < room signs < needs-Hiren badges < speech bubbles
   frameSignRects=[]; framePlaced=[];
-  for(const b of L.bldgs){ if(!roomVisible(b)) continue; frameSignRects.push(signRectOf(b));
-    if(b.recentMembers&&b.recentMembers.length){ const x=sx(b.x), y=sy(b.y+b.h-14); frameSignRects.push({x,y,w:sx(b.x+b.w)-x,h:sy(b.y+b.h)-y}); } }
-  for(const cr of L.confRooms) if(roomVisible(cr)) frameSignRects.push(confHeaderRect(cr));
+  for(const cr of L.confRooms){ if(cr.thread) frameSignRects.push(confSignRect(cr)); }
   if(lod>=1){
     for(const e of ents) drawNameplate(e,lod);
-    for(const b of L.bldgs) if(roomVisible(b)) drawBuildingSign(b);
-    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
-    if(cam.zoom>=0.5) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
-    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
+    for(const cr of L.confRooms){ if(cr.thread) drawRoomSign(cr,t); }
+    drawQueueList(t);
+    for(const cr of L.confRooms){ if(cr.thread) drawConfBadges(cr,t); }
     drawSpeechBubbles(t);
   } else {
-    for(const b of L.bldgs) if(roomVisible(b)) drawBuildingCount(b);
-    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
-    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
+    for(const cr of L.confRooms){ if(cr.thread) drawRoomSign(cr,t); }
     drawSpeechBubbles(t);
   }
-  drawDust(t);
-  updateBirds(t); drawBirds(t); drawButterflies(t);
-  if(dusk.a>0.001||asleep){ ctx.fillStyle=hexA(asleep?"#0a0f22":dusk.col, asleep?0.44:dusk.a); ctx.fillRect(0,0,W,H); }
+  // 7. day/night tint over everything, then vignette
+  const dt2=asleep?0.32:dusk.a;
+  if(dt2>0.001){ ctx.fillStyle=hexA(asleep?"#0a0f22":dusk.col, dt2); ctx.fillRect(0,0,W,H); }
   drawVignette();
-  if(asleep){
-    emptyCapEl.innerHTML="no sessions online — they'll walk in when they start<small>the campus is resting for now</small>";
-    emptyCapEl.classList.add("show");
-  } else emptyCapEl.classList.remove("show");
+  if(asleep){ emptyCapEl.innerHTML="no sessions online — they'll walk in when they start<small>the office is quiet for now</small>"; emptyCapEl.classList.add("show"); }
+  else emptyCapEl.classList.remove("show");
 }
 function onScreen(wx,wy){const x=sx(wx),y=sy(wy);return x>-60&&x<canvas.width+60&&y>-80&&y<canvas.height+60;}
 function roomVisible(r){const x=sx(r.x),y=sy(r.y),x2=sx(r.x+r.w),y2=sy(r.y+r.h);return x2>-20&&x<canvas.width+20&&y2>-20&&y<canvas.height+20;}
 
-/* ---------------- campus ground ---------------- */
-function drawGround(t,nightF){
-  const G=L.ground;
-  const wx0=Math.max(G.x,invX(0)),wx1=Math.min(G.x+G.w,invX(canvas.width));
-  const wy0=Math.max(G.y,invY(0)),wy1=Math.min(G.y+G.h,invY(canvas.height));
-  if(wx1<=wx0||wy1<=wy0) return;
-  const base=nightF>0.4?mix("#9caf6f","#33413a",nightF*0.34):"#9caf6f";
-  px(wx0,wy0,wx1-wx0,wy1-wy0,base);
-  // gentle tonal tufts (viewport-culled, deterministic)
-  const step=30, blade1=mix("#88996a","#2c3830",nightF*0.34), blade2=mix("#aebd84","#39463d",nightF*0.34);
-  for(let yy=Math.floor(wy0/step)*step; yy<wy1; yy+=step){
-    for(let xx=Math.floor(wx0/step)*step; xx<wx1; xx+=step){
-      const hs=hash32(xx+"|"+yy), v=hs%5;
-      if(v===0) px(xx+(hs%10),yy+((hs>>3)%10),2,3,blade1);
-      else if(v===1) px(xx+((hs>>2)%12),yy+((hs>>5)%12),3,2,blade2);
+/* ---------------- fixed floor draw ---------------- */
+function drawFloorFallback(){   // never blank if the baked pngs 404
+  const w=MF.world.w,h=MF.world.h;
+  px(0,0,w,h,"#c9b98e");
+  for(const d of MF.desks){ px(d.desk.x,d.desk.y,d.desk.w,d.desk.h,"#a4763f"); px(d.screen.x,d.screen.y,d.screen.w,d.screen.h,"#2a3d55"); }
+  for(const c of MF.confRooms){ px(c.rect.x,c.rect.y,c.rect.w,c.rect.h,"#cfc7ad"); px(c.table.x,c.table.y,c.table.w,c.table.h,"#9a6b3a"); }
+  if(MF.lounge&&MF.lounge.sofa){ const s=MF.lounge.sofa; px(s.x,s.y,s.w,s.h,"#b5794a"); }
+}
+function drawFloorProps(t){
+  if(L.aquarium) drawAnim("animated_fishtank_orange", L.aquarium.x, L.aquarium.y, 0.85, t, 130, true);
+  if(L.coffee) drawAnim("animated_coffee", L.coffee.x, L.coffee.y, 0.85, t, 160, true);
+}
+function screenColFor(o){
+  if(!o) return "#242832";                    // empty desk → dark screen
+  if(o.mode==="meeting") return "#26506b";     // away in a meeting → blue
+  const st=o.data?o.data.status:"unknown";
+  return st==="blocked"?"#7a2a1e" : st==="working"?"#2f5b3a" : "#2a3d55";
+}
+function drawDeskScreens(t){
+  for(const d of L.desks){ if(!d.screen) continue; const o=d.sid?entities.get(d.sid):null;
+    const sc=d.screen;
+    drawDeskScreen(sc, screenColFor(o));
+    if(o&&!o.walking&&o.mode==="desk"){ const st=o.data?o.data.status:"";
+      if(st==="working"){ const gap=2, off=Math.floor((t*0.02)%gap);
+        for(let ly=sc.y+1-off; ly<sc.y+sc.h-2; ly+=gap){ if(ly<sc.y+1)continue; const ww=2+((ly*7)%Math.max(2,sc.w-3)); px(sc.x+1,ly,Math.max(1,Math.min(ww,sc.w-2)),1,"#6fce8f"); } }
+      else if(st==="blocked" && Math.sin(t*0.01)>0){ px(sc.x+2,sc.y+Math.floor(sc.h/2),sc.w-4,1,"#ff9b7a"); }
     }
   }
-  // drifting cloud soft-shadows (very subtle)
-  ctx.save(); ctx.globalAlpha=0.05;
-  for(const c of clouds){ const cx=((c.x+t*0.000011*c.sp)%1); const wx=G.x+cx*G.w, wy=G.y+c.y*G.h;
-    ctx.fillStyle="#2a2a1a"; ctx.beginPath(); ctx.ellipse(sx(wx),sy(wy),c.r*cam.zoom,c.r*0.48*cam.zoom,0,0,6.283); ctx.fill(); }
-  ctx.restore(); ctx.globalAlpha=1;
 }
-function drawWalkways(){
-  const stone="#d4bd93", edge="#c2a97e", hi="#e0cca4", y=L.spineY;
-  const x0=L.ground.x+16, x1=L.ground.x+L.ground.w-16;
-  px(x0,y-WALK_W/2,x1-x0,WALK_W,stone);
-  px(x0,y-WALK_W/2,x1-x0,2,hi); px(x0,y+WALK_W/2-2,x1-x0,2,edge);
-  const stub=(dx,topY)=>{ px(dx-WALK_W/2,topY,WALK_W,(y-topY)+WALK_W/2,stone); px(dx-WALK_W/2,topY,2,y-topY,hi); };
-  for(const b of L.bldgs) stub(b.doorX,b.y+b.h-4);
-  for(const cr of L.confRooms) stub(cr.doorX,cr.y+cr.h-4);
-  // gate stub
-  px(L.entrance.x-WALK_W/2,y-WALK_W/2,WALK_W,(L.entrance.y-y)+WALK_W/2,stone);
-}
-function drawGate(t){
-  const e=L.entrance, y0=L.spineY;
-  px(e.x-15,y0-4,4,26,"#7d5836"); px(e.x+11,y0-4,4,26,"#7d5836");
-  px(e.x-15,y0-13,30,10,"#8a6b45"); px(e.x-15,y0-13,30,2,"#a5824f");
-  ctx.fillStyle="#f4ead2"; ctx.textAlign="center"; ctx.textBaseline="middle";
-  const fs=Math.max(6,4.4*cam.zoom); ctx.font="800 "+fs+"px system-ui";
-  ctx.fillText("ENGRAM", sx(e.x), sy(y0-8));
-}
-function drawTree(tr,t){
-  const sway=Math.sin(t*0.0009+tr.x)*1.6*tr.s, x=tr.x,y=tr.y,s=tr.s;
-  ctx.fillStyle="rgba(28,18,8,.16)"; ctx.beginPath(); ctx.ellipse(sx(x),sy(y+2),14*s*cam.zoom,4*s*cam.zoom,0,0,6.283); ctx.fill();
-  px(x-2,y-18*s,4,18*s,"#6b4a2c"); px(x-2,y-18*s,2,18*s,"#7d5836");
-  const P=[["#5f7d3a","#6f8f43","#87ab52"],["#5a7742","#6b8a4d","#82a45f"],["#6b7d38","#7c8f44","#95a856"]][tr.k];
-  const cy=y-22*s;
-  const blob=(ox,oy,r,c)=>{ ctx.fillStyle=c; ctx.beginPath(); ctx.ellipse(sx(x+ox+sway),sy(cy+oy),r*s*cam.zoom,r*s*cam.zoom,0,0,6.283); ctx.fill(); };
-  blob(-6,4,9,P[0]); blob(6,4,9,P[0]); blob(0,-2,11,P[1]); blob(-3,-6,7,P[2]); blob(4,-5,6,P[2]);
-}
-function drawBuildingGlow(b,t,nightF){
-  if(!b.lit) return;
-  const strength=0.7+nightF*0.8;
-  ctx.save(); ctx.globalCompositeOperation="lighter";
-  const cx=sx(b.doorX), cy=sy(b.y+b.h+16), r=(b.w*0.82)*cam.zoom;
-  let g=ctx.createRadialGradient(cx,cy,3,cx,cy,r);
-  g.addColorStop(0,"rgba(255,206,124,"+(0.20*strength).toFixed(3)+")"); g.addColorStop(1,"rgba(255,206,124,0)");
-  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,r,0,6.283); ctx.fill();
-  const tx=sx(b.x+b.w/2), ty=sy(b.y-8), tr=(b.w*0.72)*cam.zoom;
-  g=ctx.createRadialGradient(tx,ty,3,tx,ty,tr);
-  g.addColorStop(0,"rgba(255,222,146,"+(0.18*strength).toFixed(3)+")"); g.addColorStop(1,"rgba(255,222,146,0)");
-  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(tx,ty,tr,0,6.283); ctx.fill();
-  ctx.restore();
-}
-
-/* ---------------- a building = one project office ---------------- */
-function drawBuilding(b,t,nightF){
-  const A=b.accent, lit=b.lit;
-  const wall=lit?A.wall:mix(A.wall,"#42403a",0.64), wallDark=lit?A.wallDark:mix(A.wallDark,"#33312c",0.64),
-        wallHi=lit?A.wallHi:mix(A.wallHi,"#55524b",0.55),
-        rug=lit?A.rug:mix(A.rug,"#3c3a34",0.62), rugAlt=lit?A.rugAlt:mix(A.rugAlt,"#34322d",0.62),
-        sign=lit?A.sign:"#5a544c";
-  // ground shadow
-  px(b.x+4,b.y+10,b.w,b.h,"rgba(24,16,6,.18)");
-  // outer wall + rim light
-  px(b.x-WALL,b.y-WALL,b.w+WALL*2,b.h+WALL*2,wallDark);
-  px(b.x-WALL,b.y-WALL,b.w+WALL*2,4,wallHi);
-  px(b.x-WALL,b.y+b.h-1,b.w+WALL*2,WALL+1,mix(wallDark,"#000",0.25));
-  // interior floor + rug
-  px(b.x,b.y+HEADER,b.w,b.h-HEADER,mix(rug,"#000",0.06));
-  px(b.x+4,b.y+HEADER+3,b.w-8,b.h-HEADER-7,rug);
-  px(b.x+10,b.y+HEADER+8,b.w-20,b.h-HEADER-18,rugAlt);
-  // warm interior light pool — makes an occupied office feel cozy-lit
-  if(lit){ ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.10+0.05*Math.sin(t*0.0015+b.x);
-    const cx=sx(b.x+b.w/2), cy=sy(b.y+HEADER+(b.h-HEADER)*0.55), rr=(b.w*0.62)*cam.zoom;
-    const lg=ctx.createRadialGradient(cx,cy,3,cx,cy,rr); lg.addColorStop(0,"#ffdca0"); lg.addColorStop(1,"rgba(255,220,160,0)");
-    ctx.fillStyle=lg; ctx.beginPath(); ctx.arc(cx,cy,rr,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1; }
-  // roof / header bar
-  px(b.x-WALL,b.y-WALL,b.w+WALL*2,HEADER+WALL,sign);
-  px(b.x-WALL,b.y-WALL,b.w+WALL*2,3,mix(sign,"#fff",0.18));
-  // windows (glow warm if lit, dark if not) — kept to the right half so the sign stays legible
-  const winY=b.y-WALL+5, winH=HEADER-7;
-  for(let i=0;i<2;i++){ const wx=b.x+b.w*(0.62+i*0.20)-8;
-    px(wx,winY,16,winH,mix(sign,"#000",0.28)); px(wx+1,winY+1,14,winH-2, lit?"#ffe6a6":"#33333c");
-    if(lit){ ctx.save();ctx.globalCompositeOperation="lighter";ctx.globalAlpha=0.22+0.1*Math.sin(t*0.002+i*2);ctx.fillStyle="#ffd98a";
-      ctx.fillRect(sx(wx+1),sy(winY+1),14*cam.zoom,(winH-2)*cam.zoom);ctx.restore();ctx.globalAlpha=1; } }
-  // door (open dark doorway if lit; closed slab + knob if not)
-  const dw=16, dx=b.doorX-dw/2;
-  px(dx-2,b.y+b.h-14,dw+4,14,wallDark);
-  if(lit){ px(dx,b.y+b.h-12,dw,12,"#3a2a1a"); px(dx,b.y+b.h-12,dw,2,"#553f28"); }
-  else { px(dx,b.y+b.h-12,dw,12,mix(wall,"#000",0.22)); px(dx+dw-4,b.y+b.h-7,2,3,"#caa24a"); }
-  // coffee corner (lit) — animated LimeZu coffee machine, procedural fallback
-  if(lit){ const c=b.coffee;
-    if(!drawAnim("animated_coffee",c.x+2,c.y+4,0.5,t,240,true)){
-      px(c.x-4,c.y-9,8,11,OL); px(c.x-3,c.y-8,6,9,"#4a4038"); px(c.x-3,c.y-8,6,2,"#6a5c50"); px(c.x-2,c.y-4,4,2,"#2a2320"); px(c.x-2,c.y+1,4,2,"#e8ddc8"); }
-  }
-  // fish tank (busiest office) + cuckoo clock (one office) — a little life on the walls
-  if(lit && b.key===L.fishBldg) drawAnim("animated_fishtank_orange", b.x+b.w-24, b.y+HEADER+16, 0.5, t, 130, false);
-  if(lit && b.key===L.clockBldg) drawAnim("animated_cuckoo_clock", b.x+22, b.y+HEADER+13, 0.42, t, 260, false);
-  // dim ghost desks so a dark office still reads as an office
-  if(!lit){ const gy=b.y+HEADER+PADY+CELL_H*0.42;
-    for(let i=0;i<2;i++){ const gx=b.x+PADX+i*CELL_W+CELL_W/2; px(gx-9,gy,18,7,"#39332b"); px(gx-6,gy-7,12,7,"#2a2620"); px(gx-4,gy-6,8,4,"#20242c"); } }
-  // inner border
-  ctx.strokeStyle="rgba(60,44,26,.5)"; ctx.lineWidth=Math.max(1,1.4*cam.zoom);
-  const X=Math.round(sx(b.x)),Y=Math.round(sy(b.y)),Wd=Math.round(sx(b.x+b.w))-X,Hd=Math.round(sy(b.y+b.h))-Y;
-  ctx.strokeRect(X+1,Y+1,Wd-2,Hd-2);
-}
-function drawConfRoom(cr,t){
-  // a meeting with nobody live is asleep — dark glass, no bubble — consistent with a lights-off office
-  const dim = cr.present===0 && meetingOpen!==cr.thread; cr.dim=dim;
-  px(cr.x,cr.y,cr.w,cr.h,"rgba(150,185,210,0.12)");
-  px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2, dim?"#79838d":"#e2ebef");
-  ctx.save(); ctx.globalAlpha=0.16; px(cr.x+4,cr.y+HEADER+2,(cr.w-8)*0.42,cr.h-HEADER-6, dim?"#5f6a74":"#bcdcee"); ctx.restore();
-  ctx.strokeStyle=dim?"#5a6772":"#89a0b2"; ctx.lineWidth=Math.max(1,2*cam.zoom);
-  const X=Math.round(sx(cr.x)),Y=Math.round(sy(cr.y)),Wd=Math.round(sx(cr.x+cr.w))-X,Hd=Math.round(sy(cr.y+cr.h))-Y;
-  ctx.strokeRect(X+1,Y+1,Wd-2,Hd-2);
-  ctx.strokeStyle="rgba(137,160,178,.4)"; ctx.lineWidth=1;
-  for(let gx=cr.x+cr.w*0.33; gx<cr.x+cr.w; gx+=cr.w*0.33){ ctx.beginPath(); ctx.moveTo(sx(gx),Y+HEADER*cam.zoom); ctx.lineTo(sx(gx),Y+Hd-2); ctx.stroke(); }
-  px(cr.x+2,cr.y+1,cr.w-4,HEADER-2, dim?"#42505c":"#5f7d9e"); px(cr.x+2,cr.y+1,cr.w-4,2, dim?"#556370":"#7a97b4");
-  if(!drawConfTable(cr)){   // real LimeZu conference table, procedural oval as fallback
-    ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+3),(cr.tableRx+2)*cam.zoom,(cr.tableRy+2)*cam.zoom,0,0,6.283); ctx.fill();
-    ctx.fillStyle="#8a6b45"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),cr.tableRx*cam.zoom,cr.tableRy*cam.zoom,0,0,6.283); ctx.fill();
-    ctx.fillStyle="#a5824f"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy-2),(cr.tableRx-4)*cam.zoom,(cr.tableRy-3)*cam.zoom,0,0,6.283); ctx.fill();
-  }
-  // "needs Hiren" — an agent asked him something: amber wash + pulsing frame
-  if(threadNeedsHiren(confThread(cr.thread))){
-    const pulse=0.5+0.5*Math.sin(t*0.005);
-    ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.09+0.12*pulse; ctx.fillStyle="#ffcf7a";
-    px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2,"#ffcf7a"); ctx.restore(); ctx.globalAlpha=1;
-    ctx.strokeStyle="rgba(240,170,60,"+(0.5+0.4*pulse).toFixed(3)+")"; ctx.lineWidth=Math.max(1.5,2.4*cam.zoom);
-    const X=Math.round(sx(cr.x)),Y=Math.round(sy(cr.y)),W=Math.round(sx(cr.x+cr.w))-X,H=Math.round(sy(cr.y+cr.h))-Y;
-    ctx.strokeRect(X-1,Y-1,W+2,H+2);
-  } else if(dim){
-    ctx.save(); ctx.globalAlpha=0.40; px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2,"#141a24"); ctx.restore(); ctx.globalAlpha=1;
-    // a soft "zzz" so an empty room reads as asleep, not broken
-    const zx=sx(cr.cx), zy=sy(cr.cy-4); ctx.globalAlpha=0.5+0.3*Math.sin(t*0.002);
-    ctx.fillStyle="#c3ccd4"; ctx.font=Math.max(8,6*cam.zoom)+"px system-ui"; ctx.textAlign="center"; ctx.textBaseline="middle";
-    ctx.fillText("z z z",zx,zy); ctx.globalAlpha=1;
+function drawConfRoomStates(t){   // empty meeting room = dark-tinted + asleep zzz
+  for(const cr of L.confRooms){ if(cr.thread) continue;
+    ctx.save(); ctx.globalAlpha=0.44; px(cr.rect.x,cr.rect.y,cr.rect.w,cr.rect.h,"#0f131c"); ctx.restore(); ctx.globalAlpha=1;
+    const zx=sx(cr.center.x), zy=sy(cr.center.y); ctx.globalAlpha=0.5+0.3*Math.sin(t*0.002);
+    ctx.fillStyle="#c3ccd4"; ctx.font=Math.max(8,6*cam.zoom)+"px system-ui"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("z z z",zx,zy); ctx.globalAlpha=1;
   }
 }
+function drawBoardPins(t){   // cork board = the project board: one coloured pin per live project
+  if(!L.board || cam.zoom<0.6) return;
+  const projs=[...new Set(liveSessions.filter(s=>s.status!=="done").map(s=>s.project||s.repo).filter(Boolean))].slice(0,8);
+  const b=L.board, cols=4;
+  projs.forEach((p,i)=>{ const cx=b.x+7+(i%cols)*10, cy=b.y+9+Math.floor(i/cols)*13;
+    const col=hsl(hash32(p)%360,55,58);
+    px(cx,cy,7,9,"#f4ecd8"); px(cx,cy,7,2,col); px(cx+2,cy-2,3,3,col); });
+}
+function confSignRect(cr){ const x=sx(cr.sign.x-2), y=sy(cr.sign.y-2); return {x,y,w:sx(cr.sign.x+150)-x,h:sy(cr.sign.y+14)-y}; }
+function drawRoomSign(cr,t){
+  ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
+  const fs=Math.max(9,7*cam.zoom), on=Math.sin(t*0.006)>-0.2;
+  const x0=sx(cr.sign.x), y0=sy(cr.sign.y+6);
+  ctx.fillStyle=on?"#8fe09c":"#42704d"; ctx.beginPath(); ctx.arc(x0+4,y0,Math.max(1.6,2.4*cam.zoom),0,6.283); ctx.fill();
+  ctx.fillStyle="#eef4fa"; ctx.font="700 "+fs+"px system-ui";
+  ctx.fillText(trunc("MEETING: "+cr.thread,22), x0+12, y0);
+}
+function drawQueueList(t){   // threads waiting for a room, listed under the last room
+  if(!L.queuedThreads||!L.queuedThreads.length||cam.zoom<0.5) return;
+  const room=L.confRooms[L.confRooms.length-1]; if(!room) return;
+  ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="top";
+  const fs=Math.max(8,5.2*cam.zoom); const xx=sx(room.rect.x+4); let yy=sy(room.rect.y+room.rect.h+4);
+  ctx.fillStyle="#c7bfa8"; ctx.font="700 "+fs+"px system-ui"; ctx.fillText("queued:", xx, yy); yy+=fs+2;
+  ctx.font="600 "+fs+"px system-ui";
+  L.queuedThreads.slice(0,4).forEach(th=>{ ctx.fillStyle="#b3ab95"; ctx.fillText(trunc("• "+th.thread,22), xx, yy); yy+=fs+2; });
+}
+// needs-Hiren pill + open-panel dots (kept from the campus build)
 function drawConfBadges(cr,t){
   const th=confThread(cr.thread);
   if(threadNeedsHiren(th)){
@@ -1376,10 +1190,9 @@ function drawConfBadges(cr,t){
 function drawHirenCameo(e,t){
   const cr=L.confById.get(e.meetingThread);
   const x=e.x, feet=e.y, t2=t/1000, alpha=clamp(e.alpha,0,1);
-  // amber welcome glow over the room
-  if(cr){ ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.16*alpha*(0.5+0.5*Math.abs(Math.sin(t*0.004)));
-    ctx.fillStyle="#ffcf7a"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),(cr.tableRx+26)*cam.zoom,(cr.tableRy+20)*cam.zoom,0,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1; }
-  // the dignified Edward sprite (sit, facing the table) — procedural boss as fallback
+  if(cr){ const rx=cr.table.w*0.7, ry=cr.table.h*0.7;
+    ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.16*alpha*(0.5+0.5*Math.abs(Math.sin(t*0.004)));
+    ctx.fillStyle="#ffcf7a"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),rx*cam.zoom,ry*cam.zoom,0,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1; }
   const drew=drawSprite(e,t,feet,"working",false);
   const sh=32*SPR_SCALE;
   if(!drew){
@@ -1394,15 +1207,13 @@ function drawHirenCameo(e,t){
     px(x-4,headTop-7,8,6,OL); px(x-3,headTop-6,6,5,"#33333d");
     ctx.globalAlpha=1;
   } else {
-    // tiny fedora + tie overlay on the Edward sprite → instantly reads as "the boss"
     const headY=feet-sh*0.82, tieY=feet-sh*0.52;
     ctx.globalAlpha=alpha;
-    px(x-6,headY,12,3,OL); px(x-5,headY+1,10,2,"#2b2b33");                       // fedora brim
-    px(x-4,headY-4,8,5,OL); px(x-3,headY-3,6,4,"#33333d"); px(x-3,headY-3,6,1,"#4a4a58"); // crown
-    px(x-1,tieY,2,7,"#d9603a");                                                 // tie
+    px(x-6,headY,12,3,OL); px(x-5,headY+1,10,2,"#2b2b33");
+    px(x-4,headY-4,8,5,OL); px(x-3,headY-3,6,4,"#33333d"); px(x-3,headY-3,6,1,"#4a4a58");
+    px(x-1,tieY,2,7,"#d9603a");
     ctx.globalAlpha=1;
   }
-  // wave + Hiren nameplate + sparkle
   ctx.globalAlpha=alpha;
   label3(x+9,feet-sh*0.85,"👋",6,"#7a4a12",false);
   const cx=sx(x), fs=Math.max(9,5.4*cam.zoom); ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.font="800 "+fs+"px system-ui";
@@ -1411,61 +1222,6 @@ function drawHirenCameo(e,t){
   ctx.fillStyle="#fff4ea"; ctx.fillText("Hiren",cx,py+1);
   ctx.globalAlpha=1;
   if(Math.random()<0.10) burst(x,feet-sh*0.7,"#ffd86a",3);
-}
-function drawDesk(d,occupant,t){
-  const dx=d.dx,dy=d.dy;
-  const w=CELL_W-18,x=dx+9,y=dy+CELL_H*0.56;
-  const away = occupant && occupant.mode==="meeting";
-  // the 32px sit sprite includes its own chair; for an empty/away seat draw an office chair whose
-  // backrest pokes up behind the monitor (visible past the taller workstation tile)
-  if(away || !occupant){
-    const cw=12, cx0=x+w/2-cw/2, cy0=y-9;
-    px(cx0-1,cy0-1,cw+2,9,OL); px(cx0,cy0,cw,7,"#6f4d2c"); px(cx0,cy0,cw,2,"#8a6136");
-    px(cx0+cw/2-1,cy0+7,2,4,"#5a3f24");
-  }
-  ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(x+w/2),sy(y+11),(w*0.6)*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  // per-status monitor colour — the glanceable living-office signal (survives the tileset upgrade)
-  const st = occupant? (occupant.data?occupant.data.status:"unknown"):"off";
-  const screenCol = away? "#26506b" : (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": st==="off"?"#242832": "#2a3d55");
-  // desk body: LimeZu computer-workstation tile with baked CRT recoloured, else full procedural desk+monitor
-  if(drawDeskTile(d,false)){
-    drawDeskScreen(d,screenCol);
-  } else {
-    px(x-1,y-1,w+2,12,OL);
-    px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
-    px(x+1,y+10,3,4,"#6f4d2c"); px(x+w-4,y+10,3,4,"#6f4d2c");
-    const mw=14, mx=x+w/2-mw/2, my=y-11;
-    px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c");
-    px(mx+1,my+1,mw-2,6,screenCol); px(mx+1,my+8,mw-2,2,"#2a241d");
-  }
-  if(away){ px(x+3,y-4,4,4,"#e8ddc8"); px(x+3,y-5,4,1,"#b98a55"); }
-  else if(occupant){ px(x+w-6,y-3,3,3,"#cf7a52"); }
-}
-// redrawn AFTER the seated sprite: the whole workstation (monitor+desk) sits IN FRONT of the sitter,
-// so the status screen stays glanceable and the head/shoulders read above the monitor
-function drawDeskFront(d){
-  const o=entities.get(d.sid);
-  const st = o? (o.data?o.data.status:"unknown"):"off";
-  const screenCol = (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": st==="off"?"#242832": "#2a3d55");
-  const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
-  if(drawDeskTile(d,false)){
-    drawDeskScreen(d,screenCol);
-  } else {
-    px(x-1,y-1,w+2,13,OL);
-    px(x,y,w,11,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+9,w,2,"#875f33");
-    px(x+1,y+11,3,4,"#6f4d2c"); px(x+w-4,y+11,3,4,"#6f4d2c");
-    const mw=14, mx=x+w/2-mw/2, my=y-11;
-    px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c"); px(mx+1,my+1,mw-2,6,screenCol); px(mx+1,my+8,mw-2,2,"#2a241d");
-    px(x+w/2-6,y+2,12,4,"#2a2620"); px(x+w/2-6,y+2,12,1,"#4a463e");   // keyboard
-  }
-}
-function drawAwayTag(d){
-  const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
-  const cx=sx(x+w/2), cy=sy(y+18);
-  const fs=Math.max(8,4.6*cam.zoom); ctx.font="600 "+fs+"px system-ui"; ctx.textAlign="center"; ctx.textBaseline="middle";
-  const label="in a meeting"; const tw=ctx.measureText(label).width;
-  roundRectFill(cx-tw/2-5,cy-fs*0.75,tw+10,fs*1.5,fs*0.75,"rgba(207,122,82,.92)","rgba(120,60,30,.4)");
-  ctx.fillStyle="#fff4ea"; ctx.fillText(label,cx,cy);
 }
 function drawShadow(e){
   ctx.fillStyle="rgba(24,16,6,.24)"; ctx.globalAlpha=clamp(e.alpha,0,1);
@@ -1604,18 +1360,7 @@ function drawOverlays(e,t,x,feet,headTop,torsoTop,status,walking,typing,stretchi
     if(now<e.sip){ if(Math.random()<0.14) spawn({x:x+6,y:torsoTop-4,vx:0,vy:-0.2,life:0,ttl:700,type:"steam",col:"rgba(255,255,255,.5)"}); }
     else if(now>e.nextZzz){ e.nextZzz=now+2600+Math.random()*2200; spawn({x:x+6,y:headTop-2,vx:0.05,vy:-0.25,life:0,ttl:1600,type:"zzz",col:"#9fb4d8"}); }
   }
-  // monitor code-scroll / glow overlay — keeps "working" reading on top of the sprite
-  if(!walking && e.mode==="desk"){
-    const mw=14, mx=x-mw/2, my=(e.deskDy+CELL_H*0.56)-11;
-    if(status==="working"||status==="available"||status==="idle"){
-      ctx.save(); ctx.globalCompositeOperation="lighter";
-      ctx.globalAlpha=(0.10+0.05*Math.sin(now*0.02+e.phase))*e.alpha; ctx.fillStyle=status==="working"?"#bfe6c8":"#cfe0ef";
-      ctx.beginPath(); ctx.arc(sx(x),sy(my+3),13*cam.zoom,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=clamp(e.alpha,0,1);
-    }
-    if(status==="working"){ const gap=3, off=Math.floor((now*0.02)%gap);
-      for(let ly=my+1-off;ly<my+7;ly+=gap){ if(ly<my)continue; const ww=2+((ly*7)%8); px(mx+1,ly,Math.min(ww,mw-3),1,"#6fce8f"); } }
-    else if(status==="blocked" && Math.sin(now*0.01)>0){ px(mx+2,my+3,mw-5,1,"#ff9b7a"); }
-  }
+  // (the working/blocked monitor animation now lives in drawDeskScreens, on the baked screen rect)
   // status glyphs
   ctx.globalAlpha=clamp(e.alpha,0,1);
   if(status==="blocked"){
@@ -1648,50 +1393,15 @@ function drawParticles(){
 }
 
 function rectsOverlap(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
-function signRectOf(b){ const x=sx(b.x-WALL), y=sy(b.y-WALL); return {x,y,w:sx(b.x+b.w+WALL)-x,h:sy(b.y+HEADER)-y}; }
-function confHeaderRect(cr){ const x=sx(cr.x), y=sy(cr.y); return {x,y,w:sx(cr.x+cr.w)-x,h:sy(cr.y+HEADER)-y}; }
 function roundRect(x,y,w,h,r){r=Math.min(r,h/2,w/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 function roundRectFill(x,y,w,h,r,fill,stroke){ roundRect(x,y,w,h,r); if(fill){ctx.fillStyle=fill;ctx.fill();} if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();} }
 
-function drawBuildingSign(b){
-  ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
-  const fs=Math.max(9,7*cam.zoom); ctx.font="700 "+fs+"px system-ui";
-  const icon=b.unassigned?"🪑":"🏢";
-  const label=trunc(icon+" "+b.label,26)+"  ·  "+b.live;
-  const tx=sx(b.x+7), ty=sy(b.y-WALL+HEADER/2-1);
-  // legibility plate so the name never fights the windows behind it
-  const tw=ctx.measureText(label).width;
-  ctx.fillStyle=b.lit?"rgba(40,26,12,.34)":"rgba(20,18,14,.4)";
-  roundRect(tx-3,ty-fs*0.72,tw+6,fs*1.44,fs*0.5); ctx.fill();
-  ctx.fillStyle=b.lit?"#fff3d8":"#9a927f";
-  ctx.fillText(label, tx, ty);
-  if(b.recentMembers && b.recentMembers.length){
-    const r=b.recentMembers[0]; const nm=(r.name||shortSid(r.session)).split("/").pop();
-    const s2=Math.max(8,5.2*cam.zoom); ctx.font="600 "+s2+"px system-ui";
-    ctx.fillStyle=b.lit?"rgba(90,72,44,.85)":"rgba(150,140,120,.85)";
-    const extra=b.recentMembers.length>1?" +"+(b.recentMembers.length-1):"";
-    ctx.fillText(trunc("↩ "+nm+" left "+recentAgo(r)+extra,26), sx(b.x+9), sy(b.y+b.h-6));
-  }
-}
-function drawBuildingCount(b){
-  ctx.globalAlpha=1; ctx.textAlign="center"; ctx.textBaseline="middle";
-  const fs=Math.max(10,10*cam.zoom); ctx.font="800 "+fs+"px system-ui"; ctx.fillStyle=b.lit?"#f8efdd":"#8f8878";
-  ctx.fillText(trunc(b.label,16)+" · "+b.live, sx(b.x+b.w/2), sy(b.y+b.h/2));
-}
-function drawConfSign(cr,t){
-  const dim=cr.dim;
-  ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
-  const fs=Math.max(9,7.5*cam.zoom);
-  const on=!dim && (Math.sin(t*0.006)>-0.2);
-  ctx.fillStyle=dim?"#5a6772":(on?"#8fe09c":"#42704d"); ctx.beginPath(); ctx.arc(sx(cr.x+9),sy(cr.y+HEADER/2),Math.max(1.6,2.6*cam.zoom),0,6.283); ctx.fill();
-  ctx.fillStyle=dim?"#aeb8c0":"#eef4fa"; ctx.font="700 "+fs+"px system-ui";
-  ctx.fillText(trunc("MEETING: "+cr.thread,24), sx(cr.x+17), sy(cr.y+HEADER/2));
-}
 function drawNameplate(e,lod){
   if(e.alpha<0.5) return;
   const s=e.data;
   const name=trunc(s?(s.name||shortSid(e.id)):shortSid(e.id),20);
-  const sub=(s&&e.mode==="desk")?[s.repo,s.branch].filter(Boolean).join(" · "):"";
+  // second line = the opened PROJECT (the "project file" they're in), falling back to repo
+  const sub=(s&&e.mode==="desk")?(s.project||s.repo||""):"";
   const twoLine=!!sub && lod>=2;
   const cx=sx(e.x);
   const fs=Math.max(11.5,6.2*cam.zoom), sfs=Math.max(9,4.6*cam.zoom);
@@ -1727,7 +1437,7 @@ function drawSpeechBubbles(t){
   if(!payload) return;
   const open=(payload.threads||[]).filter(x=>x.status==="open"&&x.last_turn&&x.last_turn.message);
   for(const th of open){
-    const cr=L.confById.get(th.thread); if(!cr||!roomVisible(cr)||cr.dim) continue;  // asleep rooms show no bubble
+    const cr=L.confById.get(th.thread); if(!cr||!cr.thread||!roomVisible(cr)) continue;  // only active rooms show a bubble
     // anchor the room's latest line ABOVE the header (on the lawn) so it never covers the sign/pills
     drawBubble(cr.cx, cr.y-6, trunc(th.last_turn.message,72), "#3a2f24", "t"+th.thread+(th.last_turn.timestamp||""));
   }
@@ -1755,34 +1465,6 @@ function drawBubble(wx,wy,text,color,popKey){
   ctx.restore();
 }
 
-function drawDust(t){
-  ctx.save(); ctx.globalCompositeOperation="lighter";
-  for(const d of dust){
-    const dx=(d.x + Math.sin(t*0.0001*d.sp+d.ph)*0.04)*canvas.width;
-    const dy=((d.y + (t*0.00002*d.sp))%1)*canvas.height;
-    ctx.globalAlpha=0.08+0.06*Math.sin(t*0.001+d.ph);
-    ctx.fillStyle="#fff3d0"; ctx.beginPath(); ctx.arc(dx,dy,d.s*dpr,0,6.283); ctx.fill();
-  }
-  ctx.restore(); ctx.globalAlpha=1;
-}
-function updateBirds(t){
-  if(t>nextBird){ nextBird=t+7000+Math.random()*13000; const dir=Math.random()<0.5?1:-1;
-    const y=34+Math.random()*canvas.height*0.28; birds.push({x:dir>0?-24:canvas.width+24,y,dir,sp:0.05+Math.random()*0.04,ph:Math.random()*6}); }
-  for(let i=birds.length-1;i>=0;i--){ const b=birds[i]; b.x+=b.dir*b.sp*16*dpr; b.ph+=0.2; if(b.x<-40||b.x>canvas.width+40) birds.splice(i,1); }
-}
-function drawBirds(t){
-  ctx.strokeStyle="rgba(40,30,20,.5)"; ctx.lineWidth=1.4;
-  for(const b of birds){ const flap=Math.sin(b.ph)*3; ctx.beginPath(); ctx.moveTo(b.x-4,b.y+flap); ctx.lineTo(b.x,b.y); ctx.lineTo(b.x+4,b.y+flap); ctx.stroke(); }
-}
-function drawButterflies(t){
-  const a=ANIM["animated_butterfly"]; if(!a||!a.ok) return; const G=L.ground; if(!G.w) return;
-  for(const bf of butterflies){
-    const wx=G.x+G.w*(0.15+0.7*(0.5+0.5*Math.sin(t*0.00008*bf.sp+bf.ph)));
-    const wy=G.y+G.h*(0.25+0.5*(0.5+0.5*Math.sin(t*0.00012*bf.sp+bf.ph*1.7)));
-    const flutter=Math.sin(t*0.02+bf.ph)*3;
-    if(onScreen(wx,wy)) drawAnim("animated_butterfly", wx, wy+flutter, 0.6, t, 90, false);
-  }
-}
 function drawVignette(){
   const g=ctx.createRadialGradient(canvas.width/2,canvas.height*0.42,canvas.height*0.22,canvas.width/2,canvas.height/2,canvas.height*0.80);
   g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(14,10,4,0.20)");
@@ -1790,16 +1472,15 @@ function drawVignette(){
 }
 
 function drawMinimap(){
+  if(!L.ground){ return; }
   const b=L.ground; mctx.clearRect(0,0,mini.width,mini.height);
-  mctx.fillStyle="rgba(20,26,18,.7)"; mctx.fillRect(0,0,mini.width,mini.height);
-  const s=Math.min(mini.width/b.w,mini.height/b.h)*0.92;
+  mctx.fillStyle="rgba(18,20,28,.75)"; mctx.fillRect(0,0,mini.width,mini.height);
+  const s=Math.min(mini.width/b.w,mini.height/b.h)*0.94;
   const ox=(mini.width-b.w*s)/2, oy=(mini.height-b.h*s)/2;
-  const mx=wx=>ox+(wx-b.x)*s, my=wy=>oy+(wy-b.y)*s;
-  mctx.fillStyle="rgba(143,160,106,.5)"; mctx.fillRect(mx(b.x),my(b.y),b.w*s,b.h*s);
-  mctx.strokeStyle="rgba(212,189,147,.75)"; mctx.lineWidth=1.4;
-  mctx.beginPath(); mctx.moveTo(mx(b.x+10),my(L.spineY)); mctx.lineTo(mx(b.x+b.w-10),my(L.spineY)); mctx.stroke();
-  for(const bd of L.bldgs){ mctx.fillStyle=bd.lit?"rgba(200,222,150,.92)":"rgba(120,116,100,.7)"; mctx.fillRect(mx(bd.x),my(bd.y),bd.w*s,bd.h*s); }
-  for(const cr of L.confRooms){ mctx.fillStyle="rgba(126,164,204,.85)"; mctx.fillRect(mx(cr.x),my(cr.y),cr.w*s,cr.h*s); }
+  const mx=wx=>ox+wx*s, my=wy=>oy+wy*s;
+  mctx.fillStyle="rgba(201,185,142,.55)"; mctx.fillRect(mx(0),my(0),b.w*s,b.h*s);           // floor
+  for(const cr of (L.confRooms||[])){ mctx.fillStyle=cr.thread?"rgba(126,164,204,.85)":"rgba(90,100,116,.5)"; mctx.fillRect(mx(cr.rect.x),my(cr.rect.y),cr.rect.w*s,cr.rect.h*s); }
+  for(const d of (L.desks||[])){ mctx.fillStyle=d.sid?"rgba(200,222,150,.92)":"rgba(120,116,100,.55)"; mctx.fillRect(mx(d.rect.x),my(d.rect.y),d.rect.w*s,d.rect.h*s); }
   for(const [,e] of entities){ if(e.alpha<0.3)continue; mctx.fillStyle=statusColor(e.data?e.data.status:"unknown"); mctx.fillRect(mx(e.x)-1,my(e.y)-1,2.4,2.4); }
   const vx0=mx(invX(0)),vy0=my(invY(0)),vx1=mx(invX(canvas.width)),vy1=my(invY(canvas.height));
   mctx.strokeStyle="rgba(255,246,224,.95)"; mctx.lineWidth=1.2; mctx.strokeRect(vx0,vy0,vx1-vx0,vy1-vy0);
