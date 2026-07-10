@@ -398,18 +398,19 @@ function loadInterior(name){ const img=new Image(); const rec={img:null,ok:false
 function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_cuckoo_clock",32,32);
   loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16);
   loadInterior("13_Conference_Hall_16x16"); loadInterior("5_Classroom_and_library_16x16"); }
-// LimeZu classroom desk (solid-front wooden student desk: top edge + front panel + legs), visually picked, whole tile
+// LimeZu computer-workstation desk (baked CRT monitor + tower + keyboard + wood front), visually picked, whole unit
 const DESK_SHEET="5_Classroom_and_library_16x16";
-const DESK_SX=34, DESK_SY=48, DESK_SW=15, DESK_SH=23;
-const DESK_FRONT_FRAC=0.34;   // top slice = surface (drawn behind sprite); lower slice = front panel+legs (redrawn over sprite's lap)
-// place the desk tile into cell d; returns screen rect + the split. false → tile not ready
+const DESK_SX=48, DESK_SY=169, DESK_SW=22, DESK_SH=43;
+const DESK_FRONT_FRAC=0.52;   // lower slice (keyboard + wood front + legs) redrawn over the seated sprite's lap
+// monitor-screen glass within the tile (normalized) — where the per-status recolor is painted over the baked screen
+const DESK_SCR={x0:0.27,x1:0.68,y0:0.05,y1:0.24};
 function deskTilePlace(d){
   const w=CELL_W-18, x=d.dx+9, y=d.dy+CELL_H*0.56;
-  const DW=w+2, DH=26;                 // world footprint — wide+short (foreshortened) to read as an office desk in the cell
-  const topY=y-6;                      // desk top edge just above the cell desk-line
+  const DW=w+2, DH=32;                 // foreshortened so the tall workstation reads in the wide, short cell
+  const topX=x+w/2-DW/2, topY=y-4;     // monitor rides at chest height → head/face show above it, screen stays glanceable
   const Ws=Math.max(1,Math.round(DW*cam.zoom)), Hs=Math.max(1,Math.round(DH*cam.zoom));
-  const pxs=Math.round(sx(x+w/2)-Ws/2), pys=Math.round(sy(topY));
-  return {Ws,Hs,pxs,pys,w,x,y};
+  const pxs=Math.round(sx(topX)), pys=Math.round(sy(topY));
+  return {Ws,Hs,pxs,pys,w,x,y,DW,DH,topX,topY};
 }
 function drawDeskTile(d,frontOnly){
   const dk=INTERIORS[DESK_SHEET]; if(!dk||!dk.ok) return false;
@@ -425,6 +426,15 @@ function drawDeskTile(d,frontOnly){
     }
   }catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
   ctx.imageSmoothingEnabled=prev; return true;
+}
+// crisp per-status recolor painted over the baked monitor screen (green working / red blocked / dim away / off)
+function drawDeskScreen(d,screenCol){
+  const p=deskTilePlace(d);
+  const sx0=p.topX+DESK_SCR.x0*p.DW, sy0=p.topY+DESK_SCR.y0*p.DH;
+  const sw=(DESK_SCR.x1-DESK_SCR.x0)*p.DW, sh=(DESK_SCR.y1-DESK_SCR.y0)*p.DH;
+  px(sx0-0.6,sy0-0.6,sw+1.2,sh+1.2,OL);
+  px(sx0,sy0,sw,sh,screenCol);
+  px(sx0,sy0+sh*0.62,sw,sh*0.16,"rgba(255,255,255,.10)");   // faint scanline sheen
 }
 // LimeZu conference table (src rect in the Conference_Hall tileset) scaled to the room; false → caller draws the oval
 function drawConfTable(cr){
@@ -1406,38 +1416,48 @@ function drawDesk(d,occupant,t){
   const dx=d.dx,dy=d.dy;
   const w=CELL_W-18,x=dx+9,y=dy+CELL_H*0.56;
   const away = occupant && occupant.mode==="meeting";
-  const chOff = away? 8 : 3;
-  // the 32px sit sprite includes its own chair; only draw a procedural chair when the seat is empty/pushed-back
+  // the 32px sit sprite includes its own chair; for an empty/away seat draw an office chair whose
+  // backrest pokes up behind the monitor (visible past the taller workstation tile)
   if(away || !occupant){
-    px(x+w/2-5,y+11+chOff,10,3,"#6f4d2c"); px(x+w/2-5,y+11+chOff,10,1,"#8a6136");
-    px(x+w/2-6,y+7+chOff,2,7,"#6f4d2c"); px(x+w/2+4,y+7+chOff,2,7,"#6f4d2c");
+    const cw=12, cx0=x+w/2-cw/2, cy0=y-9;
+    px(cx0-1,cy0-1,cw+2,9,OL); px(cx0,cy0,cw,7,"#6f4d2c"); px(cx0,cy0,cw,2,"#8a6136");
+    px(cx0+cw/2-1,cy0+7,2,4,"#5a3f24");
   }
   ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(x+w/2),sy(y+11),(w*0.6)*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  // desk body: LimeZu classroom desk tile, else procedural
-  if(!drawDeskTile(d,false)){
+  // per-status monitor colour — the glanceable living-office signal (survives the tileset upgrade)
+  const st = occupant? (occupant.data?occupant.data.status:"unknown"):"off";
+  const screenCol = away? "#26506b" : (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": st==="off"?"#242832": "#2a3d55");
+  // desk body: LimeZu computer-workstation tile with baked CRT recoloured, else full procedural desk+monitor
+  if(drawDeskTile(d,false)){
+    drawDeskScreen(d,screenCol);
+  } else {
     px(x-1,y-1,w+2,12,OL);
     px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
     px(x+1,y+10,3,4,"#6f4d2c"); px(x+w-4,y+10,3,4,"#6f4d2c");
+    const mw=14, mx=x+w/2-mw/2, my=y-11;
+    px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c");
+    px(mx+1,my+1,mw-2,6,screenCol); px(mx+1,my+8,mw-2,2,"#2a241d");
   }
-  // monitor-glow overlay (procedural, status-coloured) — the living-office signal, kept over the tileset desk
-  const mw=14, mx=x+w/2-mw/2, my=y-11;
-  px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c");
-  const st = occupant? (occupant.data?occupant.data.status:"unknown"):"off";
-  const screenCol = away? "#26506b" : (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": "#2a3d55");
-  px(mx+1,my+1,mw-2,6,screenCol);
-  px(mx+1,my+8,mw-2,2,"#2a241d");
   if(away){ px(x+3,y-4,4,4,"#e8ddc8"); px(x+3,y-5,4,1,"#b98a55"); }
-  else { px(x+w-6,y-3,3,3,"#cf7a52"); }
+  else if(occupant){ px(x+w-6,y-3,3,3,"#cf7a52"); }
 }
-// redrawn AFTER the seated sprite so its lower body tucks behind the desk (fixes "sitting on top of the desk")
+// redrawn AFTER the seated sprite: the whole workstation (monitor+desk) sits IN FRONT of the sitter,
+// so the status screen stays glanceable and the head/shoulders read above the monitor
 function drawDeskFront(d){
+  const o=entities.get(d.sid);
+  const st = o? (o.data?o.data.status:"unknown"):"off";
+  const screenCol = (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": st==="off"?"#242832": "#2a3d55");
   const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
-  if(!drawDeskTile(d,true)){
+  if(drawDeskTile(d,false)){
+    drawDeskScreen(d,screenCol);
+  } else {
     px(x-1,y-1,w+2,13,OL);
     px(x,y,w,11,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+9,w,2,"#875f33");
     px(x+1,y+11,3,4,"#6f4d2c"); px(x+w-4,y+11,3,4,"#6f4d2c");
+    const mw=14, mx=x+w/2-mw/2, my=y-11;
+    px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c"); px(mx+1,my+1,mw-2,6,screenCol); px(mx+1,my+8,mw-2,2,"#2a241d");
+    px(x+w/2-6,y+2,12,4,"#2a2620"); px(x+w/2-6,y+2,12,1,"#4a463e");   // keyboard
   }
-  px(x+w/2-6,y+2,12,4,"#2a2620"); px(x+w/2-6,y+2,12,1,"#4a463e");   // keyboard
 }
 function drawAwayTag(d){
   const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
