@@ -66,6 +66,9 @@ _SAFE_THREAD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _MONTH_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
 
+# Live JSON endpoints (office/thread) must never be cached — the browser polls them.
+_NO_STORE = {"Cache-Control": "no-store"}
+
 # The always-present OKF top-level files, in reading order (sidebar + project page).
 _PROJECT_TOP_FILES = (
     ("Context", "context.md"),
@@ -1600,11 +1603,23 @@ def _unfence_html(body: str) -> str:
     return text
 
 
-def register(mcp: FastMCP, settings: Settings) -> None:
-    """Register all explorer GET routes, every one behind the Access guard."""
+def register(mcp: FastMCP, settings: Settings, store: object | None = None) -> None:
+    """Register all explorer routes, every one behind the Access guard.
+
+    ``store`` is the ONE production KBStore instance — passed so the web thread-post
+    endpoint routes through the SAME lock-safe kb_thread_post path as the MCP tools (never
+    a parallel git writer). When omitted (some tests), a local KBStore is bound as a
+    fallback; production MUST pass the shared instance so its single write lock is honored.
+    """
     guard = make_guard(settings)
     brain = settings.brain_path
     _graph_cache: dict[str, dict] = {}
+
+    if store is None:
+        from engram_server.kbstore import KBStore  # lazy: avoid any import-time cycle
+
+        store = KBStore(settings)
+    thread_store = store  # the lock-safe path for web thread reads/posts
 
     async def _graph_payload() -> dict:
         """The concept graph, cached by HEAD sha (rebuilt only when the bundle moves)."""
@@ -2420,6 +2435,64 @@ def register(mcp: FastMCP, settings: Settings) -> None:
         if data is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(data)
+
+    @mcp.custom_route("/brain/api/thread/{thread_id}.json", ["GET"])
+    @guard
+    async def thread_json(request: Request) -> Response:
+        # Live transcript for the office thread panel — the SAME lock-free local read the
+        # MCP kb_thread_read uses, cheap enough for a 1.5-2s browser poll. `?since=<cursor>`
+        # returns only newer turns. Unknown/invalid id → 404 JSON.
+        tid = str(request.path_params.get("thread_id", ""))
+        if not _SAFE_THREAD_RE.match(tid):
+            return JSONResponse({"error": "not found"}, status_code=404, headers=_NO_STORE)
+        since = request.query_params.get("since")
+        try:
+            data = await thread_store.kb_thread_read(tid, since)
+        except KBError:
+            return JSONResponse({"error": "not found"}, status_code=404, headers=_NO_STORE)
+        if data.get("status") == "none":
+            return JSONResponse({"error": "not found"}, status_code=404, headers=_NO_STORE)
+        return JSONResponse(data, headers=_NO_STORE)
+
+    @mcp.custom_route("/brain/api/thread/{thread_id}/post", ["POST"])
+    @guard
+    async def thread_post(request: Request) -> Response:
+        # Hiren replies to an OPEN thread from the browser — routed through the lock-safe
+        # kb_thread_post (secret-scan, commit + push), never a parallel writer. Web posts
+        # only reply: they never create or reopen a thread, and can't close one.
+        tid = str(request.path_params.get("thread_id", ""))
+        if not _SAFE_THREAD_RE.match(tid):
+            return JSONResponse({"error": "unknown thread"}, status_code=409, headers=_NO_STORE)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed body is a 400
+            payload = None
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400, headers=_NO_STORE)
+        message = str(payload.get("message") or "")
+        sender = (str(payload.get("sender") or "").strip() or "hiren")
+        if not message.strip():
+            return JSONResponse({"error": "empty message"}, status_code=400, headers=_NO_STORE)
+        if len(message) > 4000:
+            return JSONResponse(
+                {"error": "message too long (max 4000 chars)"}, status_code=400, headers=_NO_STORE
+            )
+        # Reply-only: the thread must already exist and be open.
+        try:
+            existing = await thread_store.kb_thread_read(tid)
+        except KBError:
+            return JSONResponse({"error": "unknown thread"}, status_code=409, headers=_NO_STORE)
+        status = existing.get("status")
+        if status == "none":
+            return JSONResponse({"error": "unknown thread"}, status_code=409, headers=_NO_STORE)
+        if status == "closed":
+            return JSONResponse({"error": "thread closed"}, status_code=409, headers=_NO_STORE)
+        try:
+            result = await thread_store.kb_thread_post(tid, sender, message)
+        except KBError as exc:
+            # Closed in the race between check and post, or a secret-scan refusal.
+            return JSONResponse({"error": str(exc)}, status_code=400, headers=_NO_STORE)
+        return JSONResponse(result, headers=_NO_STORE)
 
     @mcp.custom_route("/brain/office", ["GET"])
     @guard

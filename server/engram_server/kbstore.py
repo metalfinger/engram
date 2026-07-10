@@ -828,8 +828,9 @@ class KBStore:
 
         # Live capability manifest so a stale chat can detect it's behind (see version.py).
         # Read fresh every load — the one channel that reaches already-open sessions whose
-        # tool list is frozen.
-        manifest = server_manifest()
+        # tool list is frozen. Pass the brain's SKILL.md so the manifest carries a live
+        # skill fingerprint (Claude Code compares it against its local copy and self-heals).
+        manifest = server_manifest(self.root / "skills" / "engram" / "SKILL.md")
 
         if lite:
             # Resume view for a project you already know: skip the (large) index_tree and

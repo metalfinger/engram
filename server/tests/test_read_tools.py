@@ -211,6 +211,52 @@ async def test_kb_load_carries_server_manifest(store):
     assert "stale tool list" in r["server"]["note"]
 
 
+async def test_manifest_carries_skill_fingerprint_and_changes(store: KBStore) -> None:
+    """kb_load's server block fingerprints the live SKILL.md so a session can self-heal a
+    stale local skill copy, and lists the recent protocol changes."""
+    import hashlib
+
+    from engram_server.version import _skill_fingerprint
+
+    projects = await store.kb_projects()
+    r = await store.kb_load(projects[0]["id"])
+    server = r["server"]
+
+    # changes: a short, non-empty protocol changelog.
+    assert isinstance(server["changes"], list) and server["changes"]
+    assert any("wait_for_reply" in c or "long-poll" in c for c in server["changes"])
+
+    # skill: {path, updated, sha} where sha matches the actual SKILL.md bytes on disk.
+    skill_file = store.root / "skills" / "engram" / "SKILL.md"
+    assert skill_file.is_file(), "skeleton must ship the engram skill"
+    assert server["skill"]["path"] == "skills/engram/SKILL.md"
+    expected_sha = hashlib.sha256(skill_file.read_bytes()).hexdigest()[:12]
+    assert server["skill"]["sha"] == expected_sha
+    assert server["skill"]["updated"]
+    # note now teaches the self-heal + hook-install flow
+    assert "skill.sha" in server["note"]
+    assert "engram-presence-hook.sh" in server["note"]
+
+    # The fingerprint helper caches but stays correct on a second call.
+    assert _skill_fingerprint(skill_file)["sha"] == expected_sha
+
+
+async def test_manifest_omits_skill_when_absent(store: KBStore) -> None:
+    """server_manifest with no skill path (or a missing file) simply omits the skill block."""
+    from engram_server.version import server_manifest
+
+    assert "skill" not in server_manifest()
+    assert "skill" not in server_manifest(store.root / "skills" / "does-not-exist.md")
+
+
+async def test_kb_read_reads_skill_outside_projects(store: KBStore) -> None:
+    """kb_read serves bundle-root paths outside projects/ (the skill self-heal path)."""
+    res = await store.kb_read("skills/engram/SKILL.md")
+    assert res["path"] == "skills/engram/SKILL.md"
+    assert "Engram Protocol" in res["content"]
+    assert res["hash"]
+
+
 async def test_load_lite_drops_tree_and_message_bodies(store: KBStore) -> None:
     """lite=True is a token-thrifty resume: no index_tree, no message bodies, but it still
     carries context, the last log line, an unread count + titles, active_concepts, server."""

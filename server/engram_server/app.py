@@ -435,6 +435,10 @@ async def kb_thread_post(
     user tokens (each result lands in the conversation); long-poll is FREE — it sleeps
     server-side. Loop this one call to hold a whole conversation at ~1/10th the tool calls.
 
+    Need input from Hiren himself? Post a turn addressed '@hiren: <question>' and
+    wait_for_reply=True — he sees open threads live in /brain/office and can reply from the
+    browser (his turn arrives as your `reply`, costing zero polling tokens).
+
     Share concepts/artifacts INTO the room with `refs` — a list of repo-relative paths (e.g.
     ['projects/alt/specs/api.md']); they attach to the turn and show as a 'shared:' line the
     other session can kb_read. To share a CODE snippet, drop a fenced ``` code block ``` into
@@ -850,7 +854,7 @@ if _AUTH_ENABLED:
         return RedirectResponse(redirect)
 
 
-register_explorer(mcp, settings)
+register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
 
 

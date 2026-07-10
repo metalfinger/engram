@@ -455,6 +455,129 @@ def test_office_page_serves_html(settings: Settings) -> None:
     assert "text/html" in resp.headers["content-type"]
 
 
+# ------------------------------------------------------------ web thread surface
+
+
+def _client_store(settings: Settings):
+    """A TestClient wired with an explicit KBStore (the production wiring the web
+    thread-post endpoint needs — routes through the shared lock-safe kb_thread_post)."""
+    from engram_server.kbstore import KBStore
+
+    store = KBStore(settings)
+    mcp = FastMCP("test-office")
+    register_explorer(mcp, settings, store)
+    app = Starlette(routes=mcp._custom_starlette_routes)
+    return TestClient(app)
+
+
+def _seed_thread(brain: Path, tid: str = "office-chat", sender: str = "cc-a", msg: str = "first turn") -> None:
+    _thread_files(brain, tid, sender, msg)
+
+
+def test_thread_json_returns_transcript_and_honors_since(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _seed_thread(brain, "office-chat", "cc-a", "hello from the office")
+    client = _client_store(_open(settings))
+
+    resp = client.get("/brain/api/thread/office-chat.json")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+    body = resp.json()
+    assert body["thread"] == "office-chat"
+    assert body["status"] == "open"
+    assert [t["message"] for t in body["turns"]] == ["hello from the office"]
+    cursor = body["cursor"]
+    assert cursor
+
+    # ?since=<cursor> returns only newer turns (none here → empty).
+    again = client.get(f"/brain/api/thread/office-chat.json?since={cursor}").json()
+    assert again["turns"] == []
+
+
+def test_thread_json_unknown_404(settings: Settings) -> None:
+    _seed_repo(settings)
+    client = _client_store(_open(settings))
+    resp = client.get("/brain/api/thread/never-here.json")
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "not found"}
+
+
+def test_thread_post_writes_turn_as_hiren(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _seed_thread(brain, "ask-hiren", "cc-a", "@hiren: ship it?")
+    client = _client_store(_open(settings))
+
+    resp = client.post("/brain/api/thread/ask-hiren/post", json={"message": "yes — ship it"})
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+    result = resp.json()
+    assert result["thread"] == "ask-hiren"
+    assert "hiren" in result["participants"]
+
+    # The turn is visible in the transcript, attributed to hiren.
+    body = client.get("/brain/api/thread/ask-hiren.json").json()
+    hiren_turns = [t for t in body["turns"] if t["sender"] == "hiren"]
+    assert [t["message"] for t in hiren_turns] == ["yes — ship it"]
+
+
+def test_thread_post_custom_sender(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _seed_thread(brain, "sender-test", "cc-a", "who's there?")
+    client = _client_store(_open(settings))
+    resp = client.post(
+        "/brain/api/thread/sender-test/post", json={"message": "me", "sender": "hiren@web"}
+    )
+    assert resp.status_code == 200
+    assert "hiren@web" in resp.json()["participants"]
+
+
+def test_thread_post_rejects_empty_and_oversize(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _seed_thread(brain, "reject-room", "cc-a", "seed")
+    client = _client_store(_open(settings))
+
+    empty = client.post("/brain/api/thread/reject-room/post", json={"message": "   "})
+    assert empty.status_code == 400
+
+    big = client.post("/brain/api/thread/reject-room/post", json={"message": "x" * 4001})
+    assert big.status_code == 400
+
+
+def test_thread_post_unknown_thread_409(settings: Settings) -> None:
+    _seed_repo(settings)
+    client = _client_store(_open(settings))
+    resp = client.post("/brain/api/thread/no-such-thread/post", json={"message": "hi"})
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "unknown thread"
+
+
+def test_thread_post_closed_thread_409(settings: Settings) -> None:
+    _seed_repo(settings)
+    brain = settings.brain_path
+    # A closed thread: thread.md carries status closed.
+    _commit(
+        brain,
+        "threads/done-room/thread.md",
+        "---\ntype: thread\nstatus: closed\ntopic: Wrapped\nclosed_by: cc-a\n"
+        "participants:\n  - cc-a\n---\n\n# Wrapped\n",
+        "thread: done-room cc-a close",
+    )
+    _commit(
+        brain,
+        "threads/done-room/turns/2026-07-09T120000-cc-a.md",
+        "---\ntype: thread-turn\nsender: cc-a\ntimestamp: 2026-07-09T12:00:00+00:00\nseq: 1\n---\n\nfinal.\n",
+        "thread: done-room cc-a posted",
+    )
+    client = _client_store(_open(settings))
+    resp = client.post("/brain/api/thread/done-room/post", json={"message": "one more"})
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "thread closed"
+
+
 # ------------------------------------------------------------ access gate
 
 
@@ -463,3 +586,6 @@ def test_office_endpoints_stay_guarded(settings: Settings) -> None:
     assert client.get("/brain/api/office.json").status_code == 403
     assert client.get("/brain/api/session/alice-cc").status_code == 403
     assert client.get("/brain/office").status_code == 403
+    # the new web thread surface is guarded too (GET transcript + POST reply)
+    assert client.get("/brain/api/thread/any-thread.json").status_code == 403
+    assert client.post("/brain/api/thread/any-thread/post", json={"message": "x"}).status_code == 403
