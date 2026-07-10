@@ -386,6 +386,26 @@ let seenActivity=new Set(), threadSlots=new Map();
 const cam={x:400,y:300,zoom:1,tx:400,ty:300,tzoom:1,vx:0,vy:0};
 let view={cx:0,cy:0};
 
+/* ---------- animated LimeZu props (self-contained frame strips; drawImage) ---------- */
+const ANIM={}, butterflies=[];
+function loadAnim(name,fw,fh){ const img=new Image(); const rec={img:null,frames:1,fw,fh,ok:false}; ANIM[name]=rec;
+  img.onload=()=>{ rec.img=img; rec.frames=Math.max(1,(img.width/fw)|0); rec.ok=true; };
+  img.onerror=()=>{ rec.ok=false; };
+  img.src=ASSET_BASE+"/limezu/animated/"+name+".png"; }
+function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_cuckoo_clock",32,32);
+  loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16); }
+// draw an animated prop at world (wx,wy); scale is world-px-per-source-px; anchorBottom feet-aligns
+function drawAnim(name,wx,wy,scale,t,ms,anchorBottom){
+  const a=ANIM[name]; if(!a||!a.ok) return false;
+  const idx=Math.floor(t/ms)%a.frames;
+  const W=Math.max(1,Math.round(a.fw*scale*cam.zoom)), H=Math.max(1,Math.round(a.fh*scale*cam.zoom));
+  const px_=Math.round(sx(wx)-W/2), py_=Math.round(anchorBottom?(sy(wy)-H):(sy(wy)-H/2));
+  const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false;
+  try{ ctx.drawImage(a.img, (idx*a.fw)|0,0,a.fw,a.fh, px_,py_,W,H); }
+  catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
+  ctx.imageSmoothingEnabled=prev; return true;
+}
+
 /* ============================ grouping ============================ */
 function groupKey(s){
   if(s.room && s.room.trim() && s.room!=="unassigned") return s.room.trim();
@@ -496,7 +516,11 @@ function relayout(){
       const hs=hash32(gx+","+gy); const jx=gx+(hs%24-12), jy=gy+((hs>>3)%20-10);
       if(free(jx,jy)) trees.push({x:jx,y:jy,k:hs%3,s:0.8+((hs>>5)%50)/100}); } }
 
-  L={bldgs,bldgById,confRooms,confById,entrance,spineY,ground,trees,inMeeting:new Set()};
+  // pick which office gets the fish tank (busiest) and which gets the cuckoo clock (first lit)
+  let fishBldg=null,fishN=-1,clockBldg=null;
+  for(const b of bldgs){ if(!b.lit) continue; if(b.live>fishN){fishN=b.live;fishBldg=b.key;} if(!clockBldg&&b.key!==fishBldg)clockBldg=b.key; }
+  if(!clockBldg) clockBldg=fishBldg;
+  L={bldgs,bldgById,confRooms,confById,entrance,spineY,ground,trees,fishBldg,clockBldg,inMeeting:new Set()};
 
   /* --- seat live participants in meetings (LIVE-ONLY: no ghost guests) --- */
   const matchLive=(pname)=>{ const key=norm(pname);
@@ -509,6 +533,7 @@ function relayout(){
 
   /* --- assign each live entity a destination (route along walkways on change) --- */
   for(const [id,e] of entities){
+    if(e.isHiren) continue;   // the cameo manages its own seat + lifetime
     const s=e.data;
     if(!s || e.gone || (s&&s.status==="done")){
       if(e.dest!=="leave"){ e.dest="leave"; routeLeave(e); }
@@ -585,7 +610,7 @@ function ingest(data){
     if(!e){ e=makeEntity(s); entities.set(s.session,e); if(!firstIngest) newborns.push(e); else e.alpha=1; }
     e.data=s; e.color=paletteFor(s.host,s.session); e.gone=false;
   }
-  for(const [id,e] of entities){ if(!seen.has(id)) e.gone=true; }
+  for(const [id,e] of entities){ if(!e.isHiren && !seen.has(id)) e.gone=true; }
   relayout();
   applyLocalLastTurns();
 
@@ -985,7 +1010,18 @@ mInputEl.addEventListener("input",autoGrow);
 mInputEl.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMeeting(); } });
 mSendEl.onclick=sendMeeting;
 document.getElementById("mClose").onclick=closeMeeting;
-function triggerHirenCameo(id){ cameo={thread:id,born:performance.now(),ttl:5200}; }
+// Hiren cameo is a REAL entity (renders via the same drawCharacter→drawSprite path as everyone else)
+function triggerHirenCameo(id){
+  const cr=L.confById.get(id); if(!cr) return;
+  const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
+  const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+cr.tableRy+12};
+  let e=entities.get("__hiren__");
+  if(!e){ e=makeEntity({session:"__hiren__",name:"Hiren",host:"hiren-boss",status:"available"}); entities.set("__hiren__",e); }
+  e.isHiren=true; e.spriteChar="Edward"; e.data={session:"__hiren__",name:"Hiren",host:"hiren-boss",status:"available"};
+  e.mode="meeting"; e.meetingThread=id; e.seatTarget={x:seat.x,y:seat.y};
+  e.x=e.tx=seat.x; e.y=e.ty=seat.y; e.alpha=1; e.gone=false; e.leaving=false; e.walking=false; e.path=null;
+  e.hirenUntil=performance.now()+5200;
+}
 
 /* ============================ sizing ============================ */
 function resize(){
@@ -996,6 +1032,7 @@ function resize(){
   const mr=mini.getBoundingClientRect(); mini.width=Math.round(mr.width*dpr); mini.height=Math.round(mr.height*dpr);
   if(dust.length===0){ for(let i=0;i<64;i++) dust.push({x:Math.random(),y:Math.random(),s:0.4+Math.random()*1.1,ph:Math.random()*6.28,sp:0.2+Math.random()*0.5}); }
   if(clouds.length===0){ for(let i=0;i<5;i++) clouds.push({x:Math.random(),y:0.08+Math.random()*0.84,r:70+Math.random()*90,sp:0.5+Math.random()}); }
+  if(butterflies.length===0){ for(let i=0;i<3;i++) butterflies.push({ph:Math.random()*6.28,sp:0.6+Math.random()*0.7}); }
 }
 window.addEventListener("resize",resize);
 
@@ -1024,6 +1061,14 @@ function frame(t){
 function updateEntities(dt){
   const now=performance.now();
   for(const [id,e] of entities){
+    if(e.isHiren){   // Hiren cameo: sit at the room's hiren seat, fade out after its window
+      const cr=L.confById.get(e.meetingThread);
+      if(cr){ const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
+        const seat=(pi>=0&&cr.seats[pi])?cr.seats[pi]:{x:cr.cx,y:cr.cy+cr.tableRy+12};
+        e.x=e.tx=seat.x; e.y=e.ty=seat.y; }
+      if(now>e.hirenUntil){ e.alpha-=dt*0.005; if(e.alpha<=0){ entities.delete(id); } }
+      continue;
+    }
     if(!e.leaving && e.alpha<1) e.alpha=Math.min(1,e.alpha+dt*0.004);
     if(e.path && e.path.length){ const wp=e.path[0]; e.tx=wp.x; e.ty=wp.y; }
     const dx=e.tx-e.x, dy=e.ty-e.y, dist=Math.hypot(dx,dy);
@@ -1084,16 +1129,14 @@ function draw(t){
     if(cam.zoom>=0.5) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
     drawSpeechBubbles(t);
-    drawCameo(t);
   } else {
     for(const b of L.bldgs) if(roomVisible(b)) drawBuildingCount(b);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
     drawSpeechBubbles(t);
-    drawCameo(t);
   }
   drawDust(t);
-  updateBirds(t); drawBirds(t);
+  updateBirds(t); drawBirds(t); drawButterflies(t);
   if(dusk.a>0.001||asleep){ ctx.fillStyle=hexA(asleep?"#0a0f22":dusk.col, asleep?0.44:dusk.a); ctx.fillRect(0,0,W,H); }
   drawVignette();
   if(asleep){
@@ -1206,8 +1249,14 @@ function drawBuilding(b,t,nightF){
   px(dx-2,b.y+b.h-14,dw+4,14,wallDark);
   if(lit){ px(dx,b.y+b.h-12,dw,12,"#3a2a1a"); px(dx,b.y+b.h-12,dw,2,"#553f28"); }
   else { px(dx,b.y+b.h-12,dw,12,mix(wall,"#000",0.22)); px(dx+dw-4,b.y+b.h-7,2,3,"#caa24a"); }
-  // coffee corner (lit)
-  if(lit){ const c=b.coffee; px(c.x-4,c.y-9,8,11,OL); px(c.x-3,c.y-8,6,9,"#4a4038"); px(c.x-3,c.y-8,6,2,"#6a5c50"); px(c.x-2,c.y-4,4,2,"#2a2320"); px(c.x-2,c.y+1,4,2,"#e8ddc8"); }
+  // coffee corner (lit) — animated LimeZu coffee machine, procedural fallback
+  if(lit){ const c=b.coffee;
+    if(!drawAnim("animated_coffee",c.x+2,c.y+4,0.5,t,240,true)){
+      px(c.x-4,c.y-9,8,11,OL); px(c.x-3,c.y-8,6,9,"#4a4038"); px(c.x-3,c.y-8,6,2,"#6a5c50"); px(c.x-2,c.y-4,4,2,"#2a2320"); px(c.x-2,c.y+1,4,2,"#e8ddc8"); }
+  }
+  // fish tank (busiest office) + cuckoo clock (one office) — a little life on the walls
+  if(lit && b.key===L.fishBldg) drawAnim("animated_fishtank_orange", b.x+b.w-24, b.y+HEADER+16, 0.5, t, 130, false);
+  if(lit && b.key===L.clockBldg) drawAnim("animated_cuckoo_clock", b.x+22, b.y+HEADER+13, 0.42, t, 260, false);
   // dim ghost desks so a dark office still reads as an office
   if(!lit){ const gy=b.y+HEADER+PADY+CELL_H*0.42;
     for(let i=0;i<2;i++){ const gx=b.x+PADX+i*CELL_W+CELL_W/2; px(gx-9,gy,18,7,"#39332b"); px(gx-6,gy-7,12,7,"#2a2620"); px(gx-4,gy-6,8,4,"#20242c"); } }
@@ -1266,40 +1315,44 @@ function drawConfBadges(cr,t){
     ctx.globalAlpha=1;
   }
 }
-function drawCameo(t){
-  if(!cameo) return;
-  const age=performance.now()-cameo.born;
-  if(age>cameo.ttl){ cameo=null; return; }
-  const cr=L.confById.get(cameo.thread); if(!cr){ cameo=null; return; }
-  if(!roomVisible(cr)) return;
-  let seat=null; const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
-  if(pi>=0&&cr.seats[pi]) seat=cr.seats[pi]; else seat={x:cr.cx,y:cr.cy+cr.tableRy+12};
-  const alpha=Math.min(clamp(age/300,0,1),clamp((cameo.ttl-age)/600,0,1));
-  const x=seat.x, feet=seat.y, t2=t/1000, bob=Math.sin(t2*2)*0.6;
+function drawHirenCameo(e,t){
+  const cr=L.confById.get(e.meetingThread);
+  const x=e.x, feet=e.y, t2=t/1000, alpha=clamp(e.alpha,0,1);
   // amber welcome glow over the room
-  ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.14*alpha*(0.5+0.5*Math.abs(Math.sin(t*0.004)));
-  ctx.fillStyle="#ffcf7a"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),(cr.tableRx+26)*cam.zoom,(cr.tableRy+20)*cam.zoom,0,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1;
+  if(cr){ ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.16*alpha*(0.5+0.5*Math.abs(Math.sin(t*0.004)));
+    ctx.fillStyle="#ffcf7a"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),(cr.tableRx+26)*cam.zoom,(cr.tableRy+20)*cam.zoom,0,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1; }
+  // the dignified Edward sprite (sit, facing the table) — procedural boss as fallback
+  const drew=drawSprite(e,t,feet,"working",false);
+  const sh=32*SPR_SCALE;
+  if(!drew){
+    ctx.globalAlpha=alpha;
+    const headTop=feet-26-Math.sin(t2*2)*0.6, torsoTop=headTop+10;
+    px(x-8,torsoTop+2,3,15,"#3a3a44"); px(x+6,torsoTop+2,3,15,"#3a3a44");
+    px(x-7,torsoTop-1,15,14,OL); px(x-6,torsoTop,13,12,"#33465e"); px(x+1,torsoTop,6,12,"#28384c"); px(x-6,torsoTop,13,2,"#4a6180");
+    px(x-1,torsoTop,2,9,"#d9603a");
+    px(x-6,headTop-1,12,12,OL); px(x-5,headTop,10,10,"#f2c79b"); px(x+2,headTop,3,10,"#dcae82");
+    px(x-3,headTop+4,1,2,"#2a2018"); px(x+2,headTop+4,1,2,"#2a2018");
+    px(x-7,headTop-2,14,3,OL); px(x-6,headTop-1,12,2,"#2b2b33");
+    px(x-4,headTop-7,8,6,OL); px(x-3,headTop-6,6,5,"#33333d");
+    ctx.globalAlpha=1;
+  } else {
+    // tiny fedora + tie overlay on the Edward sprite → instantly reads as "the boss"
+    const headY=feet-sh*0.82, tieY=feet-sh*0.52;
+    ctx.globalAlpha=alpha;
+    px(x-6,headY,12,3,OL); px(x-5,headY+1,10,2,"#2b2b33");                       // fedora brim
+    px(x-4,headY-4,8,5,OL); px(x-3,headY-3,6,4,"#33333d"); px(x-3,headY-3,6,1,"#4a4a58"); // crown
+    px(x-1,tieY,2,7,"#d9603a");                                                 // tie
+    ctx.globalAlpha=1;
+  }
+  // wave + Hiren nameplate + sparkle
   ctx.globalAlpha=alpha;
-  ctx.fillStyle="rgba(24,16,6,.25)"; ctx.beginPath(); ctx.ellipse(sx(x),sy(feet+10),8*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  const headTop=feet-26-bob, torsoTop=headTop+10;
-  // Hiren = a bespoke dignified boss (dark suit, tie, fedora) so he's instantly distinct from the roster
-  px(x-8,torsoTop+2,3,15,"#3a3a44"); px(x+6,torsoTop+2,3,15,"#3a3a44");           // legs
-  px(x-7,torsoTop-1,15,14,OL); px(x-6,torsoTop,13,12,"#33465e"); px(x+1,torsoTop,6,12,"#28384c"); px(x-6,torsoTop,13,2,"#4a6180"); // suit
-  px(x-1,torsoTop,2,9,"#d9603a");                                                // tie
-  px(x-8,torsoTop+1,3,7,OL); px(x-7,torsoTop+1,2,6,"#33465e"); px(x-8,torsoTop+6,3,3,OL); px(x-7,torsoTop+6,2,2,"#f2c79b"); // left arm
-  const wav=Math.sin(t2*8)*2;                                                     // waving right arm
-  px(x+6,headTop-1+wav*0,3,8,OL); px(x+6,headTop-1,2,7,"#33465e"); px(x+6,headTop-4,3,3,OL); px(x+6,headTop-4,2,2,"#f2c79b");
-  px(x-6,headTop-1,12,12,OL); px(x-5,headTop,10,10,"#f2c79b"); px(x+2,headTop,3,10,"#dcae82"); // head
-  px(x-3,headTop+4,1,2,"#2a2018"); px(x+2,headTop+4,1,2,"#2a2018");               // eyes
-  px(x-7,headTop-2,14,3,OL); px(x-6,headTop-1,12,2,"#2b2b33");                    // hat brim
-  px(x-4,headTop-7,8,6,OL); px(x-3,headTop-6,6,5,"#33333d"); px(x-3,headTop-6,6,1,"#4a4a58"); // hat crown
-  label3(x+9,headTop-6,"👋",6,"#7a4a12",false);
+  label3(x+9,feet-sh*0.85,"👋",6,"#7a4a12",false);
   const cx=sx(x), fs=Math.max(9,5.4*cam.zoom); ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.font="800 "+fs+"px system-ui";
-  const tw=ctx.measureText("Hiren").width, py=sy(feet-40);
+  const tw=ctx.measureText("Hiren").width, py=sy(feet-sh-4);
   roundRectFill(cx-tw/2-7,py-fs*0.75,tw+14,fs*1.6,fs*0.8,"rgba(217,96,42,.96)","rgba(120,50,20,.5)");
   ctx.fillStyle="#fff4ea"; ctx.fillText("Hiren",cx,py+1);
   ctx.globalAlpha=1;
-  if(Math.random()<0.14) burst(x,headTop-4,"#ffd86a",3);
+  if(Math.random()<0.10) burst(x,feet-sh*0.7,"#ffd86a",3);
 }
 function drawDesk(d,occupant,t){
   const dx=d.dx,dy=d.dy;
@@ -1344,6 +1397,7 @@ function drawShadow(e){
 
 /* ---------------- crafted character ---------------- */
 function drawCharacter(e,t,lod){
+  if(e.isHiren){ drawHirenCameo(e,t); return; }
   const col=e.color, s=e.data, status=s?s.status:"unknown";
   const now=t, local=t/1000+e.phase;
   ctx.globalAlpha=clamp(e.alpha,0,1);
@@ -1642,6 +1696,15 @@ function drawBirds(t){
   ctx.strokeStyle="rgba(40,30,20,.5)"; ctx.lineWidth=1.4;
   for(const b of birds){ const flap=Math.sin(b.ph)*3; ctx.beginPath(); ctx.moveTo(b.x-4,b.y+flap); ctx.lineTo(b.x,b.y); ctx.lineTo(b.x+4,b.y+flap); ctx.stroke(); }
 }
+function drawButterflies(t){
+  const a=ANIM["animated_butterfly"]; if(!a||!a.ok) return; const G=L.ground; if(!G.w) return;
+  for(const bf of butterflies){
+    const wx=G.x+G.w*(0.15+0.7*(0.5+0.5*Math.sin(t*0.00008*bf.sp+bf.ph)));
+    const wy=G.y+G.h*(0.25+0.5*(0.5+0.5*Math.sin(t*0.00012*bf.sp+bf.ph*1.7)));
+    const flutter=Math.sin(t*0.02+bf.ph)*3;
+    if(onScreen(wx,wy)) drawAnim("animated_butterfly", wx, wy+flutter, 0.6, t, 90, false);
+  }
+}
 function drawVignette(){
   const g=ctx.createRadialGradient(canvas.width/2,canvas.height*0.42,canvas.height*0.22,canvas.width/2,canvas.height/2,canvas.height*0.80);
   g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(14,10,4,0.20)");
@@ -1665,7 +1728,7 @@ function drawMinimap(){
 }
 
 /* ============================ boot ============================ */
-function start(){ resize(); loadSprites(); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
+function start(){ resize(); loadSprites(); loadProps(); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
 if(document.readyState==="complete"||document.readyState==="interactive") start();
 else window.addEventListener("DOMContentLoaded",start);
 })();
