@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from anyio import to_thread
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 
 from engram_server.errors import KBError
 from engram_server.explorer.access import make_guard
@@ -68,6 +74,12 @@ _MONTH_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
 
 # Live JSON endpoints (office/thread) must never be cached — the browser polls them.
 _NO_STORE = {"Cache-Control": "no-store"}
+
+# Office sprite assets live alongside this module; served same-origin behind the guard.
+_ASSETS_ROOT = (Path(__file__).parent / "assets").resolve()
+# Only static, non-executable asset types the office page loads (sprite sheets + atlases).
+_ASSET_MEDIA_TYPES = {".png": "image/png", ".json": "application/json"}
+_ASSET_CACHE = {"Cache-Control": "public, max-age=3600"}
 
 # The always-present OKF top-level files, in reading order (sidebar + project page).
 _PROJECT_TOP_FILES = (
@@ -2512,6 +2524,37 @@ def register(mcp: FastMCP, settings: Settings, store: object | None = None) -> N
         if text is None:
             return HTMLResponse("<h1>office.html pending</h1>")
         return HTMLResponse(text)
+
+    @mcp.custom_route("/brain/office/assets/{path:path}", ["GET"])
+    @guard
+    async def office_asset(request: Request) -> Response:
+        # Same-origin sprite sheets for the office page. Path-safe: the candidate must
+        # resolve INSIDE _ASSETS_ROOT (rejecting '..', absolute, and empty), and only
+        # .png/.json are served — never anything executable. Cached 1h (sprites rarely
+        # change, and the route is behind Access anyway).
+        rel = str(request.path_params.get("path", ""))
+        if not rel or rel.startswith("/") or "\\" in rel:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        ext = posixpath.splitext(rel)[1].lower()
+        media_type = _ASSET_MEDIA_TYPES.get(ext)
+        if media_type is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        candidate = (_ASSETS_ROOT / rel).resolve()
+        if not candidate.is_relative_to(_ASSETS_ROOT):
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        def _load() -> bytes | None:
+            try:
+                if not candidate.is_file():
+                    return None
+                return candidate.read_bytes()
+            except OSError:
+                return None
+
+        data = await to_thread.run_sync(_load)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return Response(content=data, media_type=media_type, headers=_ASSET_CACHE)
 
     @mcp.custom_route("/share/{token}", ["GET"])
     async def share_view(request: Request) -> Response:

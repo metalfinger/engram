@@ -578,6 +578,42 @@ def test_thread_post_closed_thread_409(settings: Settings) -> None:
     assert resp.json()["error"] == "thread closed"
 
 
+# ------------------------------------------------------------ office sprite assets
+
+_KNOWN_ASSET = "limezu/characters/Adam_16x16.png"
+
+
+def test_office_asset_serves_png(settings: Settings) -> None:
+    resp = _client(_open(settings)).get(f"/brain/office/assets/{_KNOWN_ASSET}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["cache-control"] == "public, max-age=3600"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"  # real PNG magic
+
+
+def test_office_asset_unknown_file_404(settings: Settings) -> None:
+    resp = _client(_open(settings)).get("/brain/office/assets/limezu/characters/Nope_16x16.png")
+    assert resp.status_code == 404
+
+
+def test_office_asset_rejects_bad_extension(settings: Settings) -> None:
+    # LICENSE.md exists in the assets tree but .md is not a served type.
+    resp = _client(_open(settings)).get("/brain/office/assets/limezu/LICENSE.md")
+    assert resp.status_code == 404
+
+
+def test_office_asset_rejects_traversal(settings: Settings) -> None:
+    client = _client(_open(settings))
+    # Encoded '..' segments must never escape the assets root (httpx keeps %2f encoded).
+    for evil in (
+        "..%2f..%2foffice.png",
+        "..%2f..%2f..%2fapp.png",
+        "..%2f..%2fexplorer.png",
+    ):
+        resp = client.get(f"/brain/office/assets/{evil}")
+        assert resp.status_code == 404, f"{evil!r} should 404, got {resp.status_code}"
+
+
 # ------------------------------------------------------------ access gate
 
 
@@ -589,3 +625,5 @@ def test_office_endpoints_stay_guarded(settings: Settings) -> None:
     # the new web thread surface is guarded too (GET transcript + POST reply)
     assert client.get("/brain/api/thread/any-thread.json").status_code == 403
     assert client.post("/brain/api/thread/any-thread/post", json={"message": "x"}).status_code == 403
+    # sprite assets are guarded too
+    assert client.get(f"/brain/office/assets/{_KNOWN_ASSET}").status_code == 403
