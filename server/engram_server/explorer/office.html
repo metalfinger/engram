@@ -335,8 +335,11 @@ let frameSignRects=[], framePlaced=[];  // per-frame label collision bookkeeping
 /* ============================ state ============================ */
 let payload=null, liveSessions=[], recentSessions=[];
 let entities=new Map(), particles=[], dust=[], clouds=[], birds=[];
-let L={bldgs:[],bldgById:new Map(),confRooms:[],confById:new Map(),
-  entrance:{x:0,y:0},spineY:0,ground:{x:0,y:0,w:800,h:600},trees:[],inMeeting:new Set()};
+// initial L matches the FLOOR shape (desks/confRooms/etc) so draw() never hits an
+// undefined iterator during the first frames before the live payload arrives
+let L={desks:[],confRooms:[],confById:new Map(),lounge:null,
+  door:{x:184,y:344},coffee:null,aquarium:null,board:null,
+  ground:{x:0,y:0,w:544,h:352},inMeeting:new Set(),queuedThreads:[]};
 let selectedId=null, hoverId=null, firstIngest=true, curSig="", nextBird=0;
 let meetingOpen=null, meetingTimer=null, meetingCursor=null, meetingSeen=new Set(), meetingContent=new Set();
 let cameo=null, demoExtra={}, localLastTurn={};
@@ -462,7 +465,7 @@ let roomAssign=new Map();   // thread name → conference-room index (0/1)
 const AISLE_Y=228;          // clear horizontal corridor below the desk rows (open floor)
 const DESK_SEAT_RAISE=24;   // px to lift a desk sitter so head/shoulders read above the tall baked desk
 function relayout(){
-  if(!payload || !MF) return;
+  if(!MF) return;   // geometry is fixed — runs fine with payload=null (empty office)
   const world=MF.world;
   const desks=MF.desks.map((d,i)=>({idx:i,rect:d.desk,seat:d.seat,screen:d.screen,sid:null}));
   const confRooms=MF.confRooms.map((c,i)=>({idx:i,rect:c.rect,table:c.table,center:c.center,seats:c.seats,sign:c.sign,
@@ -493,7 +496,7 @@ function relayout(){
   /* --- conference rooms: 2 most-recently-active claim the rooms; extras queue --- */
   const lastMs=t=>{ const a=Date.parse(t.last_activity||""); if(!isNaN(a)) return a;
     const b=t.last_turn&&Date.parse(t.last_turn.timestamp||t.last_turn.ts||""); return isNaN(b)?0:b; };
-  const open=(payload.threads||[]).filter(t=>t.status==="open").sort((a,b)=>lastMs(b)-lastMs(a));
+  const open=((payload&&payload.threads)||[]).filter(t=>t.status==="open").sort((a,b)=>lastMs(b)-lastMs(a));
   const active=open.slice(0,confRooms.length), queued=open.slice(confRooms.length);
   const activeNames=new Set(active.map(t=>t.thread));
   for(const th of [...roomAssign.keys()]) if(!activeNames.has(th)) roomAssign.delete(th);
@@ -1016,14 +1019,17 @@ function duskTint(){
 /* ============================ render loop ============================ */
 let lastT=performance.now();
 function frame(t){
+  // re-register FIRST so a draw exception can never kill the loop permanently
+  requestAnimationFrame(frame);
   const dt=Math.min(64,t-lastT); lastT=t;
   const k=1-Math.exp(-dt*0.011);
   cam.x+=(cam.tx-cam.x)*k; cam.y+=(cam.ty-cam.y)*k; cam.zoom+=(cam.tzoom-cam.zoom)*k;
-  updateEntities(dt); updateParticles(dt);
-  draw(t); drawMinimap();
+  try{
+    updateEntities(dt); updateParticles(dt);
+    draw(t); drawMinimap();
+  }catch(err){ if(!frame._warned){ frame._warned=true; console.error("frame error (loop continues):", err); } }
   const d=new Date(serverNow());
   clockEl.textContent=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
-  requestAnimationFrame(frame);
 }
 function updateEntities(dt){
   const now=performance.now();
@@ -1497,7 +1503,7 @@ function drawMinimap(){
 }
 
 /* ============================ boot ============================ */
-function start(){ resize(); loadSprites(); loadProps(); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
+function start(){ resize(); loadSprites(); loadProps(); relayout(); fitAll(true); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
 if(document.readyState==="complete"||document.readyState==="interactive") start();
 else window.addEventListener("DOMContentLoaded",start);
 })();
