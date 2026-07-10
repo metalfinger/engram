@@ -35,7 +35,12 @@ _GIT_TIMEOUT = 10.0
 # throttled (>5 min stale OR a meaningful field change), so this spans many resumes.
 _DOSSIER_REVS = 40
 
-_LIVE_WINDOW_SEC = 15 * 60  # a session is "live" when its heartbeat is <= 15 min old
+_LIVE_WINDOW_SEC = 15 * 60  # heartbeat <= 15 min → actively working
+# Graduated presence: an OPEN Claude Code session only heartbeats when prompts flow, so a
+# quiet-but-open session lapses past the live window without being gone. Between 15 min and
+# 2 h it stays at its desk (live:true) but flips to a quiet "idle" tier; only past 2 h is it
+# treated as truly departed and moved to recent[].
+_IDLE_WINDOW_SEC = 120 * 60
 
 # Kind priority — the most meaningful path in a commit wins (a handoff that also drops a
 # pointer turn into a room reads as "handoff", not "thread"). Lower rank = higher priority.
@@ -347,8 +352,11 @@ def _first_seen_returning(brain: Path, sid: str, now: dt.datetime) -> tuple[str,
 def _session_row(brain: Path, meta: dict, now: dt.datetime, projects: dict[str, str]) -> dict:
     """A presence frontmatter dict -> the sessions[] row shape.
 
-    Adds age_sec + live, the returning-employee flags (first_seen + returning), and the
-    resolved visual room (room / room_label / room_kind).
+    Adds age_sec + live + quiet, the returning-employee flags (first_seen + returning), and
+    the resolved visual room (room / room_label / room_kind). Presence is graduated:
+    ``live`` is true through the whole 2 h idle window (so a quiet-but-open session keeps its
+    desk); ``quiet`` marks the 15 min–2 h tier, whose status is overridden to "idle" (unless
+    it already said "done") so the UI can show it dozing rather than actively working.
     """
     d = _to_utc(meta.get("updated"))
     age = _age_sec(d, now)
@@ -360,10 +368,17 @@ def _session_row(brain: Path, meta: dict, now: dt.datetime, projects: dict[str, 
     first_seen, returning = _first_seen_returning(brain, sid, now)
     if not first_seen:
         first_seen = updated  # fall back to the current heartbeat when there's no history
+
+    live = age is not None and age <= _IDLE_WINDOW_SEC
+    quiet = age is not None and _LIVE_WINDOW_SEC < age <= _IDLE_WINDOW_SEC
+    status = str(meta.get("status") or "unknown")
+    if quiet and status != "done":
+        status = "idle"  # dozing at the desk, not actively working
+
     return {
         "session": sid,
         "name": str(meta.get("name") or ""),
-        "status": str(meta.get("status") or "unknown"),
+        "status": status,
         "working_on": str(meta.get("working_on") or ""),
         "repo": str(meta.get("repo") or ""),
         "branch": str(meta.get("branch") or ""),
@@ -372,7 +387,8 @@ def _session_row(brain: Path, meta: dict, now: dt.datetime, projects: dict[str, 
         "host": str(meta.get("host") or ""),
         "updated": updated,
         "age_sec": age,
-        "live": age is not None and age <= _LIVE_WINDOW_SEC,
+        "live": live,
+        "quiet": quiet,
         "first_seen": first_seen,
         "returning": returning,
         "room": room,
@@ -431,11 +447,12 @@ def _threads(brain: Path, now: dt.datetime) -> list[dict]:
 def office_payload(brain: Path, now: dt.datetime) -> dict:
     """The /brain/api/office.json body: now + sessions + recent + rooms + threads + activity.
 
-    ``sessions`` holds ONLY live rows (heartbeat within the 15-min window) — these are the
-    characters the office renders. Stale rows move to ``recent`` (same row shape) so the UI
-    can list who was recently around WITHOUT spawning a ghost character for a dead session.
-    ``rooms`` is derived from the LIVE sessions only, so an office with only stale sessions
-    stays empty rather than showing a populated-looking room.
+    ``sessions`` holds every live row — the actively-working (heartbeat <= 15 min) AND the
+    quiet-idle tier (15 min–2 h, ``quiet:true``, status forced to "idle"); both get a desk /
+    character so an open-but-quiet session doesn't vanish. Rows older than 2 h move to
+    ``recent`` (same row shape) so the UI can list who was recently around WITHOUT spawning a
+    ghost character. ``rooms`` is derived from the live sessions (both tiers occupy desks), so
+    an office with only long-departed sessions stays empty.
     """
     projects = _known_projects(brain)
     all_rows = _sessions(brain, now, projects)

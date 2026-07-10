@@ -391,14 +391,14 @@ def test_new_hire_is_not_returning(settings: Settings) -> None:
     assert row["first_seen"]
 
 
-# ------------------------------------------------------------ live vs recent (stale) split
+# ------------------------------------------------------------ graduated presence (live / idle / recent)
 
 
-def test_office_json_excludes_stale_from_sessions_lists_in_recent(settings: Settings) -> None:
-    """A live session spawns a character (sessions[]); a stale one is dossier-only (recent[])."""
+def test_office_json_excludes_departed_lists_in_recent(settings: Settings) -> None:
+    """A live session spawns a character (sessions[]); one departed >2h is dossier-only (recent[])."""
     _seed_repo(settings)
     brain = settings.brain_path
-    # Live: heartbeat 2 min old. Stale: 40 min old (past the 15-min live window).
+    # Live: heartbeat 2 min old. Departed: 3 h old (past the 2-h idle window).
     _commit(
         brain,
         "workspace/presence/live-one.md",
@@ -407,10 +407,10 @@ def test_office_json_excludes_stale_from_sessions_lists_in_recent(settings: Sett
     )
     _commit(
         brain,
-        "workspace/presence/stale-one.md",
-        _presence_doc("stale-one", name="Stale-One", status="idle", updated=_updated(-40),
+        "workspace/presence/gone-one.md",
+        _presence_doc("gone-one", name="Gone-One", status="idle", updated=_updated(-180),
                       project="pixelpuri", repo="pixelpuri"),
-        "workspace: presence stale-one (idle)",
+        "workspace: presence gone-one (idle)",
     )
     body = _client(_open(settings)).get("/brain/api/office.json").json()
 
@@ -418,32 +418,94 @@ def test_office_json_excludes_stale_from_sessions_lists_in_recent(settings: Sett
     recent_ids = {s["session"] for s in body["recent"]}
     assert "live-one" in live_ids
     assert "live-one" not in recent_ids
-    assert "stale-one" in recent_ids
-    assert "stale-one" not in live_ids
+    assert "gone-one" in recent_ids
+    assert "gone-one" not in live_ids
     # every sessions[] row is genuinely live; every recent[] row is not
     assert all(s["live"] is True for s in body["sessions"])
     assert all(s["live"] is False for s in body["recent"])
     # recent rows keep the full row shape so the UI can list them
-    stale = next(s for s in body["recent"] if s["session"] == "stale-one")
-    assert stale["name"] == "Stale-One"
-    assert stale["room"] == "pixelpuri"
+    gone = next(s for s in body["recent"] if s["session"] == "gone-one")
+    assert gone["name"] == "Gone-One"
+    assert gone["room"] == "pixelpuri"
 
 
-def test_office_json_rooms_derived_from_live_only(settings: Settings) -> None:
-    """A room whose only session is stale must NOT appear in rooms[] (empty office stays empty)."""
+def test_office_json_quiet_session_idles_at_desk(settings: Settings) -> None:
+    """A 30-min-old OPEN session stays in sessions[] (keeps its desk) as a quiet idle tier."""
     _seed_repo(settings)
     brain = settings.brain_path
     _commit(
         brain,
+        "workspace/presence/quiet-one.md",
+        _presence_doc("quiet-one", name="Quiet-One", status="working", updated=_updated(-30)),
+        "workspace: presence quiet-one (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "quiet-one")
+    assert row["live"] is True
+    assert row["quiet"] is True
+    assert row["status"] == "idle"  # overridden from "working" — dozing, not active
+    assert "quiet-one" not in {s["session"] for s in body["recent"]}
+
+
+def test_office_json_active_session_not_quiet(settings: Settings) -> None:
+    """A 5-min-old session is fully live: quiet false, status untouched."""
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/active-one.md",
+        _presence_doc("active-one", name="Active-One", status="working", updated=_updated(-5)),
+        "workspace: presence active-one (working)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "active-one")
+    assert row["live"] is True
+    assert row["quiet"] is False
+    assert row["status"] == "working"
+
+
+def test_office_json_quiet_done_status_preserved(settings: Settings) -> None:
+    """A quiet-tier session that already reported 'done' is NOT relabeled idle."""
+    _seed_repo(settings)
+    brain = settings.brain_path
+    _commit(
+        brain,
+        "workspace/presence/wrapped-one.md",
+        _presence_doc("wrapped-one", name="Wrapped-One", status="done", updated=_updated(-45)),
+        "workspace: presence wrapped-one (done)",
+    )
+    body = _client(_open(settings)).get("/brain/api/office.json").json()
+    row = next(s for s in body["sessions"] if s["session"] == "wrapped-one")
+    assert row["quiet"] is True
+    assert row["status"] == "done"  # done beats the idle override
+
+
+def test_office_json_rooms_include_idle_tier_exclude_departed(settings: Settings) -> None:
+    """Idle-tier sessions occupy desks (their room appears); a >2h room is gone (empty office)."""
+    _seed_repo(settings)
+    brain = settings.brain_path
+    # Idle tier (45 min) → its room should appear.
+    _commit(
+        brain,
+        "workspace/presence/idler.md",
+        _presence_doc("idler", name="Idler", status="working", updated=_updated(-45),
+                      project="pixelpuri", repo="pixelpuri"),
+        "workspace: presence idler (working)",
+    )
+    # Departed (>2h), the ONLY occupant of its room → room must not appear.
+    _commit(
+        brain,
         "workspace/presence/ghost.md",
-        _presence_doc("ghost", name="Ghost", status="idle", updated=_updated(-40),
+        _presence_doc("ghost", name="Ghost", status="idle", updated=_updated(-200),
                       project="stellar-ux-exploration", repo="stellar-ux-exploration"),
         "workspace: presence ghost (idle)",
     )
     body = _client(_open(settings)).get("/brain/api/office.json").json()
     room_ids = {r["id"] for r in body["rooms"]}
-    assert "stellar-ux-exploration" not in room_ids
-    assert body["sessions"] == []  # no live session → no characters at all
+    assert "pixelpuri" in room_ids  # idle tier occupies a desk
+    assert "stellar-ux-exploration" not in room_ids  # departed → empty
+    assert "idler" in {s["session"] for s in body["sessions"]}
+    assert "ghost" in {s["session"] for s in body["recent"]}
 
 
 # ------------------------------------------------------------ /brain/office page
