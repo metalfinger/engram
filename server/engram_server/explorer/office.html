@@ -343,7 +343,10 @@ const ASSET_BASE = location.pathname.includes("/brain/") ? "/brain/office/assets
 // full LimeZu pack (47 chars). MAIN pool = sit-capable adults (no kids); rare easter eggs;
 // Edward reserved for the Hiren cameo. Animation sets vary per character — the fallback
 // chain in drawSprite degrades sit->idle_anim etc., so any char with a sheet still renders.
-const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bouncer","Bruce","Conference_man","Conference_woman","Dan","Edward","Lucy","Molly","Old_woman_Jenny","Pier","Roki","Samuel"];
+const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bruce","Dan","Edward","Lucy","Molly","Pier","Rob","Roki","Samuel",
+  "Conference_man","Conference_woman","Doctor_1","Doctor_2","Nurse_1","Nurse_2","Old_man_Josh","Old_woman_Jenny",
+  "Cleaner_boy","Cleaner_girl","Chef_Alex","Chef_Lucy","Chef_Molly","Chef_Pier","Chef_Rob",
+  "Bouncer","Butcher","Butcher_2","Fishmonger_1","Fishmonger_2"];
 const SPRITE_EGGS=["Witch","Zombie","Prisoner_1","Prisoner_2","Prisoner_3"];
 const SPRITE_TYPES=["idle_anim","run","sit","sit2","sit3","phone","reading"];  // 'idle' static omitted (only 1 char ships it; idle_anim is universal)
 const SPR_SCALE=1.4, FOOT_OFF=1;   // 16x32 frames; feet-anchored at e.y
@@ -466,7 +469,12 @@ function relayout(){
     const seats=[]; const cnt=Math.max(m.P.length,1);
     // seats fan from the BOTTOM (PI/2, half-step offset) so nobody sits directly
     // under the room header — headers, bubbles and nameplates stop fighting
-    for(let i=0;i<cnt;i++){const a=Math.PI/2+((i+0.5)/cnt)*Math.PI*2; seats.push({x:cxc+Math.cos(a)*m.seatRx,y:cyc+Math.sin(a)*m.seatRy});}
+    // keep a 16x32 sprite (at SPR_SCALE) fully inside the glass walls
+    const halfW=16*SPR_SCALE*0.5+4, sprTop=32*SPR_SCALE*0.62;
+    for(let i=0;i<cnt;i++){const a=Math.PI/2+((i+0.5)/cnt)*Math.PI*2;
+      const sxpos=clamp(cxc+Math.cos(a)*m.seatRx, x+halfW, x+m.w-halfW);
+      const sypos=clamp(cyc+Math.sin(a)*m.seatRy, y+HEADER+sprTop, y+m.h-6);
+      seats.push({x:sxpos,y:sypos});}
     const cr={thread:m.th.thread,topic:m.th.topic,x,y,w:m.w,h:m.h,cx:cxc,cy:cyc,tableRx:m.tableRx,tableRy:m.tableRy,seats,participants:m.P,th:m.th};
     cr.doorX=x+m.w/2; cr.doorIn={x:cr.doorX,y:y+m.h-12};
     confRooms.push(cr); right=Math.max(right,x+m.w); bottom=Math.max(bottom,y+m.h); });
@@ -550,7 +558,7 @@ function pickSprite(s){
   if(hash32("egg:"+(s.session||"?"))%50===0) return SPRITE_EGGS[hash32(key)%SPRITE_EGGS.length]; // ~2% easter egg
   return SPRITE_MAIN[hash32(key)%SPRITE_MAIN.length];
 }
-function pickTint(s){ const h=hash32("hue:"+(s.session||"?")); return (h%4===0)?((h>>>4)%6)*60+20:0; } // ~1/4 lightly tinted
+function pickTint(s){ return 0; } // 47-char roster gives natural variety; no hue tint needed
 function makeEntity(s){
   const now=performance.now();
   return {id:s.session,data:s,
@@ -1060,6 +1068,9 @@ function draw(t){
   const ents=[...entities.values()].filter(e=>e.alpha>0.02&&onScreen(e.x,e.y)).sort((a,b)=>a.y-b.y);
   const lod = cam.zoom>=0.7?2 : cam.zoom>=0.38?1 : 0;
   for(const e of ents){ drawShadow(e); drawCharacter(e,t,lod); }
+  // desk fronts on top of seated occupants → they sit BEHIND the desk, not on it
+  if(cam.zoom>=0.4) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue;
+    for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.alpha>0.2&&o.mode==="desk"&&!o.walking) drawDeskFront(d); } }
   drawParticles();
   // labels, painted low→high z: nameplate < header/sign < needs-Hiren badge < speech bubble
   frameSignRects=[]; framePlaced=[];
@@ -1310,6 +1321,14 @@ function drawDesk(d,occupant,t){
   if(away){ px(x+3,y-4,4,4,"#e8ddc8"); px(x+3,y-5,4,1,"#b98a55"); }
   else { px(x+w-6,y-3,3,3,"#cf7a52"); }
 }
+// redrawn AFTER the seated sprite so its lower body tucks behind the desk (fixes "sitting on top of the desk")
+function drawDeskFront(d){
+  const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
+  px(x-1,y-1,w+2,13,OL);
+  px(x,y,w,11,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+9,w,2,"#875f33");
+  px(x+1,y+11,3,4,"#6f4d2c"); px(x+w-4,y+11,3,4,"#6f4d2c");
+  px(x+w/2-6,y+2,12,4,"#2a2620"); px(x+w/2-6,y+2,12,1,"#4a463e");   // keyboard
+}
 function drawAwayTag(d){
   const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
   const cx=sx(x+w/2), cy=sy(y+18);
@@ -1371,18 +1390,23 @@ function drawSprite(e,t,feet,status,walking){
     else { const c=Math.floor(t/9000)%4; want=(c===0?"phone":(c===2?"reading":"idle_anim")); animMs=(want==="phone"?200:want==="reading"?250:170); dir=e.facing>0?"right":"left"; }
   } else { want="idle_anim"; animMs=170; dir=e.facing>0?"right":"left"; }
   const r=resolveSheet(set,want); if(!r) return false;
-  const type=r.type, img0=r.entry.img, frames=Math.max(1,Math.floor(img0.width/16));
+  const type=r.type, img0=r.entry.img;
+  // derive EVERYTHING from the loaded image so a sheet whose real length differs never half-cuts:
+  const frames=Math.max(1,(img0.width/16)|0);
   const step=Math.floor(t/animMs);
+  // phone/reading are single-sequence; 4-direction sheets only when frames divides evenly by 4
+  // (Witch/Zombie idle_anim=6 → single-sequence, not a broken 4-dir read)
+  const single = type==="phone" || type==="reading" || (frames%4!==0);
   let idx;
-  if(type==="phone") idx=step%frames;
-  else if(type==="reading") idx=step%Math.min(6,frames);   // first-block loop (18-frame sheet, dir layout varies)
-  else if(type==="idle") idx=DIRI[dir]%frames;
-  else { const per=type==="sit3"?3:6; idx=(DIRI[dir]*per + step%per)%frames; }
+  if(single){ idx = step % frames; }
+  else { const perDir = frames/4; idx = DIRI[dir]*perDir + (step % perDir); }
+  idx = ((idx % frames) + frames) % frames;   // clamp: never exceed the sheet
   const img=tintedSheet(img0, e.spriteChar+"|"+type, e.tintHue);
   const zs=SPR_SCALE*cam.zoom, W=Math.max(1,Math.round(16*zs)), H=Math.max(1,Math.round(32*zs));
+  const sxi=(idx*16)|0;   // integer source x — fractional bleeds neighbouring frames
   const px_=Math.round(sx(e.x)-W/2), py_=Math.round(sy(feet)-H+Math.round(FOOT_OFF*zs));
   const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false; ctx.globalAlpha=clamp(e.alpha,0,1);
-  try{ ctx.drawImage(img, idx*16,0,16,32, px_,py_, W,H); }
+  try{ ctx.drawImage(img, sxi,0,16,32, px_,py_, W,H); }
   catch(_){ ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return false; }
   ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return true;
 }
