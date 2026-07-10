@@ -17,10 +17,11 @@ Never try to load everything. Orient from indexes, fetch files one at a time as 
 ## Session start
 
 1. If no project is identified yet and work is beginning, call `kb_projects()` and ask Hiren which one (or infer from what he's discussing — he often just starts talking about a client).
-2. On "load X" or clear project context: `kb_load(project)`.
-3. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, if you're in Claude Code). Act on them or ask, then `kb_mark_read`.
-4. `kb_load` returns a `server` block listing the tools this server currently offers. If any tool it names is missing from your available tools, this chat is running a STALE tool list (opened before the last update) — tell Hiren to start a fresh chat to use the newer tools; his writes here are still safe. Only mention this when there's a real gap.
-5. Confirm state in ONE line (current phase + top open loop). Do not recite the whole context back.
+2. On "load X" or clear project context: `kb_load(project)` — but if this session already knows the project (resuming, or context was compacted), use `kb_load(project, lite=True)` (context + messages headline only, ~70% fewer tokens). Full load only on first genuine touch.
+3. **Attach the session to its project** (Claude Code): if the repo has no `.engram-project` file at its root and the work clearly belongs to a brain project, ask ONCE — "attach this repo to <project>?" — and on yes write the pin (`echo <project> > .engram-project`). The presence hook then homes this and every future session here to that project's office automatically. If Hiren says no or there's no matching project, drop it; unpinned is fine (shows under "open desks").
+4. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, if you're in Claude Code). Act on them or ask, then `kb_mark_read`.
+5. `kb_load` returns a `server` block listing the tools this server currently offers. If any tool it names is missing from your available tools, this chat is running a STALE tool list (opened before the last update) — tell Hiren to start a fresh chat to use the newer tools; his writes here are still safe. Only mention this when there's a real gap.
+6. Confirm state in ONE line (current phase + top open loop). Do not recite the whole context back.
 
 Independent/non-project questions need no loading — not every conversation is a KB session. Load only when work on a known project begins.
 
@@ -104,21 +105,46 @@ right after a server restart may error on a stale session — just retry.
 Many sessions run at once across Hiren's PCs; make yours visible and coordinated. Full guide:
 [multi-session-workspace](../../library/runbooks/multi-session-workspace.md).
 
-- **Announce yourself.** Right after loading (and again whenever your task changes), call
-  `kb_presence(session, name, status, working_on, repo, branch, repo_remote, cwd, project)` so
-  you appear on other sessions' rosters and Hiren's `/brain/workspace` board. In Claude Code,
-  auto-detect git context first (`git rev-parse --show-toplevel` / `--abbrev-ref HEAD`,
-  `git remote get-url origin`, cwd); claude.ai self-reports what it knows. Presence is a
-  heartbeat — re-announce to stay live (TTL ~15 min); idle sessions drop off.
+- **Presence is automatic in Claude Code.** Hooks announce every session (repo, branch,
+  remote, cwd, host, `.engram-project` pin) and heartbeat it on each prompt — do NOT call
+  `kb_presence` for mere existence. Call it only to set a meaningful `working_on` line, flag
+  `status: blocked`, or from claude.ai (no hooks there). TTL ~15 min; SessionEnd marks done.
 - **See who's active.** `kb_roster(active_within_min=15)` lists live sessions; `kb_workspace()`
   gives the aggregated view (roster + open rooms + recent handoffs) — use it for "what's running
   across my workspace right now."
-- **Collaborate in rooms.** Rooms are threads generalized to N parties (`kb_thread_post` /
-  `kb_thread_read`, close with `close=True`; poll ~2-3s, use `/loop`). Share code in fenced
-  blocks; share brain concepts/artifacts via `refs` on the post rather than re-pasting.
+- **Collaborate in rooms — long-poll, never tight-poll.** Rooms are threads generalized to N
+  parties. To ask another session something: `kb_thread_post(..., wait_for_reply=True,
+  wait_seconds=25)` — ONE call that posts and returns the reply the moment it lands. To wait for
+  further turns: `kb_thread_read(thread, since=cursor, wait_seconds=25)` in a loop. NEVER poll
+  every 2-3s — each poll is a tool call that costs Hiren real tokens; the server-side wait is
+  free and just as fast. Always pass the previous `cursor` so old turns aren't re-bought.
+  Close with `close=True`. Share code in fenced blocks; share brain concepts/artifacts via
+  `refs` on the post rather than re-pasting.
 - **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.
+
+## Token thrift — every kb_* result lands in Hiren's context and costs his plan
+
+Engram must stay CHEAP to run. Rules, in priority order:
+
+1. **Never tight-poll.** Waiting on another session = `wait_for_reply=True` /
+   `wait_seconds` (server-side wait, one tool call). A 2-3s poll loop is the single
+   most expensive mistake — dozens of tool results for zero new information.
+2. **Cursor discipline.** Always pass `since=<previous cursor>` to `kb_thread_read`;
+   re-reading a thread from the top re-buys every old turn.
+3. **Load lazily, once.** `kb_load` once per project per session; `lite=True` when
+   resuming or after compaction. Never re-load to "refresh" — read the one file you
+   need (`kb_read`) instead.
+4. **Don't repeat searches.** One well-phrased `kb_search` beats three narrow ones
+   (it's already multi-query + hybrid). Reuse results you already have in context.
+5. **Presence is free.** Hooks handle it in Claude Code — zero tool calls. Don't
+   heartbeat manually.
+6. **Write once, edit surgically.** `kb_edit` a section instead of `kb_write`-ing a
+   whole file back (the smaller call AND the smaller result). Batch related close-out
+   writes into the close checklist, not scattered mid-session writes.
+7. **Read what you need.** `depth=1` only when you actually need the neighborhood;
+   plain `kb_read` otherwise.
 
 ## Writing conventions
 
