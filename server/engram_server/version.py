@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-07-10.smooth-threads"
+SERVER_VERSION = "2026-07-10.meetings-widget"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -32,11 +32,13 @@ CURRENT_TOOLS = (
     "kb_thread_post", "kb_thread_read", "kb_threads",
     "kb_presence", "kb_roster", "kb_handoff", "kb_workspace",
     "kb_claim", "kb_release", "kb_claims",
+    "kb_meetings", "meetings_state", "meeting_transcript", "meeting_reply",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so
 # a resuming session (any PC) learns the current protocol without re-reading the skill.
 CHANGES = (
+    "kb_meetings: watch + reply to live threads from any claude.ai chat (mobile too)",
     "threads: long-poll — use wait_for_reply=True / wait_seconds, never 2-3s polling",
     "kb_load: lite=True for cheap resumes",
     "office.json: sessions[] is live-only (+recent[])",

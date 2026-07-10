@@ -30,6 +30,15 @@ from engram_server.doctor import run_doctor
 from engram_server.errors import GitError
 from engram_server.explorer import register as register_explorer
 from engram_server.kbstore import KBStore
+from engram_server.meetings_widget import (
+    meeting_reply as _meeting_reply_impl,
+)
+from engram_server.meetings_widget import (
+    meetings_app_tool_meta,
+    meetings_payload,
+    meetings_tool_meta,
+    register_meetings_widget,
+)
 from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
@@ -126,6 +135,13 @@ mcp = FastMCP(
 # navigation tools advertise the ui:// resource so a capable host mounts the
 # inline card. When off, _nav_meta is None and the tools stay plain.
 _nav_meta = navigator_tool_meta(settings.widget)
+
+# Meeting widget (SEP-1865): kb_meetings mounts it (model+app visible, stays a
+# fully useful plain tool when no widget host is present); the other three are
+# APP-ONLY — the widget's own data plane, invisible to the model, zero context
+# cost, callable only from the widget's tools/call bridge.
+_meet_meta = meetings_tool_meta(settings.widget)
+_meet_app_meta = meetings_app_tool_meta(settings.widget)
 
 
 @mcp.tool(meta=_nav_meta)
@@ -493,6 +509,58 @@ async def kb_threads() -> list[dict[str, Any]]:
     return await store.kb_threads()
 
 
+@mcp.tool(meta=_meet_meta)
+async def kb_meetings() -> dict[str, Any]:
+    """Show Hiren his live meeting rooms — call when he asks about meetings, threads,
+    what agents are discussing, or wants to reply to one from claude.ai (especially
+    mobile, where the browser office isn't handy). Lists only OPEN cross-session
+    threads with a preview of the last turn; `needs_hiren` flags a room whose last
+    turn starts '@hiren:' waiting on a reply.
+
+    Returns {threads: [{thread, topic, status, participants, turn_count,
+    last_activity, last_turn: {sender, message, timestamp} | null, needs_hiren}]}.
+
+    Mounts the meetings widget; keep your text to one short line after it mounts.
+    """
+    return await meetings_payload(store)
+
+
+@mcp.tool(meta=_meet_app_meta)
+async def meetings_state() -> dict[str, Any]:
+    """App-only poll target for the meetings widget's rooms list — same shape as
+    kb_meetings. Never call this yourself; it exists for the widget's own bridge.
+
+    Returns {threads: [...]} (see kb_meetings).
+    """
+    return await meetings_payload(store)
+
+
+@mcp.tool(meta=_meet_app_meta)
+async def meeting_transcript(thread: str, since: str = "") -> dict[str, Any]:
+    """App-only poll target for the meetings widget's transcript view — a thin
+    wrapper over kb_thread_read. Never call this yourself; it exists for the
+    widget's own bridge.
+
+    Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
+    message}], cursor, closed_by?}.
+    """
+    return await store.kb_thread_read(thread, since=since or None, wait_seconds=0)
+
+
+@mcp.tool(meta=_meet_app_meta)
+async def meeting_reply(thread: str, message: str) -> dict[str, Any]:
+    """App-only: post `message` into an OPEN thread as Hiren (sender is always
+    'hiren' — the OAuth allowlist means every caller through this server IS him).
+    Reply-only, mirroring the web office exactly: the thread must already exist
+    and be open (never creates or reopens one), 4000-char cap, secret-scanned like
+    any other thread post. Never call this yourself; it exists for the widget's
+    own bridge.
+
+    Returns {thread, seq, status, participants, posted, pushed, warnings}.
+    """
+    return await _meeting_reply_impl(store, thread, message)
+
+
 @mcp.tool()
 async def kb_presence(
     session: str,
@@ -856,6 +924,7 @@ if _AUTH_ENABLED:
 
 register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
+register_meetings_widget(mcp, settings.widget)
 
 
 # ------------------------------------------------------------------ entrypoint

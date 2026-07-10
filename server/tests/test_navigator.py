@@ -32,7 +32,9 @@ def test_tool_meta_off_is_none() -> None:
 
 
 def test_tool_meta_on_carries_resource_uri() -> None:
-    assert navigator_tool_meta(True) == {"ui": {"resourceUri": NAVIGATOR_URI}}
+    assert navigator_tool_meta(True) == {
+        "ui": {"resourceUri": NAVIGATOR_URI, "visibility": ["model", "app"]}
+    }
 
 
 def test_resource_meta_shape() -> None:
@@ -237,7 +239,7 @@ def test_app_flag_on_wires_three_tools_and_resource(monkeypatch) -> None:
     app_module = _reload_app(monkeypatch, widget=True)
     try:
         tools = {t.name: t for t in asyncio.run(app_module.mcp.list_tools())}
-        wired = {"ui": {"resourceUri": NAVIGATOR_URI}}
+        wired = {"ui": {"resourceUri": NAVIGATOR_URI, "visibility": ["model", "app"]}}
         for name in ("kb_projects", "kb_load", "kb_search", "kb_artifacts"):
             assert tools[name].meta == wired, name
         # every OTHER kb_* tool stays plain

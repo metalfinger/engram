@@ -41,6 +41,10 @@ EXPECTED_TOOLS = frozenset(
         "kb_claim",
         "kb_release",
         "kb_claims",
+        "kb_meetings",
+        "meetings_state",
+        "meeting_transcript",
+        "meeting_reply",
     }
 )
 

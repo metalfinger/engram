@@ -58,12 +58,18 @@ def navigator_resource_meta() -> dict:
     }
 
 
+NAVIGATOR_VISIBILITY = ["model", "app"]
+
+
 def navigator_tool_meta(enabled: bool) -> dict | None:
     """``_meta`` linking a tool to the Navigator widget; ``None`` disables it.
 
-    When ``None`` the tool stays plain (conversational) — no widget mounts.
+    ``visibility: ["model","app"]`` is the ext-apps spec default (explicit here per
+    the 2026-07-28 compliance pass) — the tool stays fully model-callable AND
+    reachable from the widget's own ``tools/call`` bridge. When ``None`` the tool
+    stays plain (conversational) — no widget mounts.
     """
-    return {"ui": {"resourceUri": NAVIGATOR_URI}} if enabled else None
+    return {"ui": {"resourceUri": NAVIGATOR_URI, "visibility": NAVIGATOR_VISIBILITY}} if enabled else None
 
 
 def get_navigator_html(explorer_url: str) -> str:
@@ -433,6 +439,12 @@ window.addEventListener("message",(e)=>{
   if(m.method==="ui/notifications/tool-result"){
     const pr=m.params||{}; const d=unwrap(pr.structuredContent ?? parseText(pr.content));
     if(d) seedFrom(d);   // a fresh tool call remounted us with new data — reseed
+    return;
+  }
+  // Host recycling this iframe — nothing to flush, just ack so it can proceed.
+  if(m.method==="ui/resource-teardown"){
+    if(m.id!==undefined) window.parent.postMessage({jsonrpc:"2.0",id:m.id,result:{}},"*");
+    return;
   }
 },{passive:true});
 // The python SDK wraps list/dict tool returns in a single-key {"result": ...}
