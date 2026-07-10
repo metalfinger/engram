@@ -6,7 +6,7 @@
 <title>Engram — Live Office</title>
 <style>
   :root{
-    --bg:#241c14; --panel:#f6efe1; --ink:#3a2f24; --ink-soft:#8a7960;
+    --bg:#141a12; --panel:#f6efe1; --ink:#3a2f24; --ink-soft:#8a7960;
     --line:#d8c6a8; --accent:#cf7a52; --good:#4f9d5b; --warn:#d9603a;
     --idle:#d3a24a; --thread:#6a8fd0;
   }
@@ -35,10 +35,17 @@
     color:var(--accent);pointer-events:none;opacity:0;transition:opacity .3s;font-weight:600}
   header .status-line.show{opacity:1}
 
-  #stage{flex:1 1 auto;position:relative;min-height:0;background:#241c14}
+  #stage{flex:1 1 auto;position:relative;min-height:0;background:#141a12}
   canvas#c{position:absolute;inset:0;width:100%;height:100%;display:block;
     image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:grab}
   canvas#c.dragging{cursor:grabbing}
+
+  #emptyCap{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);text-align:center;color:#e7ead6;font-size:14px;
+    font-weight:600;pointer-events:none;opacity:0;transition:opacity .7s;z-index:5;letter-spacing:.2px;
+    background:rgba(14,18,30,.72);border:1px solid rgba(120,130,110,.35);border-radius:14px;padding:12px 22px;
+    box-shadow:0 8px 30px rgba(0,0,0,.5);backdrop-filter:blur(2px);max-width:min(88vw,420px)}
+  #emptyCap.show{opacity:1}
+  #emptyCap small{display:block;margin-top:5px;font-size:12px;color:#a6ac92;font-weight:500}
 
   #controls{position:absolute;right:12px;bottom:14px;display:flex;flex-direction:column;gap:6px;z-index:8}
   #controls button{width:38px;height:38px;border-radius:10px;border:1.5px solid #cbb489;
@@ -48,7 +55,7 @@
   #controls button.fit{font-size:12px;font-weight:700}
 
   #minimap{position:absolute;left:12px;bottom:14px;width:150px;height:104px;border-radius:8px;
-    border:1.5px solid #cbb489;background:rgba(36,28,20,.74);box-shadow:0 3px 10px rgba(0,0,0,.32);
+    border:1.5px solid #cbb489;background:rgba(20,26,18,.74);box-shadow:0 3px 10px rgba(0,0,0,.32);
     z-index:8;cursor:pointer;image-rendering:pixelated}
 
   #ticker{flex:0 0 auto;height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;overflow:hidden;
@@ -90,10 +97,10 @@
   #dossier .tlempty{color:var(--ink-soft);font-size:12.5px;padding:14px 2px}
   .sd{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 
-  #help{position:absolute;inset:0;background:rgba(30,25,18,.55);backdrop-filter:blur(2px);z-index:30;
+  #help{position:absolute;inset:0;background:rgba(20,25,15,.55);backdrop-filter:blur(2px);z-index:30;
     display:none;align-items:center;justify-content:center;padding:20px}
   #help.open{display:flex}
-  #help .card{background:var(--panel);border:2px solid #cbb489;border-radius:14px;max-width:440px;width:100%;
+  #help .card{background:var(--panel);border:2px solid #cbb489;border-radius:14px;max-width:460px;width:100%;
     padding:18px 20px;box-shadow:0 16px 40px rgba(0,0,0,.4)}
   #help h3{margin:0 0 10px;font-size:16px}
   #help .k{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px;border-bottom:1px dashed #d8c6a8}
@@ -102,8 +109,51 @@
   #help .hint{font-size:12px;color:var(--ink-soft);margin-top:10px;line-height:1.5}
   #help .close2{margin-top:14px;width:100%;padding:9px;border-radius:9px;border:1.5px solid #cbb489;background:#f0e1c5;font-weight:700;cursor:pointer;font-size:13px}
   #help .close2:hover{background:#f9edd3}
+  /* ---- meeting / thread chat panel ---- */
+  #meeting{position:absolute;top:0;right:0;height:100%;width:min(392px,92vw);
+    background:linear-gradient(180deg,#f8efdd,#f0e3cc);border-left:2px solid #cbb489;
+    box-shadow:-8px 0 24px rgba(0,0,0,.28);transform:translateX(102%);
+    transition:transform .34s cubic-bezier(.22,.9,.25,1);z-index:21;display:flex;flex-direction:column}
+  #meeting.open{transform:translateX(0)}
+  #meeting .mhead{padding:13px 16px 11px;border-bottom:2px solid #cbb489;position:relative;
+    background:linear-gradient(180deg,#eef3fa,#e4ebf3)}
+  #meeting .mtopic{font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;padding-right:32px}
+  #meeting .msub{font-size:12px;color:var(--ink-soft);margin-top:3px}
+  #meeting .mt-needs{display:flex;gap:7px;align-items:center;background:linear-gradient(90deg,#ffe9c2,#ffd89a);
+    color:#7a4a12;font-size:11.5px;font-weight:700;padding:7px 14px;border-bottom:1px solid #e6b96a}
+  #meeting .mt-needs .pulse{width:8px;height:8px;border-radius:50%;background:#e6902a;box-shadow:0 0 0 0 rgba(230,144,42,.6);animation:npulse 1.6s infinite}
+  @keyframes npulse{0%{box-shadow:0 0 0 0 rgba(230,144,42,.55)}70%{box-shadow:0 0 0 6px rgba(230,144,42,0)}100%{box-shadow:0 0 0 0 rgba(230,144,42,0)}}
+  #meeting .mt-parts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 14px 7px;border-bottom:1px dashed #d8c6a8}
+  #meeting .mt-part{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;background:#ecdfc4;
+    border:1px solid #d0bd97;border-radius:20px;padding:2px 9px;color:#5a4a34}
+  #meeting .mt-part .pd{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  #meeting .mt-log{flex:1;overflow-y:auto;padding:12px 14px 8px;display:flex;flex-direction:column;gap:2px;
+    background:linear-gradient(180deg,#f6efe1,#f2e8d5)}
+  #meeting .mt-row{display:flex;margin:5px 0}
+  #meeting .mt-row.me{justify-content:flex-end}
+  #meeting .mt-bubble{max-width:80%;padding:7px 11px 6px;border-radius:13px;font-size:12.5px;line-height:1.36;
+    border:1.5px solid transparent;border-bottom-left-radius:5px;box-shadow:0 1px 2px rgba(0,0,0,.07);word-break:break-word}
+  #meeting .mt-row.me .mt-bubble{border-bottom-left-radius:13px;border-bottom-right-radius:5px;
+    background:linear-gradient(180deg,#f4a24f,#e07f34);border-color:#c96a24;color:#fff6ec}
+  #meeting .mt-bubble .who{font-size:9.5px;font-weight:800;letter-spacing:.2px;opacity:.85;margin-bottom:3px;
+    display:flex;align-items:center;gap:5px;text-transform:none}
+  #meeting .mt-bubble .who .wd{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  #meeting .mt-bubble .tm{font-size:9px;opacity:.62;margin-top:3px;text-align:right;font-variant-numeric:tabular-nums}
+  #meeting .mt-new{animation:mtin .34s cubic-bezier(.2,.9,.25,1)}
+  @keyframes mtin{from{opacity:0;transform:translateY(9px) scale(.98)}to{opacity:1;transform:none}}
+  #meeting .mt-empty{color:var(--ink-soft);font-size:12.5px;padding:16px 4px;text-align:center}
+  #meeting .mt-err{color:#fff;background:#c0392b;font-size:11.5px;font-weight:600;padding:7px 14px;cursor:pointer}
+  #meeting .mt-input{display:flex;gap:8px;padding:10px 12px;border-top:2px solid #cbb489;background:#f0e3cc;align-items:flex-end}
+  #meeting .mt-input textarea{flex:1;resize:none;border:1.5px solid #cbb489;border-radius:11px;padding:8px 11px;
+    font:inherit;font-size:13px;line-height:1.35;max-height:96px;background:#fffdf7;color:var(--ink);overflow-y:auto}
+  #meeting .mt-input textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(207,122,82,.18)}
+  #meeting .mt-send{width:40px;height:38px;border-radius:11px;border:1.5px solid #c96a24;
+    background:linear-gradient(180deg,#f4a24f,#e07f34);color:#fff;font-size:16px;font-weight:800;cursor:pointer;flex:0 0 auto}
+  #meeting .mt-send:hover{filter:brightness(1.06)}
+  #meeting .mt-send:disabled{opacity:.5;cursor:default}
+
   @media (max-width:560px){header .logo{font-size:13px}header a.back{display:none}.chip .sum{max-width:150px}
-    #minimap{width:112px;height:80px}}
+    #minimap{width:112px;height:80px}#meeting{width:100vw}}
 </style>
 </head>
 <body>
@@ -121,9 +171,10 @@
   <div id="stage">
     <canvas id="c"></canvas>
     <canvas id="minimap" title="Minimap — click to jump"></canvas>
+    <div id="emptyCap"></div>
     <div id="controls">
       <button id="zin" title="Zoom in">+</button>
-      <button class="fit" id="fit" title="Fit all">FIT</button>
+      <button class="fit" id="fit" title="Fit campus">FIT</button>
       <button id="zout" title="Zoom out">−</button>
     </div>
 
@@ -138,16 +189,32 @@
       <div class="tl" id="dTl"></div>
     </aside>
 
+    <aside id="meeting" aria-hidden="true">
+      <div class="mhead">
+        <div class="mtopic"><span class="sd" id="mDot"></span><span id="mTopic">—</span></div>
+        <div class="msub" id="mSub"></div>
+        <button class="dclose" id="mClose" title="Close (Esc)">✕</button>
+      </div>
+      <div class="mt-needs" id="mNeeds" style="display:none"><span class="pulse"></span><span>An agent is waiting on you — reply below.</span></div>
+      <div class="mt-parts" id="mParts"></div>
+      <div class="mt-log" id="mLog"></div>
+      <div class="mt-err" id="mErr" style="display:none"></div>
+      <div class="mt-input">
+        <textarea id="mInput" rows="1" placeholder="Message the meeting as Hiren…" aria-label="Message the meeting"></textarea>
+        <button class="mt-send" id="mSend" title="Send (Enter)">➤</button>
+      </div>
+    </aside>
+
     <div id="help">
       <div class="card">
-        <h3>Who's who in the office</h3>
+        <h3>Around the campus</h3>
         <div class="k"><span class="kd" style="background:var(--good)"></span><b>working</b> typing at the desk · pulse ring = fresh</div>
         <div class="k"><span class="kd" style="background:var(--warn)"></span><b>blocked</b> fidgeting, red “!”, needs a hand</div>
         <div class="k"><span class="kd" style="background:var(--idle)"></span><b>idle</b> leaning back, 💤, sips coffee</div>
         <div class="k"><span class="kd" style="background:#8fbf8a"></span><b>available</b> ready at the desk</div>
-        <div class="k"><span class="kd" style="background:#9a8a72"></span><b>done</b> stands, waves, heads out the door</div>
-        <div class="k" style="border:none"><span class="kd" style="background:var(--thread)"></span><b>meeting</b> gathered in a glass conference room (a thread)</div>
-        <div class="hint">🖱 <b>Drag</b> to pan · <b>scroll / pinch</b> to zoom · <b>click a character</b> for their story · <b>click a room</b> to zoom in · <b>FIT</b> reframes everything · minimap jumps.</div>
+        <div class="k"><span class="kd" style="background:#9a8a72"></span><b>done</b> stands, waves, walks off campus</div>
+        <div class="k" style="border:none"><span class="kd" style="background:var(--thread)"></span><b>meeting</b> gathered in a glass room — <b>click it to open the chat & reply as you</b></div>
+        <div class="hint">Each <b>building = a project</b>. Warm-lit = someone's inside; <b>dark building = nobody live</b> (its last visitor is on the door plaque). Only <b>live sessions</b> get a character — nobody's faked. An amber <b>❓ needs Hiren</b> room means an agent asked you something — click to answer.<br>🖱 <b>Drag</b> to pan · <b>scroll / pinch</b> to zoom · <b>click a character</b> for their story · <b>click a meeting</b> to chat · <b>click a building</b> to zoom · <b>FIT</b> reframes.</div>
         <button class="close2" id="helpClose">got it</button>
       </div>
     </div>
@@ -160,7 +227,8 @@
 "use strict";
 (function(){
 /* ================================================================= *
- *  Engram Living Office — cozy animated pixel-art world              *
+ *  Engram Live Office v3 — a cozy top-down campus of project offices *
+ *  live-only characters · lights-off empty offices · warm ambience   *
  * ================================================================= */
 const OFFICE_URL="/brain/api/office.json";
 const SESSION_URL=(sid)=>"/brain/api/session/"+encodeURIComponent(sid)+".json";
@@ -168,42 +236,50 @@ const POLL_MS=2500;
 const params=new URLSearchParams(location.search);
 const DEMO=params.has("demo");
 
-/* ---------- inlined demo payload (offline / ?demo=1) ---------- */
+/* ---------- inlined demo payload (offline / ?demo=1) ----------
+   Exercises: 3 populated buildings (engram, aeos, metalfinger),
+   1 lights-off building (charcha — only a recent[] visitor), 2 meetings,
+   1 returning session (tower/engram) + 1 done session (metal/notes). */
 const SAMPLE={"now":"2026-07-09T15:10:00Z","sessions":[
- {"session":"361982f9-2a62-4254-a687-339b30aa1833","name":"metal/engram","status":"working","working_on":"living office UI","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"metal","updated":"2026-07-09T15:09:30Z","age_sec":30,"first_seen":"2026-07-09T09:22:00Z","returning":false,"live":true},
- {"session":"f9966716","name":"metal/LLM-Communication","status":"working","working_on":"interview URL page","repo":"LLM-Communication","branch":"feat/co-form-workflow-spine","repo_remote":"https://github.com/metalfinger/mcp-exploration.git","project":"LLM-Communication","room":"LLM-Communication","room_label":"LLM-Communication","host":"metal","updated":"2026-07-09T15:08:00Z","age_sec":120,"first_seen":"2026-07-09T10:02:00Z","returning":false,"live":true},
- {"session":"44108053","name":"metal/Charcha-26","status":"idle","working_on":"","repo":"Charcha-26","branch":"v2","repo_remote":"","project":"","room":"unassigned","room_label":"open desks","host":"metal","updated":"2026-07-09T15:00:00Z","age_sec":600,"first_seen":"2026-07-09T14:40:00Z","returning":false,"live":true},
- {"session":"aa72b1c0","name":"metal/aeos","status":"blocked","working_on":"waiting on API key","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"metal","updated":"2026-07-09T15:07:10Z","age_sec":170,"first_seen":"2026-07-09T13:10:00Z","returning":false,"live":true},
- {"session":"bb31ff90","name":"tower/engram","status":"available","working_on":"reviewing PR","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"tower","updated":"2026-07-09T15:06:00Z","age_sec":240,"first_seen":"2026-07-09T12:00:00Z","returning":true,"live":true},
- {"session":"cc9012aa","name":"tower/aeos","status":"working","working_on":"scheduler tick","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"tower","updated":"2026-07-09T15:09:50Z","age_sec":10,"first_seen":"2026-07-09T15:09:00Z","returning":false,"live":true},
+ {"session":"361982f9-2a62-4254-a687-339b30aa1833","name":"metal/engram","status":"working","working_on":"living office UI","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"metal","updated":"2026-07-09T15:09:35Z","age_sec":25,"first_seen":"2026-07-09T09:22:00Z","returning":false,"live":true},
+ {"session":"bb31ff90","name":"tower/engram","status":"available","working_on":"reviewing the office PR","repo":"engram","branch":"main","repo_remote":"https://github.com/metalfinger/engram.git","project":"engram","room":"engram","room_label":"engram","host":"tower","updated":"2026-07-09T15:06:30Z","age_sec":210,"first_seen":"2026-07-09T12:00:00Z","returning":true,"live":true},
+ {"session":"aa72b1c0","name":"metal/aeos","status":"blocked","working_on":"waiting on API key","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"metal","updated":"2026-07-09T15:07:20Z","age_sec":160,"first_seen":"2026-07-09T13:10:00Z","returning":false,"live":true},
+ {"session":"cc9012aa","name":"tower/aeos","status":"working","working_on":"scheduler tick","repo":"aeos","branch":"deploy","repo_remote":"","project":"aeos","room":"aeos","room_label":"aeos","host":"tower","updated":"2026-07-09T15:09:52Z","age_sec":8,"first_seen":"2026-07-09T15:09:00Z","returning":false,"live":true},
  {"session":"dd4408bb","name":"lap/metalfinger","status":"working","working_on":"portfolio redesign","repo":"metalfinger.xyz","branch":"main","repo_remote":"","project":"metalfinger","room":"metalfinger","room_label":"metalfinger","host":"lap","updated":"2026-07-09T15:09:20Z","age_sec":40,"first_seen":"2026-07-09T11:30:00Z","returning":false,"live":true},
  {"session":"ee5519cc","name":"metal/notes","status":"done","working_on":"","repo":"notes","branch":"main","repo_remote":"","project":"","room":"unassigned","room_label":"open desks","host":"metal","updated":"2026-07-09T15:05:00Z","age_sec":300,"first_seen":"2026-07-09T14:20:00Z","returning":false,"live":true}
+],"recent":[
+ {"session":"old-charcha","name":"metal/Charcha-26","status":"idle","working_on":"","repo":"Charcha-26","branch":"v2","project":"charcha","room":"charcha","room_label":"charcha","host":"metal","updated":"2026-07-09T14:30:00Z","age_sec":2400,"live":false},
+ {"session":"old-engram","name":"tower/engram-prev","status":"working","working_on":"","repo":"engram","branch":"main","project":"engram","room":"engram","room_label":"engram","host":"tower","updated":"2026-07-09T14:50:00Z","age_sec":1200,"live":false}
 ],"threads":[
- {"thread":"roll-call","status":"open","topic":"Roll call — who's working on what","participants":["metal/engram","metal/LLM-Communication","tower/engram"],"turn_count":5,"last_activity":"2026-07-09T15:09:00Z","last_turn":{"sender":"metal/engram","message":"who is working on what right now? drop your current focus.","timestamp":"2026-07-09T15:09:00Z"}},
- {"thread":"aeos-deploy","status":"open","topic":"Deploy coordination","participants":["metal/aeos","tower/aeos","ops-bot"],"turn_count":2,"last_activity":"2026-07-09T15:08:30Z","last_turn":{"sender":"tower/aeos","message":"scheduler tick is green, rolling the deploy now.","timestamp":"2026-07-09T15:08:30Z"}}
+ {"thread":"roll-call","status":"open","topic":"Roll call — who's working on what","participants":["metal/engram","tower/aeos"],"turn_count":3,"last_activity":"2026-07-09T15:09:00Z","last_turn":{"sender":"metal/engram","message":"who is working on what right now? drop your current focus.","timestamp":"2026-07-09T15:09:00Z"}},
+ {"thread":"design-review","status":"open","topic":"Design review — palette","participants":["lap/metalfinger","hiren"],"turn_count":3,"last_activity":"2026-07-09T15:09:40Z","last_turn":{"sender":"lap/metalfinger","message":"@hiren: which palette do you prefer — warm terracotta or cool slate?","timestamp":"2026-07-09T15:09:40Z"}}
 ],"activity":[
- {"ts":"2026-07-09T15:09:50Z","age_sec":10,"kind":"decision","session":"tower/aeos","summary":"wrote projects/aeos/decisions/scheduler","paths":["projects/aeos/decisions/x.md"]},
- {"ts":"2026-07-09T15:09:30Z","age_sec":30,"kind":"decision","session":"metal/engram","summary":"wrote projects/engram/decisions/auto-presence","paths":["projects/engram/decisions/2026-07-auto-presence-spool.md"]},
+ {"ts":"2026-07-09T15:09:52Z","age_sec":8,"kind":"decision","session":"tower/aeos","summary":"wrote projects/aeos/decisions/scheduler","paths":["projects/aeos/decisions/x.md"]},
+ {"ts":"2026-07-09T15:09:35Z","age_sec":25,"kind":"decision","session":"metal/engram","summary":"wrote projects/engram/specs/office-v3","paths":["projects/engram/specs/office-v3.md"]},
  {"ts":"2026-07-09T15:09:00Z","age_sec":60,"kind":"thread","session":"metal/engram","summary":"posted → roll-call","paths":["threads/roll-call/turns/x.md"]},
  {"ts":"2026-07-09T15:08:30Z","age_sec":90,"kind":"thread","session":"tower/aeos","summary":"posted → aeos-deploy","paths":["threads/aeos-deploy/turns/y.md"]},
- {"ts":"2026-07-09T15:08:00Z","age_sec":120,"kind":"presence","session":"metal/LLM-Communication","summary":"heartbeat","paths":["workspace/presence/f9966716.md"]},
+ {"ts":"2026-07-09T15:08:00Z","age_sec":120,"kind":"presence","session":"lap/metalfinger","summary":"heartbeat","paths":["workspace/presence/dd4408bb.md"]},
  {"ts":"2026-07-09T15:06:00Z","age_sec":240,"kind":"handoff","session":"tower/engram","summary":"handoff → review the office PR","paths":["workspace/handoffs/z.md"]}
 ]};
 
 /* ============================ utils ============================ */
-function hash32(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+function hash32(s){s=String(s);let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 function clamp(v,a,b){return v<a?a:v>b?b:v;}
 function easeOutBack(t){const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2);}
+function easeInOut(t){return t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function norm(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");}
 function shortSid(s){return String(s||"").slice(0,8);}
 function trunc(s,n){s=String(s||"");return s.length>n?s.slice(0,n-1)+"…":s;}
 function timeAgo(sec){sec=Math.max(0,Math.round(sec));if(sec<60)return sec+"s";if(sec<3600)return Math.floor(sec/60)+"m";if(sec<86400)return Math.floor(sec/3600)+"h";return Math.floor(sec/86400)+"d";}
 function hsl(h,s,l){h=(h%360+360)%360;s/=100;l/=100;const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;let r=0,g=0,b=0;if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}const to=v=>("0"+Math.round((v+m)*255).toString(16)).slice(-2);return "#"+to(r)+to(g)+to(b);}
+function mix(a,b,t){const pa=parseInt(a.slice(1),16),pb=parseInt(b.slice(1),16);
+  const r=Math.round(((pa>>16&255)*(1-t)+(pb>>16&255)*t)),g=Math.round(((pa>>8&255)*(1-t)+(pb>>8&255)*t)),bl=Math.round(((pa&255)*(1-t)+(pb&255)*t));
+  return "#"+((1<<24)+(r<<16)+(g<<8)+bl).toString(16).slice(1);}
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";}
+
 const SKINS=[["#f6d0a8","#e0b184"],["#e8b58c","#cf9468"],["#cd925f","#ad7248"],["#a86c44","#875436"],["#8a5636","#6e4128"]];
 const HAIRHUE=[28,18,42,300,215,265];
-// curated warm rug tones (sage / cream / olive / tan / terracotta) — [base, inset]
-const RUGS=[["#cdd7b0","#c1cc9f"],["#e6dcc0","#dcd1af"],["#d4deb9","#c8d3a7"],["#e0d3b0","#d5c79d"],["#cbd8bd","#bfceac"],["#e3c9ac","#d8bb96"]];
 function paletteFor(host,session){
   const hh=hash32((host||"?")+"|"+(session||"?"));const hue=hh%360;
   const sk=SKINS[(hh>>>7)%SKINS.length];
@@ -214,6 +290,15 @@ function paletteFor(host,session){
     skin:sk[0], skinDark:sk[1],
     hair:hsl(hhue,44,27), hairHi:hsl(hhue,44,37),
     hairChoice:(hh>>>3)%3, glow:hsl(hue,60,60)};
+}
+/* stable accent per project (its building's identity) */
+function projectAccent(key,unassigned){
+  if(unassigned) return {hue:38,wall:"#c8b48c",wallDark:"#b09a72",wallHi:"#d8c5a0",rug:"#e0d3b4",rugAlt:"#d5c69f",sign:"#8a7250",glow:"#e8c98f"};
+  const h=hash32("proj:"+key), hue=h%360;
+  return {hue,
+    wall:hsl(hue,30,60), wallDark:hsl(hue,30,47), wallHi:hsl(hue,33,70),
+    rug:hsl(hue,26,74), rugAlt:hsl(hue,24,67),
+    sign:hsl(hue,38,40), glow:hsl(hue,72,60)};
 }
 const STATUS_COL={working:"#4f9d5b",blocked:"#d9603a",idle:"#d3a24a",available:"#8fbf8a",done:"#9a8a72",unknown:"#9c8f78"};
 function statusColor(s){return STATUS_COL[s]||STATUS_COL.unknown;}
@@ -228,216 +313,267 @@ const mini=document.getElementById("minimap"), mctx=mini.getContext("2d");
 const chipsEl=document.getElementById("chips"), onlineEl=document.getElementById("onlineN");
 const clockEl=document.getElementById("clock"), statusLineEl=document.getElementById("statusLine");
 const dossierEl=document.getElementById("dossier"), helpEl=document.getElementById("help");
+const emptyCapEl=document.getElementById("emptyCap");
+const meetingEl=document.getElementById("meeting"), mTopicEl=document.getElementById("mTopic"),
+  mSubEl=document.getElementById("mSub"), mDotEl=document.getElementById("mDot"), mNeedsEl=document.getElementById("mNeeds"),
+  mPartsEl=document.getElementById("mParts"), mLogEl=document.getElementById("mLog"), mErrEl=document.getElementById("mErr"),
+  mInputEl=document.getElementById("mInput"), mSendEl=document.getElementById("mSend");
+
+/* ============================ geometry knobs ============================ */
+const CELL_W=58, CELL_H=54, PADX=14, PADY=12, PADB=24, HEADER=19;
+const CAMPUS_GAP=64, CONF_CORRIDOR=92, SPINE_DROP=48, WALK_W=20, WALL=3, TOPPAD=72;
+const OL="#241a12";  // sprite / furniture outline
+let frameSignRects=[], framePlaced=[];  // per-frame label collision bookkeeping
 
 /* ============================ state ============================ */
-let payload=null, entities=new Map(), particles=[], dust=[];
-let L={rooms:[],confRooms:[],door:{x:0,y:0},bbox:{x:0,y:0,w:800,h:600},floor:{x:0,y:0,w:0,h:0},window:{x:0,y:0,w:0,h:0},pictures:[],decor:{plants:[],coffee:null,cooler:null},inMeeting:new Set()};
-let selectedId=null, firstIngest=true;
-let nowBase=Date.now(), nowPerf=performance.now();
+let payload=null, liveSessions=[], recentSessions=[];
+let entities=new Map(), particles=[], dust=[], clouds=[], birds=[];
+let L={bldgs:[],bldgById:new Map(),confRooms:[],confById:new Map(),
+  entrance:{x:0,y:0},spineY:0,ground:{x:0,y:0,w:800,h:600},trees:[],inMeeting:new Set()};
+let selectedId=null, hoverId=null, firstIngest=true, curSig="", nextBird=0;
+let meetingOpen=null, meetingTimer=null, meetingCursor=null, meetingSeen=new Set(), meetingContent=new Set();
+let cameo=null, demoExtra={}, localLastTurn={};
+let nowBase=Date.now(), nowPerf=performance.now(), lastUserInteract=-1e9;
 let dpr=Math.min(2,Math.max(1,window.devicePixelRatio||1));
 let seenActivity=new Set(), threadSlots=new Map();
 const cam={x:400,y:300,zoom:1,tx:400,ty:300,tzoom:1,vx:0,vy:0};
 let view={cx:0,cy:0};
 
-/* geometry knobs */
-const CELL_W=60, CELL_H=58, RPAD=16, HEADER=20, RGAP=32, CORRIDOR=110;
-const WALL_TOP=60, DECOR=46;
-const OL="#241a12";  // sprite/furniture outline
-
-/* ============================ layout ============================ */
+/* ============================ grouping ============================ */
 function groupKey(s){
-  if(s.room && s.room.trim()) return s.room.trim();
+  if(s.room && s.room.trim() && s.room!=="unassigned") return s.room.trim();
   if(s.project && s.project.trim()) return s.project.trim();
   if(s.repo && s.repo.trim()) return s.repo.trim();
   return "unassigned";
 }
 function groupLabel(s,key){ return s.room_label || s.project || s.repo || (key==="unassigned"?"open desks":key); }
 
+/* ============================ layout — the campus ============================ */
 function relayout(){
   if(!payload) return;
-  const active=[];
-  for(const s of payload.sessions){
-    const e=entities.get(s.session);
-    if(e&&e.gone) continue;
-    if(s.status==="done") continue;
-    active.push(s);
-  }
+  /* --- gather groups from live (desk owners) + recent (lights-off tenants) --- */
   const groups=new Map();
-  for(const s of active){
-    const k=groupKey(s);
-    if(!groups.has(k)) groups.set(k,{label:groupLabel(s,k),members:[]});
-    groups.get(k).members.push(s);
-  }
-  if(groups.size===0) groups.set("office",{label:"office",members:[]});
+  const addG=(s,live)=>{ const k=groupKey(s);
+    if(!groups.has(k)) groups.set(k,{key:k,label:groupLabel(s,k),live:[],recent:[]});
+    (live?groups.get(k).live:groups.get(k).recent).push(s); };
+  for(const s of liveSessions){ if(s.status==="done") continue; addG(s,true); }
+  for(const s of recentSessions) addG(s,false);
+  if(groups.size===0) groups.set("campus",{key:"campus",label:"the campus",live:[],recent:[]});
 
-  const rooms=[];
+  /* --- size each building --- */
+  const bldgs=[];
   for(const [key,g] of groups){
-    const n=Math.max(1,g.members.length);
-    const cols=Math.min(5,Math.max(2,Math.ceil(Math.sqrt(n))));
-    const rows=Math.max(1,Math.ceil(g.members.length/cols)||1);
-    rooms.push({key,label:g.label,members:g.members,cols,rows,
-      w:cols*CELL_W+RPAD*2, h:rows*CELL_H+RPAD*2+HEADER, anyLive:g.members.some(m=>m.live),
-      unassigned:key==="unassigned", tint:hash32("rug"+key)%360});
+    const accent=projectAccent(key,key==="unassigned");
+    const nlive=g.live.length, lit=nlive>0;
+    let cols,rows,w,h;
+    if(lit){ cols=Math.min(5,Math.max(2,Math.ceil(Math.sqrt(nlive)))); rows=Math.max(1,Math.ceil(nlive/cols));
+      w=cols*CELL_W+PADX*2; h=HEADER+PADY+rows*CELL_H+PADY+6; }  // +6: desks off the back wall
+    else { cols=2; rows=1; w=2*CELL_W+PADX*2; h=HEADER+PADY+CELL_H+PADY; }  // small closed office
+    bldgs.push({key,label:g.label,live:nlive,liveMembers:g.live,recentMembers:g.recent,
+      cols,rows,w,h,lit,accent,unassigned:key==="unassigned"});
   }
-  const totalArea=rooms.reduce((a,r)=>a+r.w*r.h,0);
-  const widest=rooms.reduce((a,r)=>Math.max(a,r.w),0);
-  const targetW=Math.max(widest, Math.sqrt(totalArea*1.7));
-  let cx=0, cy=0, rowH=0, workRight=0, workBottom=0;
-  for(const r of rooms){
-    if(cx>0 && cx+r.w>targetW){ cx=0; cy+=rowH+RGAP; rowH=0; }
-    r.x=cx; r.y=cy; cx+=r.w+RGAP; rowH=Math.max(rowH,r.h);
-    workRight=Math.max(workRight,r.x+r.w); workBottom=Math.max(workBottom,r.y+r.h);
-  }
-  for(const r of rooms){
-    r.desks=[];
-    r.members.forEach((s,i)=>{
-      const col=i%r.cols, row=Math.floor(i/r.cols);
-      const dx=r.x+RPAD+col*CELL_W, dy=r.y+HEADER+RPAD+row*CELL_H;
-      const seat={x:dx+CELL_W/2, y:dy+CELL_H*0.62};
-      r.desks.push({dx,dy,seat,sid:s.session});
-      const e=entities.get(s.session); if(e){ e.home={x:seat.x,y:seat.y}; e.deskDx=dx; e.deskDy=dy; }
-    });
+  // stable alphabetical order — lit-ness is a visual state, not a sort key,
+  // so a building never jumps position when its live count crosses 0<->1
+  bldgs.sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
+
+  /* --- pack buildings into rows across the campus (landscape: fill the viewport) --- */
+  const widest=bldgs.reduce((a,r)=>Math.max(a,r.w),0);
+  const avgW=bldgs.reduce((a,r)=>a+r.w,0)/Math.max(1,bldgs.length);
+  const vAsp=Math.max(1.3,(window.innerWidth||1440)/(window.innerHeight||820));
+  const perRow=Math.max(2,Math.round(Math.sqrt(bldgs.length*vAsp*0.8)));
+  const targetW=Math.max(widest,(avgW+CAMPUS_GAP)*Math.min(perRow,bldgs.length));
+  let cx=0,cy=0,rowH=0,right=0,bottom=0;
+  for(const r of bldgs){ if(cx>0 && cx+r.w>targetW){ cx=0; cy+=rowH+CAMPUS_GAP; rowH=0; }
+    r.x=cx; r.y=cy; cx+=r.w+CAMPUS_GAP; rowH=Math.max(rowH,r.h);
+    right=Math.max(right,r.x+r.w); bottom=Math.max(bottom,r.y+r.h); }
+
+  /* --- interior desks + door + coffee corner --- */
+  const bldgById=new Map();
+  for(const b of bldgs){ bldgById.set(b.key,b); b.desks=[];
+    b.doorX=b.x+b.w/2; b.doorIn={x:b.doorX,y:b.y+b.h-12};
+    b.coffee={x:b.x+b.w-15,y:b.y+HEADER+13};
+    if(b.lit){ b.liveMembers.forEach((s,i)=>{ const col=i%b.cols,row=Math.floor(i/b.cols);
+      const dx=b.x+PADX+col*CELL_W, dy=b.y+HEADER+PADY+row*CELL_H;
+      const seat={x:dx+CELL_W/2,y:dy+CELL_H*0.60};
+      b.desks.push({dx,dy,seat,sid:s.session});
+      const e=entities.get(s.session); if(e){ e.home={x:seat.x,y:seat.y}; e.homeBldgKey=b.key; e.deskDx=dx; e.deskDy=dy; } }); }
   }
 
-  /* ---- conference rooms sized to occupants ---- */
+  /* --- conference wing (glass meeting rooms), sized to occupants --- */
   const openThreads=(payload.threads||[]).filter(t=>t.status==="open");
   const openNames=new Set(openThreads.map(t=>t.thread));
   for(const k of [...threadSlots.keys()]) if(!openNames.has(k)) threadSlots.delete(k);
   const usedSlots=new Set(threadSlots.values());
   const nextFreeSlot=()=>{let i=0;while(usedSlots.has(i))i++;usedSlots.add(i);return i;};
-  const confMeta=[];
-  let maxCW=0, maxCH=0;
-  const CTOP=34, CBOT=22;   // headroom above top seat (pill clearance) + bottom pad
-  for(const th of openThreads){
-    const P=th.participants||[]; const n=Math.max(2,P.length);
-    const tableRx=clamp(22+n*4,28,58), tableRy=clamp(15+n*2,19,36);
+  const confMeta=[]; let maxCW=0,maxCH=0; const CTOP=32,CBOT=20;
+  for(const th of openThreads){ const P=th.participants||[]; const n=Math.max(2,P.length);
+    const tableRx=clamp(22+n*4,28,56), tableRy=clamp(15+n*2,18,34);
     const seatRx=tableRx+18, seatRy=tableRy+15;
-    const w=Math.round(seatRx*2+44), h=Math.round(HEADER+CTOP+seatRy*2+CBOT);
-    confMeta.push({th,P,tableRx,tableRy,seatRx,seatRy,w,h});
-    maxCW=Math.max(maxCW,w); maxCH=Math.max(maxCH,h);
-  }
-  const wingX=workRight+CORRIDOR;
-  const wingCols=Math.max(1, openThreads.length<=4?1:2);
+    const w=Math.round(seatRx*2+42), h=Math.round(HEADER+CTOP+seatRy*2+CBOT);
+    confMeta.push({th,P,tableRx,tableRy,seatRx,seatRy,w,h}); maxCW=Math.max(maxCW,w); maxCH=Math.max(maxCH,h); }
+  const wingX=right+CONF_CORRIDOR;
+  const wingCols=Math.max(1,openThreads.length<=4?1:2);
   const confRooms=[];
-  confMeta.forEach(m=>{
-    let slot=threadSlots.get(m.th.thread);
-    if(slot==null){ slot=nextFreeSlot(); threadSlots.set(m.th.thread,slot); }
-    const col=slot%wingCols, row=Math.floor(slot/wingCols);
-    const x=wingX+col*(maxCW+34), y=row*(maxCH+34);
+  confMeta.forEach(m=>{ let slot=threadSlots.get(m.th.thread); if(slot==null){slot=nextFreeSlot();threadSlots.set(m.th.thread,slot);}
+    const col=slot%wingCols,row=Math.floor(slot/wingCols);
+    // +28 top pad keeps the first row's header + speech bubbles on the lawn
+    const x=wingX+col*(maxCW+34), y=28+row*(maxCH+34);
     const cxc=x+m.w/2, cyc=y+HEADER+CTOP+m.seatRy;
     const seats=[]; const cnt=Math.max(m.P.length,1);
-    for(let i=0;i<cnt;i++){const a=-Math.PI/2+(i/cnt)*Math.PI*2; seats.push({x:cxc+Math.cos(a)*m.seatRx, y:cyc+Math.sin(a)*m.seatRy});}
-    confRooms.push({thread:m.th.thread,topic:m.th.topic,x,y,w:m.w,h:m.h,cx:cxc,cy:cyc,
-      tableRx:m.tableRx,tableRy:m.tableRy,seats,participants:m.P,th:m.th});
-    workBottom=Math.max(workBottom,y+m.h); workRight=Math.max(workRight,x+m.w);
-  });
+    // seats fan from the BOTTOM (PI/2, half-step offset) so nobody sits directly
+    // under the room header — headers, bubbles and nameplates stop fighting
+    for(let i=0;i<cnt;i++){const a=Math.PI/2+((i+0.5)/cnt)*Math.PI*2; seats.push({x:cxc+Math.cos(a)*m.seatRx,y:cyc+Math.sin(a)*m.seatRy});}
+    const cr={thread:m.th.thread,topic:m.th.topic,x,y,w:m.w,h:m.h,cx:cxc,cy:cyc,tableRx:m.tableRx,tableRy:m.tableRy,seats,participants:m.P,th:m.th};
+    cr.doorX=x+m.w/2; cr.doorIn={x:cr.doorX,y:y+m.h-12};
+    confRooms.push(cr); right=Math.max(right,x+m.w); bottom=Math.max(bottom,y+m.h); });
+  const confById=new Map(); for(const cr of confRooms) confById.set(cr.thread,cr);
 
-  /* ---- content bbox (tight, for framing + minimap) ---- */
-  const bx=0, by=0, bw=Math.max(workRight,1), bh=Math.max(workBottom,1);
-  const floor={x:bx-DECOR, y:by-WALL_TOP, w:bw+DECOR*2, h:bh+WALL_TOP+DECOR};
-  const door={x:Math.round((rooms.reduce((a,r)=>Math.max(a,r.x+r.w),0))/2), y:by-12};
-  const wnd={x:bx+bw*0.30, y:floor.y+16, w:Math.min(150,bw*0.32), h:34};
-  const pictures=[
-    {x:bx+bw*0.10, y:floor.y+18, w:26, h:20, art:0},
-    {x:bx+bw*0.62, y:floor.y+16, w:34, h:24, art:1},
-    {x:bx+bw*0.80, y:floor.y+18, w:26, h:20, art:2}
-  ];
-  const decor={
-    plants:[{x:floor.x+22, y:by+bh-6}, {x:floor.x+floor.w-22, y:by+bh-6}, {x:floor.x+20, y:by+18}],
-    coffee:{x:floor.x+floor.w-40, y:floor.y+WALL_TOP-6},
-    cooler:{x:floor.x+18, y:floor.y+WALL_TOP-4}
-  };
+  /* --- walkway spine + campus gate + ground bounds --- */
+  const spineY=bottom+SPINE_DROP;
+  const entrance={x:-46,y:spineY+42};
+  const gx0=entrance.x-46, gx1=right+64, gy0=-66, gy1=Math.max(bottom,spineY)+92;
+  const ground={x:gx0,y:gy0,w:gx1-gx0,h:gy1-gy0};
 
-  L={rooms,confRooms,door,bbox:{x:bx,y:by,w:bw,h:bh},floor,window:wnd,pictures,decor,inMeeting:new Set()};
+  /* --- deterministic trees dotted on the lawn (kept off buildings + spine) --- */
+  const trees=[];
+  const free=(x,y)=>{ for(const b of bldgs){ if(x>b.x-26&&x<b.x+b.w+26&&y>b.y-34&&y<b.y+b.h+16) return false; }
+    for(const cr of confRooms){ if(x>cr.x-26&&x<cr.x+cr.w+26&&y>cr.y-34&&y<cr.y+cr.h+16) return false; }
+    if(Math.abs(y-spineY)<26) return false; return true; };
+  for(let gy=ground.y+34; gy<ground.y+ground.h-24 && trees.length<16; gy+=54){
+    for(let gx=ground.x+30; gx<ground.x+ground.w-24 && trees.length<16; gx+=66){
+      const hs=hash32(gx+","+gy); const jx=gx+(hs%24-12), jy=gy+((hs>>3)%20-10);
+      if(free(jx,jy)) trees.push({x:jx,y:jy,k:hs%3,s:0.8+((hs>>5)%50)/100}); } }
 
-  /* ---- targets ---- */
-  const matchEntity=(pname)=>{
-    const key=norm(pname);
-    for(const s of payload.sessions){
-      const e=entities.get(s.session); if(!e||e.gone) continue;
-      if(norm(s.name)===key || norm(s.session).startsWith(key) || (key.length>3&&norm(s.name).includes(key))) return e;
-    }
-    return null;
-  };
-  const liveGuests=new Set();
-  for(const cr of confRooms){
-    cr.participants.forEach((p,i)=>{
-      const seat=cr.seats[i]||cr.seats[0];
-      const e=matchEntity(p);
-      if(e){ e.seatTarget={x:seat.x,y:seat.y}; e.meetingThread=cr.thread; L.inMeeting.add(e.id); }
-      else{
-        const gk="guest:"+cr.thread+":"+norm(p); liveGuests.add(gk);
-        let g=entities.get(gk);
-        if(!g){ g=makeEntity({session:gk,name:p,host:"guest",status:"unknown"},true); g.x=cr.cx; g.y=cr.cy-40; entities.set(gk,g); }
-        g.guestName=p; g.seatTarget={x:seat.x,y:seat.y}; g.meetingThread=cr.thread; g.gone=false;
-      }
-    });
-  }
+  L={bldgs,bldgById,confRooms,confById,entrance,spineY,ground,trees,inMeeting:new Set()};
+
+  /* --- seat live participants in meetings (LIVE-ONLY: no ghost guests) --- */
+  const matchLive=(pname)=>{ const key=norm(pname);
+    for(const s of liveSessions){ if(s.status==="done") continue; const e=entities.get(s.session); if(!e||e.gone) continue;
+      const n=norm(s.name);
+      if(n===key || norm(s.session).startsWith(key) || (key.length>3&&n.includes(key)) || (n.length>3&&key.includes(n))) return e; }
+    return null; };
+  for(const cr of confRooms){ cr.present=0; cr.participants.forEach((p,i)=>{ const seat=cr.seats[i]||cr.seats[0];
+    const e=matchLive(p); if(e){ e.seatTarget={x:seat.x,y:seat.y}; e.meetingThread=cr.thread; e.lastConfKey=cr.thread; L.inMeeting.add(e.id); cr.present++; } }); }
+
+  /* --- assign each live entity a destination (route along walkways on change) --- */
   for(const [id,e] of entities){
-    if(e.guest){
-      if(!liveGuests.has(id)){ e.gone=true; setLeaving(e); }
-      else { e.tx=e.seatTarget.x; e.ty=e.seatTarget.y; e.mode="meeting"; }
+    const s=e.data;
+    if(!s || e.gone || (s&&s.status==="done")){
+      if(e.dest!=="leave"){ e.dest="leave"; routeLeave(e); }
+      e.leaving=true; e.mode="leaving"; if(s&&s.status==="done") e.doneWalk=true;
       continue;
     }
-    const s=payload.sessions.find(x=>x.session===id);
-    if(!s || e.gone){ e.gone=true; setLeaving(e); continue; }
-    if(s.status==="done"){ setLeaving(e); e.doneWalk=true; continue; }
     e.leaving=false; e.doneWalk=false;
-    if(L.inMeeting.has(id) && e.seatTarget){ e.tx=e.seatTarget.x; e.ty=e.seatTarget.y; e.mode="meeting"; }
-    else { e.meetingThread=null; e.seatTarget=null; if(e.home){ e.tx=e.home.x; e.ty=e.home.y; } e.mode="desk"; }
+    if(L.inMeeting.has(id) && e.seatTarget){
+      const key="meet:"+e.meetingThread;
+      if(e.dest!==key){ e.dest=key; routeToMeeting(e); }
+      e.mode="meeting";
+    } else {
+      if(e.dest!=="desk"){
+        const wasMeet=e.dest && e.dest.indexOf("meet:")===0;
+        e.dest="desk"; e.meetingThread=null; e.seatTarget=null;
+        if(wasMeet) routeFromMeeting(e);
+        else if(e.home){ e.path=null; e.tx=e.home.x; e.ty=e.home.y; }
+      }
+      e.mode="desk";
+    }
   }
 }
-function setLeaving(e){ e.leaving=true; e.mode="leaving"; e.meetingThread=null; e.tx=L.door.x; e.ty=L.door.y+20; }
+function routeToMeeting(e){
+  const b=L.bldgById.get(e.homeBldgKey), conf=L.confById.get(e.meetingThread);
+  if(!b||!conf){ e.path=[{x:e.seatTarget.x,y:e.seatTarget.y}]; return; }
+  e.path=[b.doorIn,{x:b.doorX,y:L.spineY},{x:conf.doorX,y:L.spineY},conf.doorIn,{x:e.seatTarget.x,y:e.seatTarget.y}];
+}
+function routeFromMeeting(e){
+  const b=L.bldgById.get(e.homeBldgKey), conf=L.confById.get(e.lastConfKey);
+  const pts=[];
+  if(conf){ pts.push(conf.doorIn,{x:conf.doorX,y:L.spineY}); }
+  if(b && e.home){ pts.push({x:b.doorX,y:L.spineY},b.doorIn,{x:e.home.x,y:e.home.y}); }
+  else if(e.home){ pts.push({x:e.home.x,y:e.home.y}); }
+  e.path=pts.length?pts:null;
+}
+function routeLeave(e){
+  const b=L.bldgById.get(e.homeBldgKey);
+  const pts=[];
+  if(b){ pts.push(b.doorIn,{x:b.doorX,y:L.spineY}); }
+  pts.push({x:L.entrance.x,y:L.spineY},{x:L.entrance.x,y:L.entrance.y});
+  e.path=pts;
+}
 
 /* ============================ entities ============================ */
-function makeEntity(s,guest){
+function makeEntity(s){
   const now=performance.now();
-  return {id:s.session,guest:!!guest,data:guest?null:s,guestName:guest?s.name:null,
-    x:L.door.x||400,y:(L.door.y||300)+10,tx:L.door.x||400,ty:(L.door.y||300)+10,
+  return {id:s.session,data:s,
+    x:(L.entrance?L.entrance.x:0),y:(L.entrance?L.entrance.y:0),tx:0,ty:0,
     facing:1,alpha:0,gone:false,leaving:false,doneWalk:false,mode:"enter",
-    home:null,seatTarget:null,meetingThread:null,deskDx:0,deskDy:0,
+    home:null,homeBldgKey:null,seatTarget:null,meetingThread:null,lastConfKey:null,
+    deskDx:0,deskDy:0,path:null,dest:null,wandering:false,
     phase:(hash32(s.session)%1000)/1000*Math.PI*2, color:paletteFor(s.host,s.session),
     born:now,walking:false,walkPhase:Math.random()*Math.PI*2,
-    bubble:null, sparkleUntil:0, nextTap:0, nextZzz:0, nextSip:0, sip:0};
+    bubble:null,sparkleUntil:0,hopUntil:0,stretchUntil:0,
+    nextTap:0,nextZzz:0,nextSip:0,sip:0,
+    nextWander:now+45000+Math.random()*60000, nextStretch:now+22000+Math.random()*30000};
 }
 function ingest(data){
   payload=data;
+  liveSessions=(data.sessions||[]).filter(s=>s.live!==false);
+  recentSessions=(data.recent||[]).concat((data.sessions||[]).filter(s=>s.live===false));
   const t=Date.parse(data.now); if(!isNaN(t)){ nowBase=t; nowPerf=performance.now(); }
-  const seen=new Set();
-  for(const s of data.sessions){
-    seen.add(s.session);
+
+  const seen=new Set(), newborns=[];
+  for(const s of liveSessions){ seen.add(s.session);
     let e=entities.get(s.session);
-    if(!e){
-      e=makeEntity(s,false); entities.set(s.session,e);
-      if(!firstIngest){
-        e.x=L.door.x; e.y=L.door.y+10;
-        if(s.returning){ e.bubble={text:"welcome back 👋",born:performance.now(),ttl:3200,kind:"welcome"}; }
-        else{ e.sparkleUntil=performance.now()+2600; e.bubble={text:"new here ✨",born:performance.now(),ttl:2600,kind:"new"}; }
-      }else{ e.alpha=1; }
-    }
+    if(!e){ e=makeEntity(s); entities.set(s.session,e); if(!firstIngest) newborns.push(e); else e.alpha=1; }
     e.data=s; e.color=paletteFor(s.host,s.session); e.gone=false;
   }
-  for(const [id,e] of entities){ if(!e.guest && !seen.has(id)) e.gone=true; }
+  for(const [id,e] of entities){ if(!seen.has(id)) e.gone=true; }
   relayout();
-  if(firstIngest){ for(const[,e]of entities){ if(e.home&&!e.leaving){ e.x=e.tx=e.home.x; e.y=e.ty=e.home.y; } } fitAll(true); }
+  applyLocalLastTurns();
+
+  for(const e of newborns){
+    e.x=L.entrance.x; e.y=L.entrance.y; e.alpha=0; e.dest="desk";
+    const b=L.bldgById.get(e.homeBldgKey);
+    e.path=[{x:L.entrance.x,y:L.spineY}];
+    if(b) e.path.push({x:b.doorX,y:L.spineY},b.doorIn);
+    if(e.home) e.path.push({x:e.home.x,y:e.home.y});
+    const s=e.data;
+    if(s&&s.returning) e.bubble={text:"welcome back 👋",born:performance.now(),ttl:3400,kind:"welcome"};
+    else { e.sparkleUntil=performance.now()+2600; e.bubble={text:"new here ✨",born:performance.now(),ttl:2600,kind:"new"}; }
+  }
+  if(firstIngest){
+    // snap everyone to where relayout put them (seated in meetings, else at their desk)
+    for(const [,e] of entities){ if(e.leaving) continue;
+      const tgt=(L.inMeeting.has(e.id)&&e.seatTarget)?e.seatTarget:e.home;
+      if(tgt){ e.x=e.tx=tgt.x; e.y=e.ty=tgt.y; e.alpha=1; e.path=null; } }
+    fitAll(true);
+    for(const [,e] of entities){ const s=e.data; if(s&&s.returning) e.bubble={text:"welcome back 👋",born:performance.now(),ttl:3400,kind:"welcome"}; }
+  }
   firstIngest=false;
   renderTicker(data.activity||[]);
   spawnActivitySparkles(data.activity||[]);
-  onlineEl.textContent=data.sessions.filter(s=>s.live&&s.status!=="done").length;
+  onlineEl.textContent=onlineCount();
+  maybeRefit();
+  if(meetingOpen) refreshMeetingMeta();
 }
 function serverNow(){return nowBase+(performance.now()-nowPerf);}
+function onlineCount(){return payload?(payload.sessions||[]).filter(s=>s.live!==false&&s.status!=="done").length:0;}
 
 function spawnActivitySparkles(activity){
   for(const a of activity.slice(0,10)){
     const key=(a.ts||"")+"|"+(a.summary||"");
     if(seenActivity.has(key)) continue;
     if(!firstIngest && a.session){
-      const e=[...entities.values()].find(en=>!en.guest&&en.data&&norm(en.data.name)===norm(a.session));
-      if(e){ e.sparkleUntil=Math.max(e.sparkleUntil,performance.now()+1400); burst(e.x,e.y-26,"#ffe08a",8); }
+      const e=[...entities.values()].find(en=>en.data&&norm(en.data.name)===norm(a.session));
+      if(e){ e.sparkleUntil=Math.max(e.sparkleUntil,performance.now()+1600); e.hopUntil=performance.now()+640; burst(e.x,e.y-24,"#ffe08a",9); }
     }
     seenActivity.add(key);
   }
   if(seenActivity.size>400){ seenActivity=new Set([...seenActivity].slice(-200)); }
+}
+function maybeRefit(){
+  const sig=L.bldgs.map(b=>b.key+":"+b.lit).sort().join(",")+"|"+L.confRooms.map(c=>c.thread).sort().join(",");
+  if(sig!==curSig){ const first=curSig===""; curSig=sig;
+    if(!first && performance.now()-lastUserInteract>6000) fitAll(false); }
 }
 
 /* ============================ particles ============================ */
@@ -461,9 +597,9 @@ function invY(py_){return (py_-view.cy)/cam.zoom+cam.y;}
 function px(wx,wy,ww,wh,col){const x=Math.round(sx(wx)),y=Math.round(sy(wy)),
   x2=Math.round(sx(wx+ww)),y2=Math.round(sy(wy+wh));ctx.fillStyle=col;ctx.fillRect(x,y,Math.max(1,x2-x),Math.max(1,y2-y));}
 function fitAll(immediate){
-  const b=L.floor, pad=18;    // frame to the whole office (incl. walls) tightly
+  const b=L.ground, pad=16;
   const zw=canvas.width/(b.w+pad*2), zh=canvas.height/(b.h+pad*2);
-  const z=clamp(Math.min(zw,zh),0.28,3.6);
+  const z=clamp(Math.min(zw,zh),0.22,3.6);
   cam.tzoom=z; cam.tx=b.x+b.w/2; cam.ty=b.y+b.h/2; cam.vx=cam.vy=0;
   if(immediate){cam.zoom=z;cam.x=cam.tx;cam.y=cam.ty;}
 }
@@ -474,7 +610,7 @@ function zoomAt(px_,py_,factor){
   cam.ty=wy-(py_-view.cy)/cam.tzoom;
 }
 function zoomToRoom(r){
-  const pad=40; const zw=canvas.width/((r.w+pad*2)), zh=canvas.height/((r.h+pad*2));
+  const pad=42; const zw=canvas.width/((r.w+pad*2)), zh=canvas.height/((r.h+pad*2));
   cam.tzoom=clamp(Math.min(zw,zh),0.4,4); cam.tx=r.x+r.w/2; cam.ty=r.y+r.h/2; cam.vx=cam.vy=0;
 }
 
@@ -513,7 +649,7 @@ canvas.addEventListener("pointerdown",e=>{
   try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
   dragMoved=false; dragStart={x:e.clientX,y:e.clientY};
-  lastPan={x:e.clientX,y:e.clientY,t:performance.now()}; cam.vx=cam.vy=0;
+  lastPan={x:e.clientX,y:e.clientY,t:performance.now()}; cam.vx=cam.vy=0; lastUserInteract=performance.now();
   if(pointers.size===2){ const p=[...pointers.values()]; pinchDist=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y); }
   canvas.classList.add("dragging");
 });
@@ -541,35 +677,43 @@ function endPointer(e){
 }
 canvas.addEventListener("pointerup",endPointer);
 canvas.addEventListener("pointercancel",endPointer);
-canvas.addEventListener("wheel",e=>{e.preventDefault();const r=canvas.getBoundingClientRect();
+canvas.addEventListener("wheel",e=>{e.preventDefault();const r=canvas.getBoundingClientRect();lastUserInteract=performance.now();
   zoomAt((e.clientX-r.left)*dpr,(e.clientY-r.top)*dpr, e.deltaY<0?1.12:1/1.12);},{passive:false});
+canvas.addEventListener("mousemove",e=>{
+  if(pointers.size) return; const r=canvas.getBoundingClientRect();
+  const wx=invX((e.clientX-r.left)*dpr), wy=invY((e.clientY-r.top)*dpr);
+  hoverId=pickEntity(wx,wy);
+  canvas.style.cursor=hoverId?"pointer":"grab";
+});
+function pickEntity(wx,wy){ let best=null,bd=1e9;
+  for(const [,en] of entities){ if(en.alpha<0.3) continue; const dx=Math.abs(wx-en.x);
+    if(dx<11 && wy>en.y-30 && wy<en.y+12){ const d=dx+Math.abs(wy-(en.y-8)); if(d<bd){bd=d;best=en;} } }
+  return best?best.id:null;
+}
 function handleClick(e){
   const r=canvas.getBoundingClientRect();
   const px_=(e.clientX-r.left)*dpr, py_=(e.clientY-r.top)*dpr;
   const wx=invX(px_), wy=invY(py_);
-  let best=null,bd=1e9;
-  for(const[,en]of entities){ if(en.alpha<0.2)continue;
-    const dx=Math.abs(wx-en.x);
-    if(dx<11 && wy>en.y-26 && wy<en.y+12){ const d=dx+Math.abs(wy-(en.y-8)); if(d<bd){bd=d;best=en;} } }
-  if(best && !best.guest){ openDossier(best.id); return; }
-  if(best && best.guest){ return; }
-  for(const rm of L.rooms){ if(wx>=rm.x&&wx<=rm.x+rm.w&&wy>=rm.y&&wy<=rm.y+rm.h){ zoomToRoom(rm); return; } }
-  for(const cr of L.confRooms){ if(wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y&&wy<=cr.y+cr.h){ zoomToRoom(cr); return; } }
-  closeDossier();
+  const pid=pickEntity(wx,wy); if(pid){ openDossier(pid); return; }
+  // conference room (or its header) → open the live meeting chat panel + focus it
+  for(const cr of L.confRooms){ if(wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoom(cr); openMeeting(cr.thread,true); return; } }
+  for(const b of L.bldgs){ if(wx>=b.x&&wx<=b.x+b.w&&wy>=b.y-WALL&&wy<=b.y+b.h){ lastUserInteract=performance.now(); zoomToRoom(b); return; } }
+  closeDossier(); closeMeeting();
 }
 mini.addEventListener("click",e=>{
-  const r=mini.getBoundingClientRect(); const b=L.floor;
+  const r=mini.getBoundingClientRect(); const b=L.ground; lastUserInteract=performance.now();
   const s=Math.min((mini.width)/b.w,(mini.height)/b.h)*0.92;
   const ox=(mini.width-b.w*s)/2, oy=(mini.height-b.h*s)/2;
   const mx=(e.clientX-r.left)*(mini.width/r.width), my=(e.clientY-r.top)*(mini.height/r.height);
   cam.tx=b.x+(mx-ox)/s; cam.ty=b.y+(my-oy)/s; cam.vx=cam.vy=0;
 });
-document.getElementById("zin").onclick=()=>zoomAt(view.cx,view.cy,1.25);
-document.getElementById("zout").onclick=()=>zoomAt(view.cx,view.cy,1/1.25);
-document.getElementById("fit").onclick=()=>fitAll(false);
+document.getElementById("zin").onclick=()=>{lastUserInteract=performance.now();zoomAt(view.cx,view.cy,1.25);};
+document.getElementById("zout").onclick=()=>{lastUserInteract=performance.now();zoomAt(view.cx,view.cy,1/1.25);};
+document.getElementById("fit").onclick=()=>{lastUserInteract=performance.now();fitAll(false);};
 
 /* ============================ dossier ============================ */
 async function openDossier(sid){
+  closeMeeting();
   selectedId=sid; const e=entities.get(sid), s=e?e.data:null;
   document.getElementById("dName").textContent=s?(s.name||shortSid(sid)):shortSid(sid);
   document.getElementById("dDot").style.background=statusColor(s?s.status:"unknown");
@@ -583,12 +727,18 @@ async function openDossier(sid){
   if(DEMO) dos=demoDossier(sid);
   else{ try{const r=await fetch(SESSION_URL(sid),{credentials:"same-origin",cache:"no-store"});if(r.ok)dos=await r.json();}catch(_){} if(!dos)dos=demoDossier(sid); }
   if(selectedId!==sid) return;
-  renderDossier(dos);
+  renderDossier(dos,e);
 }
-function renderDossier(dos){
+function renderDossier(dos,e){
   const chips=[]; const arr=(l,v)=>{if(v&&v.length)chips.push('<span class="tag"><b>'+l+'</b>'+esc(v.join(", "))+'</span>');};
   arr("projects",dos.projects_touched); arr("repos",dos.repos_touched); arr("threads",dos.threads_joined);
   if(dos.first_seen){const ago=(serverNow()-Date.parse(dos.first_seen))/1000; if(!isNaN(ago))chips.push('<span class="tag"><b>first seen</b>'+timeAgo(ago)+' ago</span>');}
+  // "recently left" building-mates (recent[] never gets a character)
+  const b=e?L.bldgById.get(e.homeBldgKey):null;
+  if(b&&b.recentMembers&&b.recentMembers.length){
+    const list=b.recentMembers.map(r=>(r.name||shortSid(r.session)).split("/").pop()+" ("+recentAgo(r)+")");
+    chips.push('<span class="tag"><b>recently left</b>'+esc(list.join(", "))+'</span>');
+  }
   document.getElementById("dChips").innerHTML=chips.join("")||'<span class="tag">no cross-session trail yet</span>';
   const tl=dos.timeline||[];
   document.getElementById("dTl").innerHTML=tl.length?tl.map(t=>{
@@ -603,12 +753,167 @@ function demoDossier(sid){const e=entities.get(sid),s=e?e.data:null,nm=s?s.name:
       {ts:"2026-07-09T14:58:32Z",age_sec:700,kind:"status",summary:"status → "+(s?s.status:"working")+" · "+(s?(s.repo+"@"+s.branch):"")},
       {ts:"2026-07-09T11:40:00Z",age_sec:12600,kind:"repo",summary:"switched to "+(s?s.repo:"repo")},
       {ts:s&&s.first_seen?s.first_seen:"2026-07-09T09:22:00Z",age_sec:21000,kind:"appeared",summary:"first seen on "+(s?s.host:"metal")}]};}
+function recentAgo(r){ let sec=r.age_sec; if(sec==null){ const t=Date.parse(r.updated||r.left||""); sec=isNaN(t)?0:(serverNow()-t)/1000; } return timeAgo(sec)+" ago"; }
 function closeDossier(){selectedId=null;dossierEl.classList.remove("open");dossierEl.setAttribute("aria-hidden","true");}
 document.getElementById("dClose").onclick=closeDossier;
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeDossier();helpEl.classList.remove("open");}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeDossier();closeMeeting();helpEl.classList.remove("open");}});
 document.getElementById("helpBtn").onclick=()=>helpEl.classList.toggle("open");
 document.getElementById("helpClose").onclick=()=>helpEl.classList.remove("open");
 helpEl.addEventListener("click",e=>{if(e.target===helpEl)helpEl.classList.remove("open");});
+
+/* ============================ meeting / thread chat panel ============================ */
+const THREAD_URL=(id,since)=>"/brain/api/thread/"+encodeURIComponent(id)+".json"+(since?("?since="+encodeURIComponent(since)):"");
+const THREAD_POST_URL=(id)=>"/brain/api/thread/"+encodeURIComponent(id)+"/post";
+const DEMO_SEED={
+  "roll-call":[
+    {sender:"tower/engram",message:"morning — picking up the office PR review",ts:"2026-07-09T15:07:30Z"},
+    {sender:"tower/aeos",message:"aeos scheduler tick is green, deploy is rolling",ts:"2026-07-09T15:08:20Z"},
+    {sender:"metal/engram",message:"who is working on what right now? drop your current focus.",ts:"2026-07-09T15:09:00Z"}
+  ],
+  "design-review":[
+    {sender:"lap/metalfinger",message:"portfolio hero section is ready for a color pass",ts:"2026-07-09T15:08:40Z"},
+    {sender:"tower/engram",message:"I lean warm — it matches the brand mark",ts:"2026-07-09T15:09:10Z"},
+    {sender:"lap/metalfinger",message:"@hiren: which palette do you prefer — warm terracotta or cool slate?",ts:"2026-07-09T15:09:40Z"}
+  ]
+};
+function threadNeedsHiren(th){ return !!(th&&th.last_turn&&/^\s*@hiren\b/i.test(th.last_turn.message||"")); }
+function confThread(id){ return (payload&&payload.threads||[]).find(x=>x.thread===id)||null; }
+function liveStatusColor(name){ const key=norm(name);
+  for(const s of liveSessions){ if(norm(s.name)===key||(key.length>3&&norm(s.name).includes(key))) return statusColor(s.status); }
+  return norm(name)==="hiren"?"#d9603a":"#9c8f78"; }
+function senderStyle(name){ if(norm(name)==="hiren") return {me:true};
+  const h=hash32("snd:"+norm(name))%360; return {me:false,bg:hsl(h,44,91),bd:hsl(h,40,76),tx:hsl(h,46,26)}; }
+function relTime(ts){ const t=Date.parse(ts); if(isNaN(t)) return "now"; const a=(serverNow()-t)/1000; return a<8?"just now":timeAgo(a)+" ago"; }
+function turnKey(t){ return t.id || (norm(t.sender)+"|"+(t.ts||"")+"|"+String(t.message||"").slice(0,32)); }
+function normalizeTranscript(d){
+  const raw=d.turns||d.messages||d.transcript||[];
+  const turns=raw.map(t=>({sender:t.sender||t.from||t.author||"?",message:t.message||t.text||t.body||"",
+    ts:t.timestamp||t.ts||t.time||null, id:t.id||t.turn_id||null}));
+  const cursor=d.cursor||d.next||d.next_cursor||(turns.length?(turns[turns.length-1].ts||turns[turns.length-1].id):null);
+  return {turns,cursor,topic:d.topic,participants:d.participants};
+}
+async function fetchTranscript(id,since){
+  const r=await fetch(THREAD_URL(id,since),{credentials:"same-origin",cache:"no-store"});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return normalizeTranscript(await r.json());
+}
+function demoTranscript(id,cursor){
+  if(cursor==null){ const seed=(DEMO_SEED[id]||[]).slice(); return {turns:seed,cursor:"c"+seed.length}; }
+  const extra=demoExtra[id]||[]; demoExtra[id]=[]; return {turns:extra,cursor:cursor};
+}
+function makeTurnEl(t,animate){
+  const me=norm(t.sender)==="hiren";
+  const row=document.createElement("div"); row.className="mt-row"+(me?" me":"")+(animate?" mt-new":"");
+  const b=document.createElement("div"); b.className="mt-bubble"+(me?" me":"");
+  if(!me){ const st=senderStyle(t.sender); b.style.background=st.bg; b.style.borderColor=st.bd; b.style.color=st.tx; }
+  const who=document.createElement("div"); who.className="who";
+  if(!me){ const dot=document.createElement("span"); dot.className="wd"; dot.style.background=liveStatusColor(t.sender); who.appendChild(dot); }
+  who.appendChild(document.createTextNode(me?"Hiren":t.sender));
+  const msg=document.createElement("div"); msg.textContent=t.message;
+  const tm=document.createElement("div"); tm.className="tm"; tm.textContent=relTime(t.ts);
+  b.appendChild(who); b.appendChild(msg); b.appendChild(tm); row.appendChild(b); return row;
+}
+function appendTurns(turns,animate){
+  if(!turns||!turns.length) return;
+  const log=mLogEl, atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<52;
+  let added=0;
+  for(const t of turns){ const key=turnKey(t), ck=norm(t.sender)+"|"+String(t.message||"");
+    if(meetingSeen.has(key)) continue;
+    if(norm(t.sender)==="hiren" && meetingContent.has(ck)){ meetingSeen.add(key); continue; }
+    meetingSeen.add(key); meetingContent.add(ck);
+    const empty=log.querySelector(".mt-empty"); if(empty) empty.remove();
+    log.appendChild(makeTurnEl(t,animate)); added++;
+  }
+  if(added && (atBottom||!animate)) log.scrollTop=log.scrollHeight;
+  // remember the newest turn so the in-scene bubble + needs-Hiren state follow the
+  // conversation even though demo re-ingests a static payload each poll
+  if(added && meetingOpen){ const last=turns[turns.length-1];
+    localLastTurn[meetingOpen]={sender:last.sender,message:last.message,timestamp:last.ts||new Date(serverNow()).toISOString()}; }
+}
+function applyLocalLastTurns(){
+  if(!payload||!payload.threads) return;
+  for(const th of payload.threads){ const ov=localLastTurn[th.thread]; if(!ov) continue;
+    const cur=th.last_turn&&th.last_turn.timestamp?Date.parse(th.last_turn.timestamp):0;
+    if(Date.parse(ov.timestamp)>=cur) th.last_turn=ov; }
+}
+function renderParticipants(th){
+  mPartsEl.innerHTML="";
+  for(const p of (th.participants||[])){ const el=document.createElement("span"); el.className="mt-part";
+    const dot=document.createElement("span"); dot.className="pd"; dot.style.background=liveStatusColor(p);
+    const nm=document.createElement("span"); nm.textContent=norm(p)==="hiren"?"Hiren":p;
+    el.appendChild(dot); el.appendChild(nm);
+    if(norm(p)==="hiren"){ el.style.background="#ffe4bd"; el.style.borderColor="#e6b96a"; el.style.color="#7a4a12"; }
+    mPartsEl.appendChild(el); }
+}
+async function loadMeeting(id,initial){
+  if(meetingOpen!==id) return;
+  try{
+    const data = DEMO ? demoTranscript(id,meetingCursor) : await fetchTranscript(id,meetingCursor);
+    if(meetingOpen!==id) return;
+    if(data.cursor) meetingCursor=data.cursor;
+    if(initial && !(data.turns&&data.turns.length) && !mLogEl.children.length)
+      mLogEl.innerHTML='<div class="mt-empty">No messages yet — say hello.</div>';
+    appendTurns(data.turns,!initial);
+  }catch(err){ if(initial && !mLogEl.children.length)
+    mLogEl.innerHTML='<div class="mt-empty">Could not load the conversation.</div>'; }
+}
+function openMeeting(id,focus){
+  closeDossier();
+  meetingOpen=id; meetingSeen=new Set(); meetingContent=new Set(); meetingCursor=null;
+  const th=confThread(id)||{thread:id};
+  mTopicEl.textContent=th.topic||id;
+  mDotEl.style.background="#6fce8f";
+  mSubEl.textContent=(th.participants||[]).length+" in the room · "+id;
+  renderParticipants(th);
+  mNeedsEl.style.display=threadNeedsHiren(th)?"flex":"none";
+  mLogEl.innerHTML=""; mErrEl.style.display="none";
+  meetingEl.classList.add("open"); meetingEl.setAttribute("aria-hidden","false");
+  loadMeeting(id,true);
+  if(meetingTimer) clearInterval(meetingTimer);
+  meetingTimer=setInterval(()=>loadMeeting(id,false),1800);
+  if(focus) setTimeout(()=>{try{mInputEl.focus();}catch(_){}} ,340);
+}
+function closeMeeting(){
+  meetingOpen=null; if(meetingTimer){ clearInterval(meetingTimer); meetingTimer=null; }
+  meetingEl.classList.remove("open"); meetingEl.setAttribute("aria-hidden","true");
+}
+function refreshMeetingMeta(){
+  if(!meetingOpen) return; const th=confThread(meetingOpen); if(!th) return;
+  renderParticipants(th); mNeedsEl.style.display=threadNeedsHiren(th)?"flex":"none";
+}
+async function postTurn(id,message){
+  const r=await fetch(THREAD_POST_URL(id),{method:"POST",credentials:"same-origin",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({message,sender:"hiren"})});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json().catch(()=>({}));
+}
+function demoReplyFor(id){ return id==="design-review"
+  ? "perfect — going warm terracotta then, applying it now ✨"
+  : "got it, thanks Hiren 👍"; }
+async function sendMeeting(){
+  const id=meetingOpen; if(!id) return;
+  const msg=mInputEl.value.trim(); if(!msg) return;
+  mInputEl.value=""; autoGrow(); mErrEl.style.display="none";
+  const now=new Date(serverNow()).toISOString();
+  appendTurns([{sender:"hiren",message:msg,ts:now,id:"opt:"+Date.now()}],true);
+  // reflect into the scene: room now shows Hiren's line + clears needs-Hiren
+  const th=confThread(id); if(th){ th.last_turn={sender:"hiren",message:msg,timestamp:now}; }
+  refreshMeetingMeta();
+  triggerHirenCameo(id);
+  try{
+    if(DEMO){ const who=((th&&th.participants)||[]).find(p=>norm(p)!=="hiren")||"agent";
+      demoExtra[id]=(demoExtra[id]||[]).concat([{sender:who,message:demoReplyFor(id),
+        ts:new Date(serverNow()+2600).toISOString(),id:"r"+Date.now()}]); }
+    else await postTurn(id,msg);
+  }catch(err){ mErrEl.textContent="Couldn't send ("+err.message+") — tap to restore your message";
+    mErrEl.style.display="block"; mErrEl.onclick=()=>{ mInputEl.value=msg; autoGrow(); mErrEl.style.display="none"; try{mInputEl.focus();}catch(_){} }; }
+}
+function autoGrow(){ mInputEl.style.height="auto"; mInputEl.style.height=Math.min(96,mInputEl.scrollHeight)+"px"; }
+mInputEl.addEventListener("input",autoGrow);
+mInputEl.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMeeting(); } });
+mSendEl.onclick=sendMeeting;
+document.getElementById("mClose").onclick=closeMeeting;
+function triggerHirenCameo(id){ cameo={thread:id,born:performance.now(),ttl:5200}; }
 
 /* ============================ sizing ============================ */
 function resize(){
@@ -617,21 +922,22 @@ function resize(){
   canvas.width=Math.max(1,Math.round(r.width*dpr)); canvas.height=Math.max(1,Math.round(r.height*dpr));
   view.cx=canvas.width/2; view.cy=canvas.height/2;
   const mr=mini.getBoundingClientRect(); mini.width=Math.round(mr.width*dpr); mini.height=Math.round(mr.height*dpr);
-  if(dust.length===0){ for(let i=0;i<70;i++) dust.push({x:Math.random(),y:Math.random(),s:0.4+Math.random()*1.1,ph:Math.random()*6.28,sp:0.2+Math.random()*0.5}); }
+  if(dust.length===0){ for(let i=0;i<64;i++) dust.push({x:Math.random(),y:Math.random(),s:0.4+Math.random()*1.1,ph:Math.random()*6.28,sp:0.2+Math.random()*0.5}); }
+  if(clouds.length===0){ for(let i=0;i<5;i++) clouds.push({x:Math.random(),y:0.08+Math.random()*0.84,r:70+Math.random()*90,sp:0.5+Math.random()}); }
 }
 window.addEventListener("resize",resize);
 
-/* ============================ dusk tint ============================ */
+/* ============================ day / dusk / night ============================ */
 function duskTint(){
   const h=new Date(serverNow()).getHours();
   let a=0, col="#000";
-  if(h>=18&&h<21){ a=(h-18)/3*0.20; col="#3a1e0a"; }
-  else if(h>=21||h<6){ a=0.26; col="#0a1230"; }
-  else if(h>=6&&h<8){ a=(8-h)/2*0.14; col="#2a1c40"; }
+  if(h>=18&&h<21){ a=(h-18)/3*0.15; col="#4a2a10"; }
+  else if(h>=21||h<6){ a=0.20; col="#0c1636"; }
+  else if(h>=6&&h<8){ a=(8-h)/2*0.11; col="#2a1c40"; }
   return {a,col};
 }
 
-/* ============================ render ============================ */
+/* ============================ render loop ============================ */
 let lastT=performance.now();
 function frame(t){
   const dt=Math.min(64,t-lastT); lastT=t;
@@ -644,188 +950,292 @@ function frame(t){
   requestAnimationFrame(frame);
 }
 function updateEntities(dt){
-  for(const[id,e]of entities){
+  const now=performance.now();
+  for(const [id,e] of entities){
     if(!e.leaving && e.alpha<1) e.alpha=Math.min(1,e.alpha+dt*0.004);
+    if(e.path && e.path.length){ const wp=e.path[0]; e.tx=wp.x; e.ty=wp.y; }
     const dx=e.tx-e.x, dy=e.ty-e.y, dist=Math.hypot(dx,dy);
-    const speed=0.078*(e.doneWalk?1.1:1);
-    const step=speed*dt;
-    if(dist>step){ e.x+=dx/dist*step; e.y+=dy/dist*step; e.walking=dist>2.5; if(Math.abs(dx)>0.5)e.facing=dx>0?1:-1; e.walkPhase+=dt*0.02; }
-    else{ e.x=e.tx; e.y=e.ty; e.walking=false; }
-    if(e.leaving && dist<4){ e.alpha-=dt*0.004; if(e.alpha<=0){ if(selectedId===id)closeDossier(); entities.delete(id); } }
+    const speed=0.072*(e.doneWalk?1.15:1), step=speed*dt;
+    if(dist>step){ e.x+=dx/dist*step; e.y+=dy/dist*step; e.walking=true; if(Math.abs(dx)>0.4)e.facing=dx>0?1:-1; e.walkPhase+=dt*0.02; }
+    else{ e.x=e.tx; e.y=e.ty;
+      if(e.path && e.path.length){ e.path.shift(); if(e.path.length===0){ e.path=null; onArrive(e); } }
+      else e.walking=false;
+    }
+    if(e.leaving && (!e.path||!e.path.length) && dist<4){ e.alpha-=dt*0.005; if(e.alpha<=0){ if(selectedId===id)closeDossier(); entities.delete(id); continue; } }
+    // ambient wander to the coffee corner and back (rare)
+    if(!e.path && !e.leaving && e.mode==="desk" && now>e.nextWander){
+      e.nextWander=now+60000+Math.random()*60000;
+      const b=L.bldgById.get(e.homeBldgKey);
+      if(b&&b.coffee&&e.home){ e.path=[{x:b.coffee.x,y:b.coffee.y},{x:e.home.x,y:e.home.y}]; e.wandering=true; }
+    }
+    // occasional stand-up-and-stretch while seated
+    if(!e.walking && !e.leaving && e.mode==="desk" && now>e.nextStretch){
+      e.nextStretch=now+30000+Math.random()*40000; e.stretchUntil=now+1500;
+    }
     if(e.bubble && performance.now()-e.bubble.born>e.bubble.ttl) e.bubble=null;
   }
 }
+function onArrive(e){ e.walking=false; if(e.wandering){ e.wandering=false; e.nextWander=performance.now()+60000+Math.random()*60000; } }
 
 function draw(t){
   const W=canvas.width,H=canvas.height;
   ctx.imageSmoothingEnabled=false;
-  ctx.fillStyle="#241c14"; ctx.fillRect(0,0,W,H);
-  drawFloor(); drawWalls(t);
-  // decor behind rooms
-  if(L.decor.cooler) drawCooler(L.decor.cooler);
-  if(L.decor.coffee) drawCoffee(L.decor.coffee,t);
-  for(const r of L.rooms) if(roomVisible(r)) drawRoom(r,t);
+  const dusk=duskTint(); const live=onlineCount(); const asleep=live===0;
+  const nightF=clamp(asleep?0.95:dusk.a/0.26,0,1);
+  // base
+  ctx.fillStyle=asleep?"#10131f":"#1a2314"; ctx.fillRect(0,0,W,H);
+  drawGround(t,nightF);
+  drawWalkways();
+  for(const b of L.bldgs) if(roomVisible(b)) drawBuildingGlow(b,t,nightF);
+  for(const tr of L.trees) if(onScreen(tr.x,tr.y-24)) drawTree(tr,t);
+  drawGate(t);
+  for(const b of L.bldgs) if(roomVisible(b)) drawBuilding(b,t,nightF);
   for(const cr of L.confRooms) if(roomVisible(cr)) drawConfRoom(cr,t);
-  if(cam.zoom>=0.4) for(const r of L.rooms){ if(!roomVisible(r))continue; for(const d of r.desks) drawDesk(d,entities.get(d.sid),t); }
-  // plants (in front of floor, behind labels)
-  for(const p of L.decor.plants) drawPlant(p,t);
-  // entities depth-sorted + culled
+  if(cam.zoom>=0.4) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks) drawDesk(d,entities.get(d.sid),t); }
+  // characters (depth-sorted + culled)
   const ents=[...entities.values()].filter(e=>e.alpha>0.02&&onScreen(e.x,e.y)).sort((a,b)=>a.y-b.y);
   const lod = cam.zoom>=0.7?2 : cam.zoom>=0.38?1 : 0;
   for(const e of ents){ drawShadow(e); drawCharacter(e,t,lod); }
   drawParticles();
-  if(lod>=1){ for(const r of L.rooms) if(roomVisible(r)) drawRoomSign(r); for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
-    if(cam.zoom>=0.5) for(const r of L.rooms){ if(!roomVisible(r))continue; for(const d of r.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
-    for(const e of ents) drawNameplate(e,lod); }
-  else { for(const r of L.rooms) if(roomVisible(r)) drawRoomCount(r); for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t); }
+  if(lod>=1){
+    for(const b of L.bldgs) if(roomVisible(b)) drawBuildingSign(b);
+    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
+    if(cam.zoom>=0.5) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
+    for(const e of ents) drawNameplate(e,lod);
+  } else {
+    for(const b of L.bldgs) if(roomVisible(b)) drawBuildingCount(b);
+    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
+  }
   drawSpeechBubbles(t);
+  drawCameo(t);
+  for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
   drawDust(t);
-  const dk=duskTint(); if(dk.a>0.001){ ctx.fillStyle=hexA(dk.col,dk.a); ctx.fillRect(0,0,W,H); }
+  updateBirds(t); drawBirds(t);
+  if(dusk.a>0.001||asleep){ ctx.fillStyle=hexA(asleep?"#0a0f22":dusk.col, asleep?0.44:dusk.a); ctx.fillRect(0,0,W,H); }
   drawVignette();
+  if(asleep){
+    emptyCapEl.innerHTML="no sessions online — they'll walk in when they start<small>the campus is resting for now</small>";
+    emptyCapEl.classList.add("show");
+  } else emptyCapEl.classList.remove("show");
 }
-function hexA(hex,a){const n=parseInt(hex.slice(1),16);return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";}
-function onScreen(wx,wy){const x=sx(wx),y=sy(wy);return x>-50&&x<canvas.width+50&&y>-70&&y<canvas.height+50;}
+function onScreen(wx,wy){const x=sx(wx),y=sy(wy);return x>-60&&x<canvas.width+60&&y>-80&&y<canvas.height+60;}
 function roomVisible(r){const x=sx(r.x),y=sy(r.y),x2=sx(r.x+r.w),y2=sy(r.y+r.h);return x2>-20&&x<canvas.width+20&&y2>-20&&y<canvas.height+20;}
 
-function drawFloor(){
-  const F=L.floor;
-  const wx0=invX(0),wy0=invY(0),wx1=invX(canvas.width),wy1=invY(canvas.height);
-  const x0=Math.max(F.x,wx0), x1=Math.min(F.x+F.w,wx1), y0=Math.max(F.y,wy0), y1=Math.min(F.y+F.h,wy1);
-  if(x1<=x0||y1<=y0) return;
-  px(x0,y0,x1-x0,y1-y0,"#b5875a");
-  const plank=12, shades=["#b5875a","#bb8d5f","#ad7f52","#b78a5b"];
-  const startRow=Math.floor((y0-F.y)/plank);
-  for(let row=startRow;;row++){ const wy=F.y+row*plank; if(wy>y1)break; if(wy+plank<y0)continue;
-    px(x0,wy,x1-x0,plank,shades[(row*7)&3]);
-    px(x0,wy,x1-x0,1,"rgba(92,60,32,.16)");
-    // a couple vertical plank seams for texture
-    const seam=F.x+((row*53)%F.w); if(seam>x0&&seam<x1) px(seam,wy,1,plank,"rgba(92,60,32,.13)");
+/* ---------------- campus ground ---------------- */
+function drawGround(t,nightF){
+  const G=L.ground;
+  const wx0=Math.max(G.x,invX(0)),wx1=Math.min(G.x+G.w,invX(canvas.width));
+  const wy0=Math.max(G.y,invY(0)),wy1=Math.min(G.y+G.h,invY(canvas.height));
+  if(wx1<=wx0||wy1<=wy0) return;
+  const base=nightF>0.4?mix("#9caf6f","#33413a",nightF*0.34):"#9caf6f";
+  px(wx0,wy0,wx1-wx0,wy1-wy0,base);
+  // gentle tonal tufts (viewport-culled, deterministic)
+  const step=30, blade1=mix("#88996a","#2c3830",nightF*0.34), blade2=mix("#aebd84","#39463d",nightF*0.34);
+  for(let yy=Math.floor(wy0/step)*step; yy<wy1; yy+=step){
+    for(let xx=Math.floor(wx0/step)*step; xx<wx1; xx+=step){
+      const hs=hash32(xx+"|"+yy), v=hs%5;
+      if(v===0) px(xx+(hs%10),yy+((hs>>3)%10),2,3,blade1);
+      else if(v===1) px(xx+((hs>>2)%12),yy+((hs>>5)%12),3,2,blade2);
+    }
   }
+  // drifting cloud soft-shadows (very subtle)
+  ctx.save(); ctx.globalAlpha=0.05;
+  for(const c of clouds){ const cx=((c.x+t*0.000011*c.sp)%1); const wx=G.x+cx*G.w, wy=G.y+c.y*G.h;
+    ctx.fillStyle="#2a2a1a"; ctx.beginPath(); ctx.ellipse(sx(wx),sy(wy),c.r*cam.zoom,c.r*0.48*cam.zoom,0,0,6.283); ctx.fill(); }
+  ctx.restore(); ctx.globalAlpha=1;
 }
-function drawWalls(t){
-  const F=L.floor;
-  // side + bottom walls with baseboard
-  px(F.x-10,F.y-2,10,F.h+12,"#c2a87d"); px(F.x+F.w,F.y-2,10,F.h+12,"#c2a87d");
-  px(F.x-10,F.y+F.h,F.w+20,10,"#a88f68");
-  // top wall
-  px(F.x-10,F.y-WALL_TOP,F.w+20,WALL_TOP,"#dcc79c");
-  px(F.x-10,F.y-WALL_TOP,F.w+20,4,"#c8ae80");
-  px(F.x-10,F.y-8,F.w+20,8,"#c2a87d");           // wainscot rail
-  // window frame + sky
-  const wnd=L.window;
-  px(wnd.x-3,wnd.y-3,wnd.w+6,wnd.h+6,"#8a6a44");
-  const gx=Math.round(sx(wnd.x)),gy=Math.round(sy(wnd.y)),gw=Math.round(wnd.w*cam.zoom),gh=Math.round(wnd.h*cam.zoom);
-  if(gw>0&&gh>0){ const sg=ctx.createLinearGradient(gx,gy,gx,gy+gh); sg.addColorStop(0,"#bfe2f4");sg.addColorStop(.6,"#dfeaf0");sg.addColorStop(1,"#f3e6bd");
-    ctx.fillStyle=sg; ctx.fillRect(gx,gy,gw,gh); }
-  px(wnd.x+wnd.w/2-1,wnd.y,2,wnd.h,"#8a6a44"); px(wnd.x,wnd.y+wnd.h/2-1,wnd.w,2,"#8a6a44");
-  // framed pictures + bulletin
-  for(const p of L.pictures) drawPicture(p);
-  // warm sun beam onto the floor (screen-space additive)
-  const sxc=sx(wnd.x+wnd.w/2), syc=sy(wnd.y+wnd.h);
+function drawWalkways(){
+  const stone="#d4bd93", edge="#c2a97e", hi="#e0cca4", y=L.spineY;
+  const x0=L.ground.x+16, x1=L.ground.x+L.ground.w-16;
+  px(x0,y-WALK_W/2,x1-x0,WALK_W,stone);
+  px(x0,y-WALK_W/2,x1-x0,2,hi); px(x0,y+WALK_W/2-2,x1-x0,2,edge);
+  const stub=(dx,topY)=>{ px(dx-WALK_W/2,topY,WALK_W,(y-topY)+WALK_W/2,stone); px(dx-WALK_W/2,topY,2,y-topY,hi); };
+  for(const b of L.bldgs) stub(b.doorX,b.y+b.h-4);
+  for(const cr of L.confRooms) stub(cr.doorX,cr.y+cr.h-4);
+  // gate stub
+  px(L.entrance.x-WALK_W/2,y-WALK_W/2,WALK_W,(L.entrance.y-y)+WALK_W/2,stone);
+}
+function drawGate(t){
+  const e=L.entrance, y0=L.spineY;
+  px(e.x-15,y0-4,4,26,"#7d5836"); px(e.x+11,y0-4,4,26,"#7d5836");
+  px(e.x-15,y0-13,30,10,"#8a6b45"); px(e.x-15,y0-13,30,2,"#a5824f");
+  ctx.fillStyle="#f4ead2"; ctx.textAlign="center"; ctx.textBaseline="middle";
+  const fs=Math.max(6,4.4*cam.zoom); ctx.font="800 "+fs+"px system-ui";
+  ctx.fillText("ENGRAM", sx(e.x), sy(y0-8));
+}
+function drawTree(tr,t){
+  const sway=Math.sin(t*0.0009+tr.x)*1.6*tr.s, x=tr.x,y=tr.y,s=tr.s;
+  ctx.fillStyle="rgba(28,18,8,.16)"; ctx.beginPath(); ctx.ellipse(sx(x),sy(y+2),14*s*cam.zoom,4*s*cam.zoom,0,0,6.283); ctx.fill();
+  px(x-2,y-18*s,4,18*s,"#6b4a2c"); px(x-2,y-18*s,2,18*s,"#7d5836");
+  const P=[["#5f7d3a","#6f8f43","#87ab52"],["#5a7742","#6b8a4d","#82a45f"],["#6b7d38","#7c8f44","#95a856"]][tr.k];
+  const cy=y-22*s;
+  const blob=(ox,oy,r,c)=>{ ctx.fillStyle=c; ctx.beginPath(); ctx.ellipse(sx(x+ox+sway),sy(cy+oy),r*s*cam.zoom,r*s*cam.zoom,0,0,6.283); ctx.fill(); };
+  blob(-6,4,9,P[0]); blob(6,4,9,P[0]); blob(0,-2,11,P[1]); blob(-3,-6,7,P[2]); blob(4,-5,6,P[2]);
+}
+function drawBuildingGlow(b,t,nightF){
+  if(!b.lit) return;
+  const strength=0.7+nightF*0.8;
   ctx.save(); ctx.globalCompositeOperation="lighter";
-  const breathe=0.5+0.5*Math.sin(t*0.0004);
-  for(let i=0;i<3;i++){
-    const spread=(90+i*55)*cam.zoom, len=(300+i*80)*cam.zoom;
-    ctx.globalAlpha=(0.055+i*0.016)*(0.7+0.3*breathe);
-    const g=ctx.createLinearGradient(sxc,syc,sxc+spread*0.4,syc+len);
-    g.addColorStop(0,"#fff0c4"); g.addColorStop(1,"rgba(255,240,196,0)");
-    ctx.fillStyle=g; ctx.beginPath();
-    ctx.moveTo(sxc-spread*0.15,syc); ctx.lineTo(sxc+spread*0.25,syc);
-    ctx.lineTo(sxc+spread*0.85,syc+len); ctx.lineTo(sxc-spread*0.5,syc+len); ctx.closePath(); ctx.fill();
-  }
+  const cx=sx(b.doorX), cy=sy(b.y+b.h+16), r=(b.w*0.82)*cam.zoom;
+  let g=ctx.createRadialGradient(cx,cy,3,cx,cy,r);
+  g.addColorStop(0,"rgba(255,206,124,"+(0.20*strength).toFixed(3)+")"); g.addColorStop(1,"rgba(255,206,124,0)");
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,r,0,6.283); ctx.fill();
+  const tx=sx(b.x+b.w/2), ty=sy(b.y-8), tr=(b.w*0.72)*cam.zoom;
+  g=ctx.createRadialGradient(tx,ty,3,tx,ty,tr);
+  g.addColorStop(0,"rgba(255,222,146,"+(0.18*strength).toFixed(3)+")"); g.addColorStop(1,"rgba(255,222,146,0)");
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(tx,ty,tr,0,6.283); ctx.fill();
   ctx.restore();
 }
-function drawPicture(p){
-  if(p.art===1){ // bulletin / cork board
-    px(p.x-2,p.y-2,p.w+4,p.h+4,"#8a6a44"); px(p.x,p.y,p.w,p.h,"#caa06a");
-    px(p.x+4,p.y+4,7,6,"#f4ead2"); px(p.x+p.w-12,p.y+5,8,5,"#f0dbc0"); px(p.x+6,p.y+p.h-9,9,5,"#e9f0d8");
-    return;
-  }
-  px(p.x-2,p.y-2,p.w+4,p.h+4,"#7d5a38"); px(p.x,p.y,p.w,p.h,"#f4ead2");
-  if(p.art===0){ px(p.x+2,p.y+p.h-8,p.w-4,6,"#8fb98a"); px(p.x+p.w-8,p.y+2,4,4,"#e6b74d"); } // landscape
-  else { px(p.x+3,p.y+3,p.w-6,p.h-6,"#cf7a52"); px(p.x+5,p.y+5,p.w-10,p.h-10,"#e6a67d"); }  // abstract
-}
-function drawPlant(p,t){
-  const sway=Math.sin(t*0.001+p.x)*1.4;
-  // shadow
-  ctx.fillStyle="rgba(35,22,10,.16)"; ctx.beginPath(); ctx.ellipse(sx(p.x),sy(p.y+2),9*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  // pot
-  px(p.x-6,p.y-8,12,10,"#5f4326"); px(p.x-6,p.y-8,12,3,OL); px(p.x-6,p.y-8,12,2,"#a5643a"); px(p.x-6,p.y-6,12,1,"#c07a48");
-  // foliage
-  px(p.x-2+sway,p.y-24,4,17,OL);
-  px(p.x-1+sway,p.y-23,2,16,"#5f7d3a");
-  for(let i=0;i<5;i++){ const a=(-Math.PI/2)+(i-2)*0.5, lx=p.x+Math.cos(a)*8+sway, ly=p.y-16+Math.sin(a)*8;
-    px(lx-2,ly-2,4,4,"#6b8f3f"); px(lx-1,ly-1,2,2,"#87ab52"); }
-}
-function drawCoffee(c,t){
-  ctx.fillStyle="rgba(35,22,10,.16)"; ctx.beginPath(); ctx.ellipse(sx(c.x),sy(c.y+2),9*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  px(c.x-7,c.y-16,14,18,OL); px(c.x-6,c.y-15,12,16,"#4a4038"); px(c.x-6,c.y-15,12,3,"#6a5c50");
-  px(c.x-4,c.y-11,8,4,"#2a2320"); px(c.x-3,c.y-10,3,2,"#d9603a"); // display + red light
-  px(c.x-3,c.y-4,6,4,"#e8ddc8"); px(c.x-3,c.y-5,6,1,"#b98a55"); // mug on tray
-  if(((t*0.001+c.x)%3)<0.4 && Math.random()<0.2) spawn({x:c.x,y:c.y-6,vx:0,vy:-0.2,life:0,ttl:900,type:"steam",col:"rgba(255,255,255,.5)"});
-}
-function drawCooler(c){
-  ctx.fillStyle="rgba(35,22,10,.16)"; ctx.beginPath(); ctx.ellipse(sx(c.x),sy(c.y+2),8*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  px(c.x-6,c.y-6,12,8,OL); px(c.x-5,c.y-5,10,7,"#e8eef2"); // base
-  px(c.x-5,c.y-16,10,11,OL); px(c.x-4,c.y-15,8,10,"#a9d8ea"); px(c.x-4,c.y-15,3,10,"#c3e6f2"); // blue jug
-}
-function drawRoom(r,t){
-  // rug (soft, with terracotta inset border), warm tone per room
-  const rug = r.unassigned? ["#e5ddc9","#dbd1b6"] : RUGS[r.tint%RUGS.length];
-  px(r.x+5,r.y+HEADER-2,r.w-10,r.h-HEADER-3,"#cf9d78");           // border tone
-  px(r.x+7,r.y+HEADER,r.w-14,r.h-HEADER-7,rug[0]);
-  px(r.x+13,r.y+HEADER+5,r.w-26,r.h-HEADER-16,rug[1]);
-  // wall plate / header
-  px(r.x+2,r.y+1,r.w-4,HEADER-2,"#8a6b45"); px(r.x+2,r.y+1,r.w-4,2,"#a5824f");
-  px(r.x+3,r.y+3,r.w-6,HEADER-6,r.unassigned?"#9a8460":"#a5824f");
-  // subtle inner border
-  ctx.strokeStyle="rgba(90,68,42,.5)"; ctx.lineWidth=Math.max(1,1.5*cam.zoom);
-  const X=Math.round(sx(r.x)),Y=Math.round(sy(r.y)),Wd=Math.round(sx(r.x+r.w))-X,Hd=Math.round(sy(r.y+r.h))-Y;
+
+/* ---------------- a building = one project office ---------------- */
+function drawBuilding(b,t,nightF){
+  const A=b.accent, lit=b.lit;
+  const wall=lit?A.wall:mix(A.wall,"#42403a",0.64), wallDark=lit?A.wallDark:mix(A.wallDark,"#33312c",0.64),
+        wallHi=lit?A.wallHi:mix(A.wallHi,"#55524b",0.55),
+        rug=lit?A.rug:mix(A.rug,"#3c3a34",0.62), rugAlt=lit?A.rugAlt:mix(A.rugAlt,"#34322d",0.62),
+        sign=lit?A.sign:"#5a544c";
+  // ground shadow
+  px(b.x+4,b.y+10,b.w,b.h,"rgba(24,16,6,.18)");
+  // outer wall + rim light
+  px(b.x-WALL,b.y-WALL,b.w+WALL*2,b.h+WALL*2,wallDark);
+  px(b.x-WALL,b.y-WALL,b.w+WALL*2,4,wallHi);
+  px(b.x-WALL,b.y+b.h-1,b.w+WALL*2,WALL+1,mix(wallDark,"#000",0.25));
+  // interior floor + rug
+  px(b.x,b.y+HEADER,b.w,b.h-HEADER,mix(rug,"#000",0.06));
+  px(b.x+4,b.y+HEADER+3,b.w-8,b.h-HEADER-7,rug);
+  px(b.x+10,b.y+HEADER+8,b.w-20,b.h-HEADER-18,rugAlt);
+  // warm interior light pool — makes an occupied office feel cozy-lit
+  if(lit){ ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.10+0.05*Math.sin(t*0.0015+b.x);
+    const cx=sx(b.x+b.w/2), cy=sy(b.y+HEADER+(b.h-HEADER)*0.55), rr=(b.w*0.62)*cam.zoom;
+    const lg=ctx.createRadialGradient(cx,cy,3,cx,cy,rr); lg.addColorStop(0,"#ffdca0"); lg.addColorStop(1,"rgba(255,220,160,0)");
+    ctx.fillStyle=lg; ctx.beginPath(); ctx.arc(cx,cy,rr,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1; }
+  // roof / header bar
+  px(b.x-WALL,b.y-WALL,b.w+WALL*2,HEADER+WALL,sign);
+  px(b.x-WALL,b.y-WALL,b.w+WALL*2,3,mix(sign,"#fff",0.18));
+  // windows (glow warm if lit, dark if not) — kept to the right half so the sign stays legible
+  const winY=b.y-WALL+5, winH=HEADER-7;
+  for(let i=0;i<2;i++){ const wx=b.x+b.w*(0.62+i*0.20)-8;
+    px(wx,winY,16,winH,mix(sign,"#000",0.28)); px(wx+1,winY+1,14,winH-2, lit?"#ffe6a6":"#33333c");
+    if(lit){ ctx.save();ctx.globalCompositeOperation="lighter";ctx.globalAlpha=0.22+0.1*Math.sin(t*0.002+i*2);ctx.fillStyle="#ffd98a";
+      ctx.fillRect(sx(wx+1),sy(winY+1),14*cam.zoom,(winH-2)*cam.zoom);ctx.restore();ctx.globalAlpha=1; } }
+  // door (open dark doorway if lit; closed slab + knob if not)
+  const dw=16, dx=b.doorX-dw/2;
+  px(dx-2,b.y+b.h-14,dw+4,14,wallDark);
+  if(lit){ px(dx,b.y+b.h-12,dw,12,"#3a2a1a"); px(dx,b.y+b.h-12,dw,2,"#553f28"); }
+  else { px(dx,b.y+b.h-12,dw,12,mix(wall,"#000",0.22)); px(dx+dw-4,b.y+b.h-7,2,3,"#caa24a"); }
+  // coffee corner (lit)
+  if(lit){ const c=b.coffee; px(c.x-4,c.y-9,8,11,OL); px(c.x-3,c.y-8,6,9,"#4a4038"); px(c.x-3,c.y-8,6,2,"#6a5c50"); px(c.x-2,c.y-4,4,2,"#2a2320"); px(c.x-2,c.y+1,4,2,"#e8ddc8"); }
+  // dim ghost desks so a dark office still reads as an office
+  if(!lit){ const gy=b.y+HEADER+PADY+CELL_H*0.42;
+    for(let i=0;i<2;i++){ const gx=b.x+PADX+i*CELL_W+CELL_W/2; px(gx-9,gy,18,7,"#39332b"); px(gx-6,gy-7,12,7,"#2a2620"); px(gx-4,gy-6,8,4,"#20242c"); } }
+  // inner border
+  ctx.strokeStyle="rgba(60,44,26,.5)"; ctx.lineWidth=Math.max(1,1.4*cam.zoom);
+  const X=Math.round(sx(b.x)),Y=Math.round(sy(b.y)),Wd=Math.round(sx(b.x+b.w))-X,Hd=Math.round(sy(b.y+b.h))-Y;
   ctx.strokeRect(X+1,Y+1,Wd-2,Hd-2);
 }
 function drawConfRoom(cr,t){
-  // frosted glass room
+  // a meeting with nobody live is asleep — dark glass, no bubble — consistent with a lights-off office
+  const dim = cr.present===0 && meetingOpen!==cr.thread; cr.dim=dim;
   px(cr.x,cr.y,cr.w,cr.h,"rgba(150,185,210,0.12)");
-  px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2,"#e2ebef");
-  ctx.save(); ctx.globalAlpha=0.16; px(cr.x+4,cr.y+HEADER+2,(cr.w-8)*0.42,cr.h-HEADER-6,"#bcdcee"); ctx.restore();
-  // glass frame
-  ctx.strokeStyle="#89a0b2"; ctx.lineWidth=Math.max(1,2*cam.zoom);
+  px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2, dim?"#79838d":"#e2ebef");
+  ctx.save(); ctx.globalAlpha=0.16; px(cr.x+4,cr.y+HEADER+2,(cr.w-8)*0.42,cr.h-HEADER-6, dim?"#5f6a74":"#bcdcee"); ctx.restore();
+  ctx.strokeStyle=dim?"#5a6772":"#89a0b2"; ctx.lineWidth=Math.max(1,2*cam.zoom);
   const X=Math.round(sx(cr.x)),Y=Math.round(sy(cr.y)),Wd=Math.round(sx(cr.x+cr.w))-X,Hd=Math.round(sy(cr.y+cr.h))-Y;
   ctx.strokeRect(X+1,Y+1,Wd-2,Hd-2);
-  // vertical mullions on the glass
   ctx.strokeStyle="rgba(137,160,178,.4)"; ctx.lineWidth=1;
   for(let gx=cr.x+cr.w*0.33; gx<cr.x+cr.w; gx+=cr.w*0.33){ ctx.beginPath(); ctx.moveTo(sx(gx),Y+HEADER*cam.zoom); ctx.lineTo(sx(gx),Y+Hd-2); ctx.stroke(); }
-  // header sign bar
-  px(cr.x+2,cr.y+1,cr.w-4,HEADER-2,"#5f7d9e"); px(cr.x+2,cr.y+1,cr.w-4,2,"#7a97b4");
-  // table shadow + top, proportional
+  px(cr.x+2,cr.y+1,cr.w-4,HEADER-2, dim?"#42505c":"#5f7d9e"); px(cr.x+2,cr.y+1,cr.w-4,2, dim?"#556370":"#7a97b4");
   ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy+3),(cr.tableRx+2)*cam.zoom,(cr.tableRy+2)*cam.zoom,0,0,6.283); ctx.fill();
   ctx.fillStyle="#8a6b45"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),cr.tableRx*cam.zoom,cr.tableRy*cam.zoom,0,0,6.283); ctx.fill();
   ctx.fillStyle="#a5824f"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy-2),(cr.tableRx-4)*cam.zoom,(cr.tableRy-3)*cam.zoom,0,0,6.283); ctx.fill();
+  // "needs Hiren" — an agent asked him something: amber wash + pulsing frame
+  if(threadNeedsHiren(confThread(cr.thread))){
+    const pulse=0.5+0.5*Math.sin(t*0.005);
+    ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.09+0.12*pulse; ctx.fillStyle="#ffcf7a";
+    px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2,"#ffcf7a"); ctx.restore(); ctx.globalAlpha=1;
+    ctx.strokeStyle="rgba(240,170,60,"+(0.5+0.4*pulse).toFixed(3)+")"; ctx.lineWidth=Math.max(1.5,2.4*cam.zoom);
+    const X=Math.round(sx(cr.x)),Y=Math.round(sy(cr.y)),W=Math.round(sx(cr.x+cr.w))-X,H=Math.round(sy(cr.y+cr.h))-Y;
+    ctx.strokeRect(X-1,Y-1,W+2,H+2);
+  } else if(dim){
+    ctx.save(); ctx.globalAlpha=0.40; px(cr.x+2,cr.y+HEADER,cr.w-4,cr.h-HEADER-2,"#141a24"); ctx.restore(); ctx.globalAlpha=1;
+    // a soft "zzz" so an empty room reads as asleep, not broken
+    const zx=sx(cr.cx), zy=sy(cr.cy-4); ctx.globalAlpha=0.5+0.3*Math.sin(t*0.002);
+    ctx.fillStyle="#c3ccd4"; ctx.font=Math.max(8,6*cam.zoom)+"px system-ui"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText("z z z",zx,zy); ctx.globalAlpha=1;
+  }
+}
+function drawConfBadges(cr,t){
+  const th=confThread(cr.thread);
+  if(threadNeedsHiren(th)){
+    ctx.textAlign="left"; ctx.textBaseline="middle";
+    const fs=Math.max(9,6.2*cam.zoom); ctx.font="800 "+fs+"px system-ui";
+    const label="❓ needs Hiren", tw=ctx.measureText(label).width;
+    const bx=sx(cr.x+cr.w)-tw-16, by=sy(cr.y)-fs*0.9;
+    const pulse=0.5+0.5*Math.sin(t*0.005);
+    roundRectFill(bx-7,by-fs*0.72,tw+14,fs*1.7,fs*0.85,"rgba(230,144,42,"+(0.85+0.15*pulse).toFixed(3)+")","rgba(140,80,20,.5)");
+    ctx.fillStyle="#fff6ea"; ctx.fillText(label,bx,by);
+  }
+  if(meetingOpen===cr.thread && !(cameo&&cameo.thread===cr.thread)){
+    const cx=sx(cr.cx), cy=sy(cr.y-7), fs=Math.max(7,4.4*cam.zoom);
+    roundRectFill(cx-fs*2.0,cy-fs*1.05,fs*4.0,fs*2.1,fs*1.05,"rgba(255,250,240,.96)","rgba(120,96,60,.35)");
+    for(let i=0;i<3;i++){ const a=0.32+0.68*(0.5+0.5*Math.sin(t*0.006-i*0.95)); ctx.globalAlpha=a;
+      ctx.fillStyle="#8a7960"; ctx.beginPath(); ctx.arc(cx-fs*1.1+i*fs*1.1,cy,fs*0.42,0,6.283); ctx.fill(); }
+    ctx.globalAlpha=1;
+  }
+}
+function drawCameo(t){
+  if(!cameo) return;
+  const age=performance.now()-cameo.born;
+  if(age>cameo.ttl){ cameo=null; return; }
+  const cr=L.confById.get(cameo.thread); if(!cr){ cameo=null; return; }
+  if(!roomVisible(cr)) return;
+  let seat=null; const pi=(cr.participants||[]).findIndex(p=>norm(p)==="hiren");
+  if(pi>=0&&cr.seats[pi]) seat=cr.seats[pi]; else seat={x:cr.cx,y:cr.cy+cr.tableRy+12};
+  const alpha=Math.min(clamp(age/300,0,1),clamp((cameo.ttl-age)/600,0,1));
+  const x=seat.x, feet=seat.y, t2=t/1000, bob=Math.sin(t2*2)*0.6;
+  // amber welcome glow over the room
+  ctx.save(); ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=0.14*alpha*(0.5+0.5*Math.abs(Math.sin(t*0.004)));
+  ctx.fillStyle="#ffcf7a"; ctx.beginPath(); ctx.ellipse(sx(cr.cx),sy(cr.cy),(cr.tableRx+26)*cam.zoom,(cr.tableRy+20)*cam.zoom,0,0,6.283); ctx.fill(); ctx.restore(); ctx.globalAlpha=1;
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle="rgba(24,16,6,.25)"; ctx.beginPath(); ctx.ellipse(sx(x),sy(feet+10),8*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
+  const headTop=feet-26-bob, torsoTop=headTop+10;
+  px(x-8,torsoTop+2,3,15,"#3a3a44"); px(x+6,torsoTop+2,3,15,"#3a3a44");           // legs
+  px(x-7,torsoTop-1,15,14,OL); px(x-6,torsoTop,13,12,"#33465e"); px(x+1,torsoTop,6,12,"#28384c"); px(x-6,torsoTop,13,2,"#4a6180"); // suit
+  px(x-1,torsoTop,2,9,"#d9603a");                                                // tie
+  px(x-8,torsoTop+1,3,7,OL); px(x-7,torsoTop+1,2,6,"#33465e"); px(x-8,torsoTop+6,3,3,OL); px(x-7,torsoTop+6,2,2,"#f2c79b"); // left arm
+  const wav=Math.sin(t2*8)*2;                                                     // waving right arm
+  px(x+6,headTop-1+wav*0,3,8,OL); px(x+6,headTop-1,2,7,"#33465e"); px(x+6,headTop-4,3,3,OL); px(x+6,headTop-4,2,2,"#f2c79b");
+  px(x-6,headTop-1,12,12,OL); px(x-5,headTop,10,10,"#f2c79b"); px(x+2,headTop,3,10,"#dcae82"); // head
+  px(x-3,headTop+4,1,2,"#2a2018"); px(x+2,headTop+4,1,2,"#2a2018");               // eyes
+  px(x-7,headTop-2,14,3,OL); px(x-6,headTop-1,12,2,"#2b2b33");                    // hat brim
+  px(x-4,headTop-7,8,6,OL); px(x-3,headTop-6,6,5,"#33333d"); px(x-3,headTop-6,6,1,"#4a4a58"); // hat crown
+  label3(x+9,headTop-6,"👋",6,"#7a4a12",false);
+  const cx=sx(x), fs=Math.max(9,5.4*cam.zoom); ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.font="800 "+fs+"px system-ui";
+  const tw=ctx.measureText("Hiren").width, py=sy(feet-40);
+  roundRectFill(cx-tw/2-7,py-fs*0.75,tw+14,fs*1.6,fs*0.8,"rgba(217,96,42,.96)","rgba(120,50,20,.5)");
+  ctx.fillStyle="#fff4ea"; ctx.fillText("Hiren",cx,py+1);
+  ctx.globalAlpha=1;
+  if(Math.random()<0.14) burst(x,headTop-4,"#ffd86a",3);
 }
 function drawDesk(d,occupant,t){
   const dx=d.dx,dy=d.dy;
   const w=CELL_W-18,x=dx+9,y=dy+CELL_H*0.56;
   const away = occupant && occupant.mode==="meeting";
-  // chair (pushed back if away)
   const chOff = away? 8 : 3;
   px(x+w/2-5,y+11+chOff,10,3,"#6f4d2c"); px(x+w/2-5,y+11+chOff,10,1,"#8a6136");
   px(x+w/2-6,y+7+chOff,2,7,"#6f4d2c"); px(x+w/2+4,y+7+chOff,2,7,"#6f4d2c");
-  // desk shadow
   ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(x+w/2),sy(y+11),(w*0.6)*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  // desk top (outlined, shaded)
   px(x-1,y-1,w+2,12,OL);
   px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
   px(x+1,y+10,3,4,"#6f4d2c"); px(x+w-4,y+10,3,4,"#6f4d2c");
-  // monitor on the desk (always, so reserved desks still read)
   const mw=14, mx=x+w/2-mw/2, my=y-11;
   px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c");
   const st = occupant? (occupant.data?occupant.data.status:"unknown"):"off";
-  const screenCol = away? "#26506b" : (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": (st==="off"?"#22303f":"#2a3d55"));
+  const screenCol = away? "#26506b" : (st==="blocked"?"#7a2a1e": st==="working"?"#2f5b3a": "#2a3d55");
   px(mx+1,my+1,mw-2,6,screenCol);
-  px(mx+w*0-1+2,my+8,mw-2,2,"#2a241d"); // stand base hint
-  // little desk props: mug
+  px(mx+1,my+8,mw-2,2,"#2a241d");
   if(away){ px(x+3,y-4,4,4,"#e8ddc8"); px(x+3,y-5,4,1,"#b98a55"); }
-  else { px(x+w-6,y-3,3,3,"#cf7a52"); } // a sticky/plant nub
+  else { px(x+w-6,y-3,3,3,"#cf7a52"); }
 }
 function drawAwayTag(d){
   const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
@@ -836,11 +1246,11 @@ function drawAwayTag(d){
   ctx.fillStyle="#fff4ea"; ctx.fillText(label,cx,cy);
 }
 function drawShadow(e){
-  ctx.fillStyle="rgba(35,22,10,.22)"; ctx.globalAlpha=clamp(e.alpha,0,1);
+  ctx.fillStyle="rgba(24,16,6,.24)"; ctx.globalAlpha=clamp(e.alpha,0,1);
   ctx.beginPath(); ctx.ellipse(sx(e.x),sy(e.y+10),8*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill(); ctx.globalAlpha=1;
 }
 
-/* ---- crafted character: outline + 2-3 tone shading ---- */
+/* ---------------- crafted character ---------------- */
 function drawCharacter(e,t,lod){
   const col=e.color, s=e.data, status=s?s.status:"unknown";
   const now=t, local=t/1000+e.phase;
@@ -856,6 +1266,7 @@ function drawCharacter(e,t,lod){
   }
 
   const walking=e.walking;
+  let hopY=0; if(e.hopUntil>now){ const p=(e.hopUntil-now)/640; hopY=-Math.abs(Math.sin(p*Math.PI))*5; }
   if(status==="working"&&s&&s.age_sec!=null&&s.age_sec<45&&!walking){
     const ph=((now/650+e.phase)%1); ctx.save(); ctx.globalAlpha=(1-ph)*0.45*e.alpha;
     ctx.strokeStyle="#4f9d5b"; ctx.lineWidth=1.5*cam.zoom; ctx.beginPath();
@@ -867,9 +1278,10 @@ function drawCharacter(e,t,lod){
   if(status==="idle"||status==="available"){ lean=-1.6; }
   if(status==="blocked"){ slump=1.2; headX=Math.sin(local*3.2)*1.3; }
   const bob = walking ? Math.abs(Math.sin(e.walkPhase))*1.9 : breathe;
-  const feet=e.y, x=e.x, f=e.facing;
+  const feet=e.y+hopY, x=e.x, f=e.facing;
   const headTop=feet-26+lean+slump-bob;
   const torsoTop=headTop+10;
+  const stretching = e.stretchUntil>now && !walking;
 
   // legs / chair
   if(walking){
@@ -882,53 +1294,58 @@ function drawCharacter(e,t,lod){
     if(status==="idle"||status==="available") px(x-8,torsoTop,17,2,"#87613b");
   }
 
-  // torso (outline, base, right-shade, top-highlight)
+  // torso
   px(x-7,torsoTop-1,15,14,OL);
   px(x-6,torsoTop,13,12,col.shirt);
   px(x+1,torsoTop,6,12,col.shirtDark);
   px(x-6,torsoTop,13,2,col.shirtHi);
 
   // arms + hands
-  const typing = status==="working" && !walking;
+  const typing = status==="working" && !walking && !stretching;
   const blockedTap = status==="blocked" && !walking && (Math.sin(local*5)>0.6);
   let lhY=torsoTop+3, rhY=torsoTop+3;
   if(typing){ const beat=Math.floor(now/110)%2; lhY=torsoTop+5+(beat?-1:1); rhY=torsoTop+5+(beat?1:-1);
     if(now>e.nextTap){ e.nextTap=now+90+Math.random()*80; spawn({x:x+(beat?-6:6),y:torsoTop+6,vx:(Math.random()-0.5)*0.2,vy:-0.3,life:0,ttl:360,type:"tap",col:"#fff2c8"}); } }
   if(blockedTap) rhY=torsoTop+7;
-  // upper arms
-  px(x-8,torsoTop+1,3,typing?5:7,OL); px(x+6,torsoTop+1,3,typing?5:7,OL);
-  px(x-7,torsoTop+1,2,typing?4:6,col.shirtDark); px(x+6,torsoTop+1,2,typing?4:6,col.shirtDark);
-  // hands
-  px(x-8,lhY,3,3,OL); px(x+6,rhY,3,3,OL);
-  px(x-7,lhY,2,2,col.skin); px(x+6,rhY,2,2,col.skin);
+  if(stretching){
+    // raised arms overhead
+    px(x-8,headTop-3,3,8,OL); px(x+6,headTop-3,3,8,OL);
+    px(x-7,headTop-3,2,7,col.shirtDark); px(x+6,headTop-3,2,7,col.shirtDark);
+    px(x-8,headTop-5,3,3,OL); px(x+6,headTop-5,3,3,OL);
+    px(x-7,headTop-5,2,2,col.skin); px(x+6,headTop-5,2,2,col.skin);
+    label3(x,headTop-10,"✦",4.4,"#cbb27f",false);
+  } else {
+    px(x-8,torsoTop+1,3,typing?5:7,OL); px(x+6,torsoTop+1,3,typing?5:7,OL);
+    px(x-7,torsoTop+1,2,typing?4:6,col.shirtDark); px(x+6,torsoTop+1,2,typing?4:6,col.shirtDark);
+    px(x-8,lhY,3,3,OL); px(x+6,rhY,3,3,OL);
+    px(x-7,lhY,2,2,col.skin); px(x+6,rhY,2,2,col.skin);
+  }
 
   // idle coffee sip / zzz
-  if(status==="idle"||status==="available"){
+  if((status==="idle"||status==="available")&&!stretching){
     if(now>e.nextSip){ e.nextSip=now+6000+Math.random()*5000; e.sip=now+1400; }
     if(now<e.sip){ px(x+5,torsoTop-2,4,4,OL); px(x+5,torsoTop-1,3,3,"#e8ddc8"); px(x+5,torsoTop-2,3,1,"#b98a55");
       if(Math.random()<0.14) spawn({x:x+6,y:torsoTop-4,vx:0,vy:-0.2,life:0,ttl:700,type:"steam",col:"rgba(255,255,255,.5)"}); }
     else if(now>e.nextZzz){ e.nextZzz=now+2600+Math.random()*2200; spawn({x:x+6,y:headTop-2,vx:0.05,vy:-0.25,life:0,ttl:1600,type:"zzz",col:"#9fb4d8"}); }
   }
 
-  // head (outline, skin, right-shade)
+  // head
   px(x-6+headX,headTop-1,12,12,OL);
   px(x-5+headX,headTop,10,10,col.skin);
   px(x+2+headX,headTop,3,10,col.skinDark);
-  // hair variants
   px(x-6+headX,headTop-2,12,4,OL);
   px(x-5+headX,headTop-1,10,3,col.hair);
   px(x-5+headX,headTop-1,10,1,col.hairHi);
   if(col.hairChoice===0){ px(x-5+headX,headTop-1,2,6,col.hair); px(x+3+headX,headTop-1,2,6,col.hair); }
   else if(col.hairChoice===1){ px(x-5+headX,headTop-2,10,3,col.hair); px(x-5+headX,headTop-2,10,1,col.hairHi); }
   else { px(x+2+headX,headTop-1,3,3,col.hair); }
-  // eyes + blink
   const blink=(Math.sin(local*1.6+e.phase*3)>0.965)|| (now%4200<90);
   if(!blink){ const ex=x-3+headX+(f>0?1:0); px(ex,headTop+4,1,2,"#2a2018"); px(ex+4,headTop+4,1,2,"#2a2018"); }
   else px(x-3+headX,headTop+5,5,1,"#2a2018");
 
-  // ---- monitor code-scroll / glow overlay (desk workers) ----
+  // monitor code-scroll / glow overlay (desk workers)
   if(!walking && e.mode==="desk"){
-    const w=CELL_W-18, mw=14, mx=x-mw/2, my=(e.deskDy+CELL_H*0.56)-11;
+    const mw=14, mx=x-mw/2, my=(e.deskDy+CELL_H*0.56)-11;
     if(status==="working"||status==="available"||status==="idle"){
       ctx.save(); ctx.globalCompositeOperation="lighter";
       ctx.globalAlpha=(0.10+0.05*Math.sin(now*0.02+e.phase))*e.alpha; ctx.fillStyle=status==="working"?"#bfe6c8":"#cfe0ef";
@@ -939,7 +1356,7 @@ function drawCharacter(e,t,lod){
     else if(status==="blocked" && Math.sin(now*0.01)>0){ px(mx+2,my+3,mw-5,1,"#ff9b7a"); }
   }
 
-  // ---- status glyphs ----
+  // status glyphs
   ctx.globalAlpha=clamp(e.alpha,0,1);
   if(status==="blocked"){
     const age=(now-e.born); const pop=easeOutBack(clamp(age/300,0,1)); const bs=7*pop;
@@ -947,7 +1364,8 @@ function drawCharacter(e,t,lod){
     label3(x+7,gy,"!",bs,"#d9603a",true);
     if(Math.random()<0.02) spawn({x:x+5,y:headTop+2,vx:0.05,vy:0.2,life:0,ttl:500,type:"sweat",col:"#8fc0e8"});
   } else if(typing){ label3(x+8,headTop-7,"⌨",6.5,"#5a4a34",false); }
-  if(e.doneWalk && walking){ label3(x+ (f>0?8:-8),headTop-6,"👋",6.5,"#5a4a34",false); }
+  if(e.doneWalk && walking){ label3(x+(f>0?8:-8),headTop-6,"👋",6.5,"#5a4a34",false); }
+  if(e.sparkleUntil>now){ label3(x-8,headTop-3,"✨",5.4,"#ffd86a",false); label3(x+9,headTop-1,"✨",4.8,"#ffe89a",false); }
   ctx.globalAlpha=1;
 }
 function label3(wx,wy,glyph,size,color,bubble){
@@ -969,19 +1387,36 @@ function drawParticles(){
   ctx.globalAlpha=1;
 }
 
+function rectsOverlap(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
+function signRectOf(b){ const x=sx(b.x-WALL), y=sy(b.y-WALL); return {x,y,w:sx(b.x+b.w+WALL)-x,h:sy(b.y+HEADER)-y}; }
+function confHeaderRect(cr){ const x=sx(cr.x), y=sy(cr.y); return {x,y,w:sx(cr.x+cr.w)-x,h:sy(cr.y+HEADER)-y}; }
 function roundRect(x,y,w,h,r){r=Math.min(r,h/2,w/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 function roundRectFill(x,y,w,h,r,fill,stroke){ roundRect(x,y,w,h,r); if(fill){ctx.fillStyle=fill;ctx.fill();} if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();} }
 
-function drawRoomSign(r){
+function drawBuildingSign(b){
   ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
-  const fs=Math.max(9,7.5*cam.zoom); ctx.font="700 "+fs+"px system-ui"; ctx.fillStyle="#f8efdd";
-  const label=(r.unassigned?"🪑 ":"🏠 ")+r.label+"  ·  "+r.members.length;
-  ctx.fillText(trunc(label,30), sx(r.x+8), sy(r.y+HEADER/2));
+  const fs=Math.max(9,7*cam.zoom); ctx.font="700 "+fs+"px system-ui";
+  const icon=b.unassigned?"🪑":"🏢";
+  const label=trunc(icon+" "+b.label,26)+"  ·  "+b.live;
+  const tx=sx(b.x+7), ty=sy(b.y-WALL+HEADER/2-1);
+  // legibility plate so the name never fights the windows behind it
+  const tw=ctx.measureText(label).width;
+  ctx.fillStyle=b.lit?"rgba(40,26,12,.34)":"rgba(20,18,14,.4)";
+  roundRect(tx-3,ty-fs*0.72,tw+6,fs*1.44,fs*0.5); ctx.fill();
+  ctx.fillStyle=b.lit?"#fff3d8":"#9a927f";
+  ctx.fillText(label, tx, ty);
+  if(b.recentMembers && b.recentMembers.length){
+    const r=b.recentMembers[0]; const nm=(r.name||shortSid(r.session)).split("/").pop();
+    const s2=Math.max(8,5.2*cam.zoom); ctx.font="600 "+s2+"px system-ui";
+    ctx.fillStyle=b.lit?"rgba(90,72,44,.85)":"rgba(150,140,120,.85)";
+    const extra=b.recentMembers.length>1?" +"+(b.recentMembers.length-1):"";
+    ctx.fillText(trunc("↩ "+nm+" left "+recentAgo(r)+extra,26), sx(b.x+9), sy(b.y+b.h-6));
+  }
 }
-function drawRoomCount(r){
+function drawBuildingCount(b){
   ctx.globalAlpha=1; ctx.textAlign="center"; ctx.textBaseline="middle";
-  const fs=Math.max(10,11*cam.zoom); ctx.font="800 "+fs+"px system-ui"; ctx.fillStyle="#f8efdd";
-  ctx.fillText(trunc(r.label,18)+" · "+r.members.length, sx(r.x+r.w/2), sy(r.y+r.h/2));
+  const fs=Math.max(10,10*cam.zoom); ctx.font="800 "+fs+"px system-ui"; ctx.fillStyle=b.lit?"#f8efdd":"#8f8878";
+  ctx.fillText(trunc(b.label,16)+" · "+b.live, sx(b.x+b.w/2), sy(b.y+b.h/2));
 }
 function drawConfSign(cr,t){
   ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
@@ -994,23 +1429,32 @@ function drawConfSign(cr,t){
 function drawNameplate(e,lod){
   if(e.alpha<0.5) return;
   const s=e.data;
-  const name=trunc(e.guest?(e.guestName||"guest"):(s?(s.name||shortSid(e.id)):shortSid(e.id)),20);
-  const sub=(!e.guest&&s&&e.mode==="desk")?[s.repo,s.branch].filter(Boolean).join(" · "):"";
+  const name=trunc(s?(s.name||shortSid(e.id)):shortSid(e.id),20);
+  const sub=(s&&e.mode==="desk")?[s.repo,s.branch].filter(Boolean).join(" · "):"";
   const twoLine=!!sub && lod>=2;
   const cx=sx(e.x);
   const fs=Math.max(11.5,6.2*cam.zoom), sfs=Math.max(9,4.6*cam.zoom);
   const dotR=Math.max(3,3.2*cam.zoom), padX=Math.max(5,4*cam.zoom);
+  const hovered=e.id===hoverId;
   ctx.textAlign="left"; ctx.textBaseline="middle";
   ctx.font="600 "+fs+"px system-ui"; const nameW=ctx.measureText(name).width;
   let subW=0; if(twoLine){ ctx.font="500 "+sfs+"px system-ui"; subW=ctx.measureText(sub).width; }
   const contentW=Math.max(nameW,subW)+dotR*2+padX*3;
   const h=twoLine? (fs+sfs+9) : (fs+8);
   let bx=cx-contentW/2, by=sy(e.y-27)-h;
-  bx=clamp(bx,4,canvas.width-contentW-4); by=clamp(by,2,canvas.height-h-2);
+  bx=clamp(bx,4,canvas.width-contentW-4);
+  // z-priority: a nameplate must never cover a building/meeting sign, nor stack on
+  // another pill — if it would, drop it below the character and nudge down until clear
+  const rectOf=()=>({x:bx,y:by,w:contentW,h});
+  const hits=r=>frameSignRects.some(s=>rectsOverlap(r,s))||framePlaced.some(s=>rectsOverlap(r,s));
+  if(frameSignRects.some(s=>rectsOverlap(rectOf(),s))) by=sy(e.y+13);
+  let guard=0; while(hits(rectOf()) && guard<7){ by+=h+3; guard++; }
+  by=clamp(by,2,canvas.height-h-2);
+  framePlaced.push(rectOf());
   ctx.globalAlpha=clamp(e.alpha,0,1);
-  // soft drop shadow + pill
-  ctx.fillStyle="rgba(30,20,10,.18)"; roundRect(bx+1,by+2,contentW,h,h/2); ctx.fill();
-  roundRectFill(bx,by,contentW,h,Math.min(h/2,10),"rgba(250,244,232,.95)","rgba(120,96,60,.35)");
+  ctx.fillStyle="rgba(24,16,6,.20)"; roundRect(bx+1,by+2,contentW,h,h/2); ctx.fill();
+  roundRectFill(bx,by,contentW,h,Math.min(h/2,10), hovered?"rgba(255,249,235,.99)":"rgba(250,244,232,.95)", hovered?"rgba(207,122,82,.85)":"rgba(120,96,60,.35)");
+  if(hovered){ ctx.strokeStyle="rgba(207,122,82,.85)"; ctx.lineWidth=1.6; roundRect(bx,by,contentW,h,Math.min(h/2,10)); ctx.stroke(); }
   const dotY = twoLine? by+fs/2+5 : by+h/2;
   ctx.fillStyle=statusColor(s?s.status:"unknown"); ctx.beginPath(); ctx.arc(bx+padX+dotR,dotY,dotR,0,6.283); ctx.fill();
   ctx.fillStyle="#3a2f24"; ctx.font="600 "+fs+"px system-ui"; ctx.textBaseline="middle";
@@ -1022,18 +1466,18 @@ function drawSpeechBubbles(t){
   if(!payload) return;
   const open=(payload.threads||[]).filter(x=>x.status==="open"&&x.last_turn&&x.last_turn.message);
   for(const th of open){
-    const cr=L.confRooms.find(c=>c.thread===th.thread); if(!cr||!roomVisible(cr)) continue;
+    const cr=L.confById.get(th.thread); if(!cr||!roomVisible(cr)) continue;
     let speaker=null;
-    for(const[,e]of entities){ if(e.meetingThread===th.thread){ const nm=e.guest?e.guestName:(e.data?e.data.name:"");
+    for(const [,e] of entities){ if(e.meetingThread===th.thread){ const nm=e.data?e.data.name:"";
       if(norm(nm)===norm(th.last_turn.sender)||(norm(th.last_turn.sender).length>3&&norm(th.last_turn.sender).includes(norm(nm)))){ speaker=e; break; } } }
-    if(!speaker){ for(const[,e]of entities){ if(e.meetingThread===th.thread){ speaker=e; break; } } }
-    if(!speaker || speaker.walking) continue;
-    drawBubble(speaker.x, speaker.y-27, trunc(th.last_turn.message,80), "#3a2f24", "t"+th.thread+(th.last_turn.timestamp||""));
+    if(speaker && !speaker.walking) drawBubble(speaker.x,speaker.y-27,trunc(th.last_turn.message,80),"#3a2f24","t"+th.thread+(th.last_turn.timestamp||""));
+    else drawBubble(cr.cx,cr.cy-cr.tableRy-14,trunc(th.last_turn.message,70),"#3a2f24","t"+th.thread+(th.last_turn.timestamp||""));
   }
-  for(const[,e]of entities){ if(e.bubble && !e.walking) drawBubble(e.x,e.y-27, e.bubble.text, "#3a2f24", "b"+e.id+e.bubble.born); }
+  for(const [,e] of entities){ if(e.bubble && !e.walking) drawBubble(e.x,e.y-27,e.bubble.text,"#3a2f24","b"+e.id+e.bubble.born); }
 }
 function drawBubble(wx,wy,text,color,popKey){
   drawBubble._pop=drawBubble._pop||new Map();
+  if(drawBubble._pop.size>240) drawBubble._pop=new Map([...drawBubble._pop].slice(-120));
   if(!drawBubble._pop.has(popKey)) drawBubble._pop.set(popKey,performance.now());
   const pop=easeOutBack(clamp((performance.now()-drawBubble._pop.get(popKey))/260,0,1));
   const fs=Math.max(10,5.8*cam.zoom); ctx.font=fs+"px system-ui"; ctx.textAlign="left"; ctx.textBaseline="top";
@@ -1045,7 +1489,7 @@ function drawBubble(wx,wy,text,color,popKey){
   ctx.save();
   const acx=bx+bw/2, acy=by+bh;
   ctx.translate(acx,acy); ctx.scale(pop,pop); ctx.translate(-acx,-acy);
-  ctx.fillStyle="rgba(30,20,10,.16)"; roundRect(bx+1,by+2,bw,bh,7); ctx.fill();
+  ctx.fillStyle="rgba(24,16,6,.18)"; roundRect(bx+1,by+2,bw,bh,7); ctx.fill();
   ctx.fillStyle="#fffaf0"; roundRect(bx,by,bw,bh,7); ctx.fill();
   ctx.beginPath(); ctx.moveTo(sx(wx)-5,by+bh-1); ctx.lineTo(sx(wx)+5,by+bh-1); ctx.lineTo(sx(wx),by+bh+6*cam.zoom); ctx.closePath(); ctx.fillStyle="#fffaf0"; ctx.fill();
   ctx.strokeStyle="rgba(120,96,60,.35)"; ctx.lineWidth=1; roundRect(bx,by,bw,bh,7); ctx.stroke();
@@ -1058,29 +1502,38 @@ function drawDust(t){
   for(const d of dust){
     const dx=(d.x + Math.sin(t*0.0001*d.sp+d.ph)*0.04)*canvas.width;
     const dy=((d.y + (t*0.00002*d.sp))%1)*canvas.height;
-    ctx.globalAlpha=0.09+0.06*Math.sin(t*0.001+d.ph);
+    ctx.globalAlpha=0.08+0.06*Math.sin(t*0.001+d.ph);
     ctx.fillStyle="#fff3d0"; ctx.beginPath(); ctx.arc(dx,dy,d.s*dpr,0,6.283); ctx.fill();
   }
   ctx.restore(); ctx.globalAlpha=1;
 }
+function updateBirds(t){
+  if(t>nextBird){ nextBird=t+7000+Math.random()*13000; const dir=Math.random()<0.5?1:-1;
+    const y=34+Math.random()*canvas.height*0.28; birds.push({x:dir>0?-24:canvas.width+24,y,dir,sp:0.05+Math.random()*0.04,ph:Math.random()*6}); }
+  for(let i=birds.length-1;i>=0;i--){ const b=birds[i]; b.x+=b.dir*b.sp*16*dpr; b.ph+=0.2; if(b.x<-40||b.x>canvas.width+40) birds.splice(i,1); }
+}
+function drawBirds(t){
+  ctx.strokeStyle="rgba(40,30,20,.5)"; ctx.lineWidth=1.4;
+  for(const b of birds){ const flap=Math.sin(b.ph)*3; ctx.beginPath(); ctx.moveTo(b.x-4,b.y+flap); ctx.lineTo(b.x,b.y); ctx.lineTo(b.x+4,b.y+flap); ctx.stroke(); }
+}
 function drawVignette(){
-  const g=ctx.createRadialGradient(canvas.width/2,canvas.height*0.42,canvas.height*0.22,canvas.width/2,canvas.height/2,canvas.height*0.78);
-  g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(24,14,4,0.26)");
+  const g=ctx.createRadialGradient(canvas.width/2,canvas.height*0.42,canvas.height*0.22,canvas.width/2,canvas.height/2,canvas.height*0.80);
+  g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(14,10,4,0.20)");
   ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
 }
 
 function drawMinimap(){
-  const b=L.floor; mctx.clearRect(0,0,mini.width,mini.height);
-  mctx.fillStyle="rgba(36,28,20,.66)"; mctx.fillRect(0,0,mini.width,mini.height);
+  const b=L.ground; mctx.clearRect(0,0,mini.width,mini.height);
+  mctx.fillStyle="rgba(20,26,18,.7)"; mctx.fillRect(0,0,mini.width,mini.height);
   const s=Math.min(mini.width/b.w,mini.height/b.h)*0.92;
   const ox=(mini.width-b.w*s)/2, oy=(mini.height-b.h*s)/2;
   const mx=wx=>ox+(wx-b.x)*s, my=wy=>oy+(wy-b.y)*s;
-  mctx.fillStyle="rgba(181,135,90,.5)"; mctx.fillRect(mx(b.x),my(b.y),b.w*s,b.h*s);
-  for(const r of L.rooms){ mctx.fillStyle=r.unassigned?"rgba(206,186,150,.7)":"rgba(186,208,164,.75)";
-    mctx.fillRect(mx(r.x),my(r.y),r.w*s,r.h*s); }
-  for(const cr of L.confRooms){ mctx.fillStyle="rgba(126,164,204,.8)"; mctx.fillRect(mx(cr.x),my(cr.y),cr.w*s,cr.h*s); }
-  for(const[,e]of entities){ if(e.alpha<0.3)continue; mctx.fillStyle=statusColor(e.data?e.data.status:"unknown");
-    mctx.fillRect(mx(e.x)-1,my(e.y)-1,2.4,2.4); }
+  mctx.fillStyle="rgba(143,160,106,.5)"; mctx.fillRect(mx(b.x),my(b.y),b.w*s,b.h*s);
+  mctx.strokeStyle="rgba(212,189,147,.75)"; mctx.lineWidth=1.4;
+  mctx.beginPath(); mctx.moveTo(mx(b.x+10),my(L.spineY)); mctx.lineTo(mx(b.x+b.w-10),my(L.spineY)); mctx.stroke();
+  for(const bd of L.bldgs){ mctx.fillStyle=bd.lit?"rgba(200,222,150,.92)":"rgba(120,116,100,.7)"; mctx.fillRect(mx(bd.x),my(bd.y),bd.w*s,bd.h*s); }
+  for(const cr of L.confRooms){ mctx.fillStyle="rgba(126,164,204,.85)"; mctx.fillRect(mx(cr.x),my(cr.y),cr.w*s,cr.h*s); }
+  for(const [,e] of entities){ if(e.alpha<0.3)continue; mctx.fillStyle=statusColor(e.data?e.data.status:"unknown"); mctx.fillRect(mx(e.x)-1,my(e.y)-1,2.4,2.4); }
   const vx0=mx(invX(0)),vy0=my(invY(0)),vx1=mx(invX(canvas.width)),vy1=my(invY(canvas.height));
   mctx.strokeStyle="rgba(255,246,224,.95)"; mctx.lineWidth=1.2; mctx.strokeRect(vx0,vy0,vx1-vx0,vy1-vy0);
 }
