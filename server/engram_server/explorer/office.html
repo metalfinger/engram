@@ -343,10 +343,10 @@ const ASSET_BASE = location.pathname.includes("/brain/") ? "/brain/office/assets
 // full LimeZu pack (47 chars). MAIN pool = sit-capable adults (no kids); rare easter eggs;
 // Edward reserved for the Hiren cameo. Animation sets vary per character — the fallback
 // chain in drawSprite degrades sit->idle_anim etc., so any char with a sheet still renders.
-const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bruce","Dan","Edward","Lucy","Molly","Pier","Rob","Roki","Samuel",
-  "Conference_man","Conference_woman","Doctor_1","Doctor_2","Nurse_1","Nurse_2","Old_man_Josh","Old_woman_Jenny",
-  "Cleaner_boy","Cleaner_girl","Chef_Alex","Chef_Lucy","Chef_Molly","Chef_Pier","Chef_Rob",
-  "Bouncer","Butcher","Butcher_2","Fishmonger_1","Fishmonger_2"];
+// MAIN pool = SIT-CAPABLE adults only, so a WORKING desk session actually sits (status legibility).
+// Sit-less characters (Chef/Doctor/Nurse/Prisoner…) still appear as easter eggs / meeting guests.
+const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bouncer","Bruce","Conference_man","Conference_woman",
+  "Dan","Edward","Lucy","Molly","Old_woman_Jenny","Pier","Roki","Samuel"];
 const SPRITE_EGGS=["Witch","Zombie","Prisoner_1","Prisoner_2","Prisoner_3"];
 const SPRITE_TYPES=["idle_anim","run","sit","sit2","sit3","phone","reading"];  // 'idle' static omitted (only 1 char ships it; idle_anim is universal)
 const SPR_SCALE=1.4, FOOT_OFF=1;   // 16x32 frames; feet-anchored at e.y
@@ -1359,8 +1359,11 @@ function drawDesk(d,occupant,t){
   const w=CELL_W-18,x=dx+9,y=dy+CELL_H*0.56;
   const away = occupant && occupant.mode==="meeting";
   const chOff = away? 8 : 3;
-  px(x+w/2-5,y+11+chOff,10,3,"#6f4d2c"); px(x+w/2-5,y+11+chOff,10,1,"#8a6136");
-  px(x+w/2-6,y+7+chOff,2,7,"#6f4d2c"); px(x+w/2+4,y+7+chOff,2,7,"#6f4d2c");
+  // the 32px sit sprite includes its own chair; only draw a procedural chair when the seat is empty/pushed-back
+  if(away || !occupant){
+    px(x+w/2-5,y+11+chOff,10,3,"#6f4d2c"); px(x+w/2-5,y+11+chOff,10,1,"#8a6136");
+    px(x+w/2-6,y+7+chOff,2,7,"#6f4d2c"); px(x+w/2+4,y+7+chOff,2,7,"#6f4d2c");
+  }
   ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(x+w/2),sy(y+11),(w*0.6)*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
   px(x-1,y-1,w+2,12,OL);
   px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
@@ -1445,22 +1448,23 @@ function drawSprite(e,t,feet,status,walking){
   } else { want="idle_anim"; animMs=170; dir=e.facing>0?"right":"left"; }
   const r=resolveSheet(set,want); if(!r) return false;
   const type=r.type, img0=r.entry.img;
-  // derive EVERYTHING from the loaded image so a sheet whose real length differs never half-cuts:
-  const frames=Math.max(1,(img0.width/16)|0);
+  // PER-ANIM STRIDE: sit/sit2/sit3 sheets are 32px-wide frames (figure + chair); all others are 16px.
+  // Slicing sit at 16px was the prod "half-cut working character" bug.
+  const FW = (type==="sit"||type==="sit2"||type==="sit3") ? 32 : 16, FH=32;
+  const frames=Math.max(1,(img0.width/FW)|0);
   const step=Math.floor(t/animMs);
-  // phone/reading are single-sequence; 4-direction sheets only when frames divides evenly by 4
-  // (Witch/Zombie idle_anim=6 → single-sequence, not a broken 4-dir read)
+  // phone/reading single-sequence; 4-directional only when frames%4===0 (else single, e.g. Witch idle=6)
   const single = type==="phone" || type==="reading" || (frames%4!==0);
   let idx;
   if(single){ idx = step % frames; }
   else { const perDir = frames/4; idx = DIRI[dir]*perDir + (step % perDir); }
   idx = ((idx % frames) + frames) % frames;   // clamp: never exceed the sheet
   const img=tintedSheet(img0, e.spriteChar+"|"+type, e.tintHue);
-  const zs=SPR_SCALE*cam.zoom, W=Math.max(1,Math.round(16*zs)), H=Math.max(1,Math.round(32*zs));
-  const sxi=(idx*16)|0;   // integer source x — fractional bleeds neighbouring frames
+  const zs=SPR_SCALE*cam.zoom, W=Math.max(1,Math.round(FW*zs)), H=Math.max(1,Math.round(FH*zs));
+  const sxi=(idx*FW)|0;   // integer source x — fractional bleeds neighbouring frames
   const px_=Math.round(sx(e.x)-W/2), py_=Math.round(sy(feet)-H+Math.round(FOOT_OFF*zs));
   const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false; ctx.globalAlpha=clamp(e.alpha,0,1);
-  try{ ctx.drawImage(img, sxi,0,16,32, px_,py_, W,H); }
+  try{ ctx.drawImage(img, sxi,0,FW,FH, px_,py_, W,H); }
   catch(_){ ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return false; }
   ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return true;
 }
