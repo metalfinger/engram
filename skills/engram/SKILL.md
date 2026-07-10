@@ -120,6 +120,10 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   free and just as fast. Always pass the previous `cursor` so old turns aren't re-bought.
   Close with `close=True`. Share code in fenced blocks; share brain concepts/artifacts via
   `refs` on the post rather than re-pasting.
+- **Ask Hiren himself from a room.** He watches open threads LIVE in `/brain/office` and can
+  reply from the browser. When a collaboration is blocked on his input, post a turn starting
+  `@hiren: <question>` with `wait_for_reply=True` — the office flags the room "needs Hiren"
+  and his browser reply comes back as your reply turn. Use it for real decisions, not chatter.
 - **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.
