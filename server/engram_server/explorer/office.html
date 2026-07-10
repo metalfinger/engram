@@ -215,6 +215,7 @@
         <div class="k"><span class="kd" style="background:#9a8a72"></span><b>done</b> stands, waves, walks off campus</div>
         <div class="k" style="border:none"><span class="kd" style="background:var(--thread)"></span><b>meeting</b> gathered in a glass room — <b>click it to open the chat & reply as you</b></div>
         <div class="hint">Each <b>building = a project</b>. Warm-lit = someone's inside; <b>dark building = nobody live</b> (its last visitor is on the door plaque). Only <b>live sessions</b> get a character — nobody's faked. An amber <b>❓ needs Hiren</b> room means an agent asked you something — click to answer.<br>🖱 <b>Drag</b> to pan · <b>scroll / pinch</b> to zoom · <b>click a character</b> for their story · <b>click a meeting</b> to chat · <b>click a building</b> to zoom · <b>FIT</b> reframes.</div>
+        <div class="hint" style="margin-top:8px;opacity:.75;font-size:11px">Art: LimeZu (Modern Interiors)</div>
         <button class="close2" id="helpClose">got it</button>
       </div>
     </div>
@@ -335,6 +336,48 @@ let selectedId=null, hoverId=null, firstIngest=true, curSig="", nextBird=0;
 let meetingOpen=null, meetingTimer=null, meetingCursor=null, meetingSeen=new Set(), meetingContent=new Set();
 let cameo=null, demoExtra={}, localLastTurn={};
 let nowBase=Date.now(), nowPerf=performance.now(), lastUserInteract=-1e9;
+
+/* ---------- LimeZu sprite engine (real art; procedural fallback if a sheet 404s) ---------- */
+// works in prod (/brain/office/assets) and in a local temp-dir preview (assets copied alongside)
+const ASSET_BASE = location.pathname.includes("/brain/") ? "/brain/office/assets" : "assets";
+// full LimeZu pack (47 chars). MAIN pool = sit-capable adults (no kids); rare easter eggs;
+// Edward reserved for the Hiren cameo. Animation sets vary per character — the fallback
+// chain in drawSprite degrades sit->idle_anim etc., so any char with a sheet still renders.
+const SPRITE_MAIN=["Adam","Alex","Amelia","Ash","Bob","Bouncer","Bruce","Conference_man","Conference_woman","Dan","Edward","Lucy","Molly","Old_woman_Jenny","Pier","Roki","Samuel"];
+const SPRITE_EGGS=["Witch","Zombie","Prisoner_1","Prisoner_2","Prisoner_3"];
+const SPRITE_TYPES=["idle_anim","run","sit","sit2","sit3","phone","reading"];  // 'idle' static omitted (only 1 char ships it; idle_anim is universal)
+const SPR_SCALE=1.4, FOOT_OFF=1;   // 16x32 frames; feet-anchored at e.y
+const sheets={};                     // sheets[char][type] = {img, ok}; loaded lazily per active char
+function ensureCharLoaded(char){
+  if(!char || sheets[char]) return; sheets[char]={};
+  for(const type of SPRITE_TYPES){
+    const img=new Image(); img.decoding="async";
+    const rec={img:null,ok:false}; sheets[char][type]=rec;
+    img.onload=()=>{ rec.img=img; rec.ok=true; };
+    img.onerror=()=>{ rec.ok=false; };
+    img.src=ASSET_BASE+"/limezu/characters/"+char+"_"+type+"_16x16.png";
+  }
+}
+function loadSprites(){ /* lazy: each character's sheets load on first use via ensureCharLoaded */ }
+const DIRI={right:0,up:1,left:2,down:3};
+// graceful degradation when a character lacks a given animation sheet
+const SHEET_FB={ sit:["sit","sit2","idle_anim"], sit2:["sit2","sit","idle_anim"],
+  sit3:["sit3","sit2","sit","idle_anim"], run:["run","idle_anim"],
+  idle_anim:["idle_anim"], phone:["phone","reading","idle_anim"],
+  reading:["reading","sit","sit2","idle_anim"] };
+function resolveSheet(set,want){ const chain=SHEET_FB[want]||[want];
+  for(const tt of chain){ const e=set[tt]; if(e&&e.ok) return {type:tt,entry:e}; } return null; }
+function faceDir(x,y,cx,cy){ const dx=cx-x,dy=cy-y; return Math.abs(dx)>=Math.abs(dy)?(dx>=0?"right":"left"):(dy>=0?"down":"up"); }
+// subtle hue tint (kept light) to disambiguate the rare same-character collision
+function tintedSheet(img,key,hue){
+  if(!hue) return img;
+  const cache=tintedSheet._c||(tintedSheet._c=new Map()), ck=key+"|"+hue;
+  if(cache.has(ck)) return cache.get(ck);
+  const c=document.createElement("canvas"); c.width=img.width; c.height=img.height;
+  const g=c.getContext("2d"); g.imageSmoothingEnabled=false; g.drawImage(img,0,0);
+  g.globalCompositeOperation="source-atop"; g.globalAlpha=0.15; g.fillStyle=hsl(hue,52,52); g.fillRect(0,0,c.width,c.height);
+  cache.set(ck,c); return c;
+}
 let dpr=Math.min(2,Math.max(1,window.devicePixelRatio||1));
 let seenActivity=new Set(), threadSlots=new Map();
 const cam={x:400,y:300,zoom:1,tx:400,ty:300,tzoom:1,vx:0,vy:0};
@@ -502,6 +545,12 @@ function routeLeave(e){
 }
 
 /* ============================ entities ============================ */
+function pickSprite(s){
+  const key=(s.host||"?")+"|"+(s.session||"?");
+  if(hash32("egg:"+(s.session||"?"))%50===0) return SPRITE_EGGS[hash32(key)%SPRITE_EGGS.length]; // ~2% easter egg
+  return SPRITE_MAIN[hash32(key)%SPRITE_MAIN.length];
+}
+function pickTint(s){ const h=hash32("hue:"+(s.session||"?")); return (h%4===0)?((h>>>4)%6)*60+20:0; } // ~1/4 lightly tinted
 function makeEntity(s){
   const now=performance.now();
   return {id:s.session,data:s,
@@ -510,6 +559,7 @@ function makeEntity(s){
     home:null,homeBldgKey:null,seatTarget:null,meetingThread:null,lastConfKey:null,
     deskDx:0,deskDy:0,path:null,dest:null,wandering:false,
     phase:(hash32(s.session)%1000)/1000*Math.PI*2, color:paletteFor(s.host,s.session),
+    spriteChar:pickSprite(s), tintHue:pickTint(s),
     born:now,walking:false,walkPhase:Math.random()*Math.PI*2,
     bubble:null,sparkleUntil:0,hopUntil:0,stretchUntil:0,
     nextTap:0,nextZzz:0,nextSip:0,sip:0,
@@ -614,6 +664,13 @@ function zoomToRoom(r){
   const pad=42; const zw=canvas.width/((r.w+pad*2)), zh=canvas.height/((r.h+pad*2));
   cam.tzoom=clamp(Math.min(zw,zh),0.4,4); cam.tx=r.x+r.w/2; cam.ty=r.y+r.h/2; cam.vx=cam.vy=0;
 }
+// like zoomToRoom, but shifts the room LEFT so the open meeting panel (right side) never covers it
+function zoomToRoomPanel(r){
+  const pad=36; const panelPx=Math.min(392,(window.innerWidth||900)*0.92)*dpr;
+  const zw=(canvas.width-panelPx)/((r.w+pad*2)), zh=canvas.height/((r.h+pad*2));
+  cam.tzoom=clamp(Math.min(zw,zh),0.4,4);
+  cam.tx=r.x+r.w/2 + (panelPx/2)/cam.tzoom; cam.ty=r.y+r.h/2; cam.vx=cam.vy=0;
+}
 
 /* ============================ ticker ============================ */
 let tickerSeen=new Set();
@@ -697,7 +754,7 @@ function handleClick(e){
   const wx=invX(px_), wy=invY(py_);
   const pid=pickEntity(wx,wy); if(pid){ openDossier(pid); return; }
   // conference room (or its header) → open the live meeting chat panel + focus it
-  for(const cr of L.confRooms){ if(wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoom(cr); openMeeting(cr.thread,true); return; } }
+  for(const cr of L.confRooms){ if(wx>=cr.x&&wx<=cr.x+cr.w&&wy>=cr.y-2&&wy<=cr.y+cr.h){ lastUserInteract=performance.now(); zoomToRoomPanel(cr); openMeeting(cr.thread,true); return; } }
   for(const b of L.bldgs){ if(wx>=b.x&&wx<=b.x+b.w&&wy>=b.y-WALL&&wy<=b.y+b.h){ lastUserInteract=performance.now(); zoomToRoom(b); return; } }
   closeDossier(); closeMeeting();
 }
@@ -1011,18 +1068,18 @@ function draw(t){
   for(const cr of L.confRooms) if(roomVisible(cr)) frameSignRects.push(confHeaderRect(cr));
   if(lod>=1){
     for(const e of ents) drawNameplate(e,lod);
-    drawCameo(t);
     for(const b of L.bldgs) if(roomVisible(b)) drawBuildingSign(b);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
     if(cam.zoom>=0.5) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
     drawSpeechBubbles(t);
-  } else {
     drawCameo(t);
+  } else {
     for(const b of L.bldgs) if(roomVisible(b)) drawBuildingCount(b);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
     drawSpeechBubbles(t);
+    drawCameo(t);
   }
   drawDust(t);
   updateBirds(t); drawBirds(t);
@@ -1214,6 +1271,7 @@ function drawCameo(t){
   ctx.globalAlpha=alpha;
   ctx.fillStyle="rgba(24,16,6,.25)"; ctx.beginPath(); ctx.ellipse(sx(x),sy(feet+10),8*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
   const headTop=feet-26-bob, torsoTop=headTop+10;
+  // Hiren = a bespoke dignified boss (dark suit, tie, fedora) so he's instantly distinct from the roster
   px(x-8,torsoTop+2,3,15,"#3a3a44"); px(x+6,torsoTop+2,3,15,"#3a3a44");           // legs
   px(x-7,torsoTop-1,15,14,OL); px(x-6,torsoTop,13,12,"#33465e"); px(x+1,torsoTop,6,12,"#28384c"); px(x-6,torsoTop,13,2,"#4a6180"); // suit
   px(x-1,torsoTop,2,9,"#d9603a");                                                // tie
@@ -1288,16 +1346,53 @@ function drawCharacter(e,t,lod){
     ctx.ellipse(sx(e.x),sy(e.y+8),(7+ph*11)*cam.zoom,(3+ph*5)*cam.zoom,0,0,6.283); ctx.stroke(); ctx.restore();
   }
 
-  let lean=0, slump=0, headX=0;
-  const breathe=Math.sin(local*1.8)*0.6;
+  const feet=e.y+hopY, x=e.x, f=e.facing;
+  const stretching = e.stretchUntil>now && !walking;
+  const typing = status==="working" && !walking && !stretching && e.mode==="desk";
+  let headTop, torsoTop;
+
+  // BODY — real LimeZu sprite once its sheet has loaded, else the procedural puppet
+  const drew = drawSprite(e,t,feet,status,walking);
+  if(drew){ headTop=feet-30; torsoTop=feet-19; }
+  else { const a=drawProcBody(e,t,x,feet,status,walking,typing,stretching); headTop=a.headTop; torsoTop=a.torsoTop; }
+
+  drawOverlays(e,t,x,feet,headTop,torsoTop,status,walking,typing,stretching,drew);
+}
+function drawSprite(e,t,feet,status,walking){
+  ensureCharLoaded(e.spriteChar);
+  const set=sheets[e.spriteChar]; if(!set) return false;
+  let want,dir,animMs;
+  if(walking){ want="run"; animMs=70;
+    const dx=e.tx-e.x, dy=e.ty-e.y; dir=Math.abs(dx)>=Math.abs(dy)?(dx>=0?"right":"left"):(dy>=0?"down":"up"); }
+  else if(e.mode==="meeting"){ want="sit"; animMs=300; const cr=L.confById.get(e.meetingThread); dir=cr?faceDir(e.x,e.y,cr.cx,cr.cy):"down"; }
+  else if(e.mode==="desk"){
+    if(status==="working"){ const c=Math.floor(t/4200)%5; want=(c===4?"reading":(c===2?"sit2":"sit")); animMs=(want==="reading"?260:280); dir="up"; }
+    else if(status==="blocked"){ want="sit"; animMs=340; dir="up"; }
+    else { const c=Math.floor(t/9000)%4; want=(c===0?"phone":(c===2?"reading":"idle_anim")); animMs=(want==="phone"?200:want==="reading"?250:170); dir=e.facing>0?"right":"left"; }
+  } else { want="idle_anim"; animMs=170; dir=e.facing>0?"right":"left"; }
+  const r=resolveSheet(set,want); if(!r) return false;
+  const type=r.type, img0=r.entry.img, frames=Math.max(1,Math.floor(img0.width/16));
+  const step=Math.floor(t/animMs);
+  let idx;
+  if(type==="phone") idx=step%frames;
+  else if(type==="reading") idx=step%Math.min(6,frames);   // first-block loop (18-frame sheet, dir layout varies)
+  else if(type==="idle") idx=DIRI[dir]%frames;
+  else { const per=type==="sit3"?3:6; idx=(DIRI[dir]*per + step%per)%frames; }
+  const img=tintedSheet(img0, e.spriteChar+"|"+type, e.tintHue);
+  const zs=SPR_SCALE*cam.zoom, W=Math.max(1,Math.round(16*zs)), H=Math.max(1,Math.round(32*zs));
+  const px_=Math.round(sx(e.x)-W/2), py_=Math.round(sy(feet)-H+Math.round(FOOT_OFF*zs));
+  const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false; ctx.globalAlpha=clamp(e.alpha,0,1);
+  try{ ctx.drawImage(img, idx*16,0,16,32, px_,py_, W,H); }
+  catch(_){ ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return false; }
+  ctx.imageSmoothingEnabled=prev; ctx.globalAlpha=1; return true;
+}
+function drawProcBody(e,t,x,feet,status,walking,typing,stretching){
+  const col=e.color, now=t, local=t/1000+e.phase, f=e.facing;
+  let lean=0, slump=0, headX=0; const breathe=Math.sin(local*1.8)*0.6;
   if(status==="idle"||status==="available"){ lean=-1.6; }
   if(status==="blocked"){ slump=1.2; headX=Math.sin(local*3.2)*1.3; }
   const bob = walking ? Math.abs(Math.sin(e.walkPhase))*1.9 : breathe;
-  const feet=e.y+hopY, x=e.x, f=e.facing;
-  const headTop=feet-26+lean+slump-bob;
-  const torsoTop=headTop+10;
-  const stretching = e.stretchUntil>now && !walking;
-
+  const headTop=feet-26+lean+slump-bob, torsoTop=headTop+10;
   // legs / chair
   if(walking){
     const sw=Math.sin(e.walkPhase)*2.8;
@@ -1308,22 +1403,14 @@ function drawCharacter(e,t,lod){
     px(x-8,torsoTop+1,17,2,"#7d5836");
     if(status==="idle"||status==="available") px(x-8,torsoTop,17,2,"#87613b");
   }
-
   // torso
-  px(x-7,torsoTop-1,15,14,OL);
-  px(x-6,torsoTop,13,12,col.shirt);
-  px(x+1,torsoTop,6,12,col.shirtDark);
-  px(x-6,torsoTop,13,2,col.shirtHi);
-
-  // arms + hands
-  const typing = status==="working" && !walking && !stretching;
+  px(x-7,torsoTop-1,15,14,OL); px(x-6,torsoTop,13,12,col.shirt); px(x+1,torsoTop,6,12,col.shirtDark); px(x-6,torsoTop,13,2,col.shirtHi);
+  // arms
   const blockedTap = status==="blocked" && !walking && (Math.sin(local*5)>0.6);
   let lhY=torsoTop+3, rhY=torsoTop+3;
-  if(typing){ const beat=Math.floor(now/110)%2; lhY=torsoTop+5+(beat?-1:1); rhY=torsoTop+5+(beat?1:-1);
-    if(now>e.nextTap){ e.nextTap=now+90+Math.random()*80; spawn({x:x+(beat?-6:6),y:torsoTop+6,vx:(Math.random()-0.5)*0.2,vy:-0.3,life:0,ttl:360,type:"tap",col:"#fff2c8"}); } }
+  if(typing){ const beat=Math.floor(now/110)%2; lhY=torsoTop+5+(beat?-1:1); rhY=torsoTop+5+(beat?1:-1); }
   if(blockedTap) rhY=torsoTop+7;
   if(stretching){
-    // raised arms overhead
     px(x-8,headTop-3,3,8,OL); px(x+6,headTop-3,3,8,OL);
     px(x-7,headTop-3,2,7,col.shirtDark); px(x+6,headTop-3,2,7,col.shirtDark);
     px(x-8,headTop-5,3,3,OL); px(x+6,headTop-5,3,3,OL);
@@ -1335,30 +1422,33 @@ function drawCharacter(e,t,lod){
     px(x-8,lhY,3,3,OL); px(x+6,rhY,3,3,OL);
     px(x-7,lhY,2,2,col.skin); px(x+6,rhY,2,2,col.skin);
   }
-
-  // idle coffee sip / zzz
-  if((status==="idle"||status==="available")&&!stretching){
-    if(now>e.nextSip){ e.nextSip=now+6000+Math.random()*5000; e.sip=now+1400; }
-    if(now<e.sip){ px(x+5,torsoTop-2,4,4,OL); px(x+5,torsoTop-1,3,3,"#e8ddc8"); px(x+5,torsoTop-2,3,1,"#b98a55");
-      if(Math.random()<0.14) spawn({x:x+6,y:torsoTop-4,vx:0,vy:-0.2,life:0,ttl:700,type:"steam",col:"rgba(255,255,255,.5)"}); }
-    else if(now>e.nextZzz){ e.nextZzz=now+2600+Math.random()*2200; spawn({x:x+6,y:headTop-2,vx:0.05,vy:-0.25,life:0,ttl:1600,type:"zzz",col:"#9fb4d8"}); }
+  // idle mug (procedural)
+  if((status==="idle"||status==="available")&&!stretching && now<e.sip){
+    px(x+5,torsoTop-2,4,4,OL); px(x+5,torsoTop-1,3,3,"#e8ddc8"); px(x+5,torsoTop-2,3,1,"#b98a55");
   }
-
   // head
-  px(x-6+headX,headTop-1,12,12,OL);
-  px(x-5+headX,headTop,10,10,col.skin);
-  px(x+2+headX,headTop,3,10,col.skinDark);
-  px(x-6+headX,headTop-2,12,4,OL);
-  px(x-5+headX,headTop-1,10,3,col.hair);
-  px(x-5+headX,headTop-1,10,1,col.hairHi);
+  px(x-6+headX,headTop-1,12,12,OL); px(x-5+headX,headTop,10,10,col.skin); px(x+2+headX,headTop,3,10,col.skinDark);
+  px(x-6+headX,headTop-2,12,4,OL); px(x-5+headX,headTop-1,10,3,col.hair); px(x-5+headX,headTop-1,10,1,col.hairHi);
   if(col.hairChoice===0){ px(x-5+headX,headTop-1,2,6,col.hair); px(x+3+headX,headTop-1,2,6,col.hair); }
   else if(col.hairChoice===1){ px(x-5+headX,headTop-2,10,3,col.hair); px(x-5+headX,headTop-2,10,1,col.hairHi); }
   else { px(x+2+headX,headTop-1,3,3,col.hair); }
   const blink=(Math.sin(local*1.6+e.phase*3)>0.965)|| (now%4200<90);
   if(!blink){ const ex=x-3+headX+(f>0?1:0); px(ex,headTop+4,1,2,"#2a2018"); px(ex+4,headTop+4,1,2,"#2a2018"); }
   else px(x-3+headX,headTop+5,5,1,"#2a2018");
-
-  // monitor code-scroll / glow overlay (desk workers)
+  return {headTop,torsoTop};
+}
+function drawOverlays(e,t,x,feet,headTop,torsoTop,status,walking,typing,stretching,sprite){
+  const now=t, local=t/1000+e.phase, f=e.facing;
+  // typing taps
+  if(typing && now>e.nextTap){ e.nextTap=now+90+Math.random()*80; const beat=Math.floor(now/110)%2;
+    spawn({x:x+(beat?-6:6),y:torsoTop+6,vx:(Math.random()-0.5)*0.2,vy:-0.3,life:0,ttl:360,type:"tap",col:"#fff2c8"}); }
+  // idle coffee sip / zzz
+  if((status==="idle"||status==="available")&&!stretching){
+    if(now>e.nextSip){ e.nextSip=now+6000+Math.random()*5000; e.sip=now+1400; }
+    if(now<e.sip){ if(Math.random()<0.14) spawn({x:x+6,y:torsoTop-4,vx:0,vy:-0.2,life:0,ttl:700,type:"steam",col:"rgba(255,255,255,.5)"}); }
+    else if(now>e.nextZzz){ e.nextZzz=now+2600+Math.random()*2200; spawn({x:x+6,y:headTop-2,vx:0.05,vy:-0.25,life:0,ttl:1600,type:"zzz",col:"#9fb4d8"}); }
+  }
+  // monitor code-scroll / glow overlay — keeps "working" reading on top of the sprite
   if(!walking && e.mode==="desk"){
     const mw=14, mx=x-mw/2, my=(e.deskDy+CELL_H*0.56)-11;
     if(status==="working"||status==="available"||status==="idle"){
@@ -1370,7 +1460,6 @@ function drawCharacter(e,t,lod){
       for(let ly=my+1-off;ly<my+7;ly+=gap){ if(ly<my)continue; const ww=2+((ly*7)%8); px(mx+1,ly,Math.min(ww,mw-3),1,"#6fce8f"); } }
     else if(status==="blocked" && Math.sin(now*0.01)>0){ px(mx+2,my+3,mw-5,1,"#ff9b7a"); }
   }
-
   // status glyphs
   ctx.globalAlpha=clamp(e.alpha,0,1);
   if(status==="blocked"){
@@ -1552,7 +1641,7 @@ function drawMinimap(){
 }
 
 /* ============================ boot ============================ */
-function start(){ resize(); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
+function start(){ resize(); loadSprites(); poll(); setInterval(poll,POLL_MS); requestAnimationFrame(frame); }
 if(document.readyState==="complete"||document.readyState==="interactive") start();
 else window.addEventListener("DOMContentLoaded",start);
 })();
