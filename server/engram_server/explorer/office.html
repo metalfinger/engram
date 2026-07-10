@@ -1149,14 +1149,23 @@ function drawBoardPins(t){   // cork board = the project board: one coloured pin
     const col=hsl(hash32(p)%360,55,58);
     px(cx,cy,7,9,"#f4ecd8"); px(cx,cy,7,2,col); px(cx+2,cy-2,3,3,col); });
 }
-function confSignRect(cr){ const x=sx(cr.sign.x-2), y=sy(cr.sign.y-2); return {x,y,w:sx(cr.sign.x+150)-x,h:sy(cr.sign.y+14)-y}; }
+// dark pill (like the nameplates) so the sign stays legible over the light wall
+function roomSignMetrics(cr){
+  const fs=Math.max(9,6.6*cam.zoom);
+  ctx.font="700 "+fs+"px system-ui"; const tw=ctx.measureText(trunc("MEETING: "+cr.thread,22)).width;
+  const dotR=Math.max(2,2.4*cam.zoom), padX=Math.max(5,4*cam.zoom);
+  const w=tw+dotR*2+padX*3, h=fs+8, bx=sx(cr.sign.x), by=sy(cr.sign.y+6)-h/2;
+  return {fs,tw,dotR,padX,w,h,bx,by,cy:by+h/2};
+}
+function confSignRect(cr){ const m=roomSignMetrics(cr); return {x:m.bx,y:m.by,w:m.w,h:m.h}; }
 function drawRoomSign(cr,t){
+  const m=roomSignMetrics(cr), on=Math.sin(t*0.006)>-0.2;
   ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
-  const fs=Math.max(9,7*cam.zoom), on=Math.sin(t*0.006)>-0.2;
-  const x0=sx(cr.sign.x), y0=sy(cr.sign.y+6);
-  ctx.fillStyle=on?"#8fe09c":"#42704d"; ctx.beginPath(); ctx.arc(x0+4,y0,Math.max(1.6,2.4*cam.zoom),0,6.283); ctx.fill();
-  ctx.fillStyle="#eef4fa"; ctx.font="700 "+fs+"px system-ui";
-  ctx.fillText(trunc("MEETING: "+cr.thread,22), x0+12, y0);
+  ctx.fillStyle="rgba(24,16,6,.22)"; roundRect(m.bx+1,m.by+2,m.w,m.h,m.h/2); ctx.fill();
+  roundRectFill(m.bx,m.by,m.w,m.h,Math.min(m.h/2,9),"rgba(28,34,44,.93)","rgba(126,164,204,.5)");
+  ctx.fillStyle=on?"#8fe09c":"#42704d"; ctx.beginPath(); ctx.arc(m.bx+m.padX+m.dotR,m.cy,m.dotR,0,6.283); ctx.fill();
+  ctx.fillStyle="#eef4fa"; ctx.font="700 "+m.fs+"px system-ui";
+  ctx.fillText(trunc("MEETING: "+cr.thread,22), m.bx+m.padX*2+m.dotR*2, m.cy);
 }
 function drawQueueList(t){   // threads waiting for a room, listed under the last room
   if(!L.queuedThreads||!L.queuedThreads.length||cam.zoom<0.5) return;
@@ -1438,8 +1447,9 @@ function drawSpeechBubbles(t){
   const open=(payload.threads||[]).filter(x=>x.status==="open"&&x.last_turn&&x.last_turn.message);
   for(const th of open){
     const cr=L.confById.get(th.thread); if(!cr||!cr.thread||!roomVisible(cr)) continue;  // only active rooms show a bubble
-    // anchor the room's latest line ABOVE the header (on the lawn) so it never covers the sign/pills
-    drawBubble(cr.cx, cr.y-6, trunc(th.last_turn.message,72), "#3a2f24", "t"+th.thread+(th.last_turn.timestamp||""));
+    // anchor just above the table so the bubble stays INSIDE the room rect (never over the top wall)
+    const ay=Math.max(cr.rect.y+8, (cr.table?cr.table.y:cr.center.y)-6);
+    drawBubble(cr.cx, ay, trunc(th.last_turn.message,64), "#3a2f24", "t"+th.thread+(th.last_turn.timestamp||""));
   }
   for(const [,e] of entities){ if(e.bubble && !e.walking) drawBubble(e.x,e.y-27,e.bubble.text,"#3a2f24","b"+e.id+e.bubble.born); }
 }
