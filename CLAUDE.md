@@ -43,6 +43,9 @@ Sessions now announce themselves to the roster automatically — no `kb_presence
 ## v2 direction (documented, not started)
 Social brains — federated knowledge, AI-mediated (public shelves, guest MCP, cross-brain adoption, agent-to-agent Q&A). The vision + reserved conventions live in the brain: `projects/engram/ideas/2026-07-social-brains.md`. Do not start before the personal-tightening backlog below is done and Hiren says go.
 
+## MCP Apps wave 2 (shipped 2026-07-10)
+Spec-compliance pass (ext-apps 2026-01-26; explicit visibility + teardown ack + shape-pin tests) + `kb_meetings` (live thread transcripts + reply-as-Hiren from any claude.ai chat incl. mobile; app-only data tools = zero context cost) + `kb_office` (glanceable office card, floor art via resources/read). Spec: `projects/engram/specs/mcp-apps-wave-2.md` in the brain. 565 tests, 30 model-visible tools (+4 app-only).
+
 ## What's next
 1. v1.2 remainder — skill polish from real-session friction (kb_inbox already shipped).
 2. Fresh claude.ai MOBILE session run-through (last acceptance nicety).

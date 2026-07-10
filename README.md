@@ -43,5 +43,5 @@ engram/
 
 ## Next
 
-- MCP Apps wave 2: spec-compliance pass (MCP 2026-07-28), meeting-reply widget (threads on mobile), office widget.
+- ~~MCP Apps wave 2~~ SHIPPED 2026-07-10: compliance pass + `kb_meetings` (reply to threads from mobile) + `kb_office` (live-office card). Phase 2: LimeZu sprites in the office widget.
 - v2 (gated): social brains — federated knowledge, AI-mediated. See `projects/engram/ideas/2026-07-social-brains.md`.
