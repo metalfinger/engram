@@ -252,7 +252,8 @@ const SAMPLE={"now":"2026-07-09T15:10:00Z","sessions":[
  {"session":"old-engram","name":"tower/engram-prev","status":"working","working_on":"","repo":"engram","branch":"main","project":"engram","room":"engram","room_label":"engram","host":"tower","updated":"2026-07-09T14:50:00Z","age_sec":1200,"live":false}
 ],"threads":[
  {"thread":"roll-call","status":"open","topic":"Roll call — who's working on what","participants":["metal/engram","tower/aeos"],"turn_count":3,"last_activity":"2026-07-09T15:09:00Z","last_turn":{"sender":"metal/engram","message":"who is working on what right now? drop your current focus.","timestamp":"2026-07-09T15:09:00Z"}},
- {"thread":"design-review","status":"open","topic":"Design review — palette","participants":["lap/metalfinger","hiren"],"turn_count":3,"last_activity":"2026-07-09T15:09:40Z","last_turn":{"sender":"lap/metalfinger","message":"@hiren: which palette do you prefer — warm terracotta or cool slate?","timestamp":"2026-07-09T15:09:40Z"}}
+ {"thread":"design-review","status":"open","topic":"Design review — palette","participants":["lap/metalfinger","hiren"],"turn_count":3,"last_activity":"2026-07-09T15:09:40Z","last_turn":{"sender":"lap/metalfinger","message":"@hiren: which palette do you prefer — warm terracotta or cool slate?","timestamp":"2026-07-09T15:09:40Z"}},
+ {"thread":"retro","status":"open","topic":"Sprint retro (later)","participants":["metal/notes","old/ghost"],"turn_count":1,"last_activity":"2026-07-09T14:40:00Z","last_turn":{"sender":"metal/notes","message":"let's run the retro after standup","timestamp":"2026-07-09T14:40:00Z"}}
 ],"activity":[
  {"ts":"2026-07-09T15:09:52Z","age_sec":8,"kind":"decision","session":"tower/aeos","summary":"wrote projects/aeos/decisions/scheduler","paths":["projects/aeos/decisions/x.md"]},
  {"ts":"2026-07-09T15:09:35Z","age_sec":25,"kind":"decision","session":"metal/engram","summary":"wrote projects/engram/specs/office-v3","paths":["projects/engram/specs/office-v3.md"]},
@@ -320,8 +321,8 @@ const meetingEl=document.getElementById("meeting"), mTopicEl=document.getElement
   mInputEl=document.getElementById("mInput"), mSendEl=document.getElementById("mSend");
 
 /* ============================ geometry knobs ============================ */
-const CELL_W=58, CELL_H=54, PADX=14, PADY=12, PADB=24, HEADER=19;
-const CAMPUS_GAP=64, CONF_CORRIDOR=92, SPINE_DROP=48, WALK_W=20, WALL=3, TOPPAD=72;
+const CELL_W=58, CELL_H=54, PADX=14, PADY=12, HEADER=19;
+const CAMPUS_GAP=64, CONF_CORRIDOR=92, SPINE_DROP=48, WALK_W=20, WALL=3;
 const OL="#241a12";  // sprite / furniture outline
 let frameSignRects=[], framePlaced=[];  // per-frame label collision bookkeeping
 
@@ -786,11 +787,13 @@ function senderStyle(name){ if(norm(name)==="hiren") return {me:true};
 function relTime(ts){ const t=Date.parse(ts); if(isNaN(t)) return "now"; const a=(serverNow()-t)/1000; return a<8?"just now":timeAgo(a)+" ago"; }
 function turnKey(t){ return t.id || (norm(t.sender)+"|"+(t.ts||"")+"|"+String(t.message||"").slice(0,32)); }
 function normalizeTranscript(d){
+  // confirmed shape: {thread,status,topic,participants,turns:[{seq,sender,timestamp,message}],cursor,closed_by?}
   const raw=d.turns||d.messages||d.transcript||[];
   const turns=raw.map(t=>({sender:t.sender||t.from||t.author||"?",message:t.message||t.text||t.body||"",
-    ts:t.timestamp||t.ts||t.time||null, id:t.id||t.turn_id||null}));
-  const cursor=d.cursor||d.next||d.next_cursor||(turns.length?(turns[turns.length-1].ts||turns[turns.length-1].id):null);
-  return {turns,cursor,topic:d.topic,participants:d.participants};
+    ts:t.timestamp||t.ts||t.time||null, id:(t.seq!=null?"s"+t.seq:(t.id||t.turn_id||null))}));
+  const cursor=d.cursor||d.next||d.next_cursor||
+    (raw.length&&raw[raw.length-1].seq!=null?raw[raw.length-1].seq:(turns.length?(turns[turns.length-1].ts||turns[turns.length-1].id):null));
+  return {turns,cursor,topic:d.topic,participants:d.participants,status:d.status,closed_by:d.closed_by};
 }
 async function fetchTranscript(id,since){
   const r=await fetch(THREAD_URL(id,since),{credentials:"same-origin",cache:"no-store"});
@@ -854,6 +857,8 @@ async function loadMeeting(id,initial){
     if(initial && !(data.turns&&data.turns.length) && !mLogEl.children.length)
       mLogEl.innerHTML='<div class="mt-empty">No messages yet — say hello.</div>';
     appendTurns(data.turns,!initial);
+    if(data.status==="closed"||data.closed_by){ mInputEl.disabled=true; mSendEl.disabled=true;
+      mInputEl.placeholder="This meeting has ended"+(data.closed_by?" · closed by "+data.closed_by:""); }
   }catch(err){ if(initial && !mLogEl.children.length)
     mLogEl.innerHTML='<div class="mt-empty">Could not load the conversation.</div>'; }
 }
@@ -867,6 +872,7 @@ function openMeeting(id,focus){
   renderParticipants(th);
   mNeedsEl.style.display=threadNeedsHiren(th)?"flex":"none";
   mLogEl.innerHTML=""; mErrEl.style.display="none";
+  mInputEl.disabled=false; mSendEl.disabled=false; mInputEl.placeholder="Message the meeting as Hiren…";
   meetingEl.classList.add("open"); meetingEl.setAttribute("aria-hidden","false");
   loadMeeting(id,true);
   if(meetingTimer) clearInterval(meetingTimer);
@@ -882,8 +888,9 @@ function refreshMeetingMeta(){
   renderParticipants(th); mNeedsEl.style.display=threadNeedsHiren(th)?"flex":"none";
 }
 async function postTurn(id,message){
+  // server stamps sender=hiren from the authenticated session; body is just {message}
   const r=await fetch(THREAD_POST_URL(id),{method:"POST",credentials:"same-origin",
-    headers:{"Content-Type":"application/json"},body:JSON.stringify({message,sender:"hiren"})});
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({message})});
   if(!r.ok) throw new Error("HTTP "+r.status);
   return r.json().catch(()=>({}));
 }
@@ -997,18 +1004,25 @@ function draw(t){
   const lod = cam.zoom>=0.7?2 : cam.zoom>=0.38?1 : 0;
   for(const e of ents){ drawShadow(e); drawCharacter(e,t,lod); }
   drawParticles();
+  // labels, painted low→high z: nameplate < header/sign < needs-Hiren badge < speech bubble
+  frameSignRects=[]; framePlaced=[];
+  for(const b of L.bldgs) if(roomVisible(b)) frameSignRects.push(signRectOf(b));
+  for(const cr of L.confRooms) if(roomVisible(cr)) frameSignRects.push(confHeaderRect(cr));
   if(lod>=1){
+    for(const e of ents) drawNameplate(e,lod);
+    drawCameo(t);
     for(const b of L.bldgs) if(roomVisible(b)) drawBuildingSign(b);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
     if(cam.zoom>=0.5) for(const b of L.bldgs){ if(!b.lit||!roomVisible(b))continue; for(const d of b.desks){ const o=entities.get(d.sid); if(o&&o.mode==="meeting") drawAwayTag(d); } }
-    for(const e of ents) drawNameplate(e,lod);
+    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
+    drawSpeechBubbles(t);
   } else {
+    drawCameo(t);
     for(const b of L.bldgs) if(roomVisible(b)) drawBuildingCount(b);
     for(const cr of L.confRooms) if(roomVisible(cr)) drawConfSign(cr,t);
+    for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
+    drawSpeechBubbles(t);
   }
-  drawSpeechBubbles(t);
-  drawCameo(t);
-  for(const cr of L.confRooms) if(roomVisible(cr)) drawConfBadges(cr,t);
   drawDust(t);
   updateBirds(t); drawBirds(t);
   if(dusk.a>0.001||asleep){ ctx.fillStyle=hexA(asleep?"#0a0f22":dusk.col, asleep?0.44:dusk.a); ctx.fillRect(0,0,W,H); }
@@ -1419,11 +1433,12 @@ function drawBuildingCount(b){
   ctx.fillText(trunc(b.label,16)+" · "+b.live, sx(b.x+b.w/2), sy(b.y+b.h/2));
 }
 function drawConfSign(cr,t){
+  const dim=cr.dim;
   ctx.globalAlpha=1; ctx.textAlign="left"; ctx.textBaseline="middle";
   const fs=Math.max(9,7.5*cam.zoom);
-  const on=(Math.sin(t*0.006)>-0.2);
-  ctx.fillStyle=on?"#8fe09c":"#42704d"; ctx.beginPath(); ctx.arc(sx(cr.x+9),sy(cr.y+HEADER/2),Math.max(1.6,2.6*cam.zoom),0,6.283); ctx.fill();
-  ctx.fillStyle="#eef4fa"; ctx.font="700 "+fs+"px system-ui";
+  const on=!dim && (Math.sin(t*0.006)>-0.2);
+  ctx.fillStyle=dim?"#5a6772":(on?"#8fe09c":"#42704d"); ctx.beginPath(); ctx.arc(sx(cr.x+9),sy(cr.y+HEADER/2),Math.max(1.6,2.6*cam.zoom),0,6.283); ctx.fill();
+  ctx.fillStyle=dim?"#aeb8c0":"#eef4fa"; ctx.font="700 "+fs+"px system-ui";
   ctx.fillText(trunc("MEETING: "+cr.thread,24), sx(cr.x+17), sy(cr.y+HEADER/2));
 }
 function drawNameplate(e,lod){
@@ -1466,7 +1481,7 @@ function drawSpeechBubbles(t){
   if(!payload) return;
   const open=(payload.threads||[]).filter(x=>x.status==="open"&&x.last_turn&&x.last_turn.message);
   for(const th of open){
-    const cr=L.confById.get(th.thread); if(!cr||!roomVisible(cr)) continue;
+    const cr=L.confById.get(th.thread); if(!cr||!roomVisible(cr)||cr.dim) continue;  // asleep rooms show no bubble
     let speaker=null;
     for(const [,e] of entities){ if(e.meetingThread===th.thread){ const nm=e.data?e.data.name:"";
       if(norm(nm)===norm(th.last_turn.sender)||(norm(th.last_turn.sender).length>3&&norm(th.last_turn.sender).includes(norm(nm)))){ speaker=e; break; } } }
