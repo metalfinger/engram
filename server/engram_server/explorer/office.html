@@ -397,7 +397,35 @@ function loadInterior(name){ const img=new Image(); const rec={img:null,ok:false
   img.onload=()=>{rec.img=img;rec.ok=true;}; img.onerror=()=>{rec.ok=false;}; img.src=ASSET_BASE+"/limezu/interiors/"+name+".png"; }
 function loadProps(){ loadAnim("animated_coffee",32,32); loadAnim("animated_cuckoo_clock",32,32);
   loadAnim("animated_fishtank_orange",32,32); loadAnim("animated_butterfly",16,16);
-  loadInterior("13_Conference_Hall_16x16"); }
+  loadInterior("13_Conference_Hall_16x16"); loadInterior("5_Classroom_and_library_16x16"); }
+// LimeZu classroom desk (solid-front wooden student desk: top edge + front panel + legs), visually picked, whole tile
+const DESK_SHEET="5_Classroom_and_library_16x16";
+const DESK_SX=34, DESK_SY=48, DESK_SW=15, DESK_SH=23;
+const DESK_FRONT_FRAC=0.34;   // top slice = surface (drawn behind sprite); lower slice = front panel+legs (redrawn over sprite's lap)
+// place the desk tile into cell d; returns screen rect + the split. false → tile not ready
+function deskTilePlace(d){
+  const w=CELL_W-18, x=d.dx+9, y=d.dy+CELL_H*0.56;
+  const DW=w+2, DH=26;                 // world footprint — wide+short (foreshortened) to read as an office desk in the cell
+  const topY=y-6;                      // desk top edge just above the cell desk-line
+  const Ws=Math.max(1,Math.round(DW*cam.zoom)), Hs=Math.max(1,Math.round(DH*cam.zoom));
+  const pxs=Math.round(sx(x+w/2)-Ws/2), pys=Math.round(sy(topY));
+  return {Ws,Hs,pxs,pys,w,x,y};
+}
+function drawDeskTile(d,frontOnly){
+  const dk=INTERIORS[DESK_SHEET]; if(!dk||!dk.ok) return false;
+  const p=deskTilePlace(d);
+  const prev=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=false;
+  try{
+    if(frontOnly){
+      const sfy=DESK_SY+DESK_SH*DESK_FRONT_FRAC, sfh=DESK_SH*(1-DESK_FRONT_FRAC);
+      const doff=Math.round(p.Hs*DESK_FRONT_FRAC), dh=p.Hs-doff;
+      ctx.drawImage(dk.img, DESK_SX,sfy,DESK_SW,sfh, p.pxs,p.pys+doff,p.Ws,dh);
+    } else {
+      ctx.drawImage(dk.img, DESK_SX,DESK_SY,DESK_SW,DESK_SH, p.pxs,p.pys,p.Ws,p.Hs);
+    }
+  }catch(_){ ctx.imageSmoothingEnabled=prev; return false; }
+  ctx.imageSmoothingEnabled=prev; return true;
+}
 // LimeZu conference table (src rect in the Conference_Hall tileset) scaled to the room; false → caller draws the oval
 function drawConfTable(cr){
   const it=INTERIORS["13_Conference_Hall_16x16"]; if(!it||!it.ok) return false;
@@ -1385,9 +1413,13 @@ function drawDesk(d,occupant,t){
     px(x+w/2-6,y+7+chOff,2,7,"#6f4d2c"); px(x+w/2+4,y+7+chOff,2,7,"#6f4d2c");
   }
   ctx.fillStyle="rgba(35,22,10,.14)"; ctx.beginPath(); ctx.ellipse(sx(x+w/2),sy(y+11),(w*0.6)*cam.zoom,3*cam.zoom,0,0,6.283); ctx.fill();
-  px(x-1,y-1,w+2,12,OL);
-  px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
-  px(x+1,y+10,3,4,"#6f4d2c"); px(x+w-4,y+10,3,4,"#6f4d2c");
+  // desk body: LimeZu classroom desk tile, else procedural
+  if(!drawDeskTile(d,false)){
+    px(x-1,y-1,w+2,12,OL);
+    px(x,y,w,10,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+8,w,2,"#875f33");
+    px(x+1,y+10,3,4,"#6f4d2c"); px(x+w-4,y+10,3,4,"#6f4d2c");
+  }
+  // monitor-glow overlay (procedural, status-coloured) — the living-office signal, kept over the tileset desk
   const mw=14, mx=x+w/2-mw/2, my=y-11;
   px(mx-1,my-1,mw+2,10,OL); px(mx,my,mw,8,"#3b352c");
   const st = occupant? (occupant.data?occupant.data.status:"unknown"):"off";
@@ -1400,9 +1432,11 @@ function drawDesk(d,occupant,t){
 // redrawn AFTER the seated sprite so its lower body tucks behind the desk (fixes "sitting on top of the desk")
 function drawDeskFront(d){
   const w=CELL_W-18,x=d.dx+9,y=d.dy+CELL_H*0.56;
-  px(x-1,y-1,w+2,13,OL);
-  px(x,y,w,11,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+9,w,2,"#875f33");
-  px(x+1,y+11,3,4,"#6f4d2c"); px(x+w-4,y+11,3,4,"#6f4d2c");
+  if(!drawDeskTile(d,true)){
+    px(x-1,y-1,w+2,13,OL);
+    px(x,y,w,11,"#a4763f"); px(x,y,w,3,"#bb8c56"); px(x,y+9,w,2,"#875f33");
+    px(x+1,y+11,3,4,"#6f4d2c"); px(x+w-4,y+11,3,4,"#6f4d2c");
+  }
   px(x+w/2-6,y+2,12,4,"#2a2620"); px(x+w/2-6,y+2,12,1,"#4a463e");   // keyboard
 }
 function drawAwayTag(d){
