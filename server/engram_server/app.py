@@ -45,16 +45,35 @@ from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server.oauth.store import InMemoryOAuthStore
 from engram_server.registry import StoreRegistry
+from mcp.server.auth.middleware.auth_context import get_access_token
 from engram_server.scheduler import start_schedulers
 
 log = logging.getLogger("engram.app")
 
 settings = get_settings()
 registry = StoreRegistry(settings)
-# Single-user surfaces (explorer, office, widgets, scheduler, presence spool) stay
-# owner-scoped; per-request tenant resolution arrives in M0.4 via
-# registry.store_for_subject(subject-from-access-token).
+# Owner-scoped surfaces: explorer + web routes (Cloudflare Access = Hiren-only),
+# scheduler, presence spool, and startup bring-up. Tool bodies must NEVER touch
+# this global directly — they resolve through current_store() (M0.4).
 store = registry.owner
+
+
+async def current_store() -> KBStore:
+    """M0.4 authz seam — the ONLY way a tool body picks a store.
+
+    The SDK's bearer middleware stashes each request's validated AccessToken in a
+    ContextVar; ``.subject`` is the identity the OAuth proxy minted
+    ("github:metalfinger"). subject -> account -> that user's store, via the
+    registry. No token in context (auth disabled: localhost dev, tests) resolves
+    to the owner store, as does multiuser=False — the pre-M0 behavior exactly.
+
+    Tool bodies use the ``await (await current_store()).kb_x(...)`` shape: the
+    first await resolves WHO is calling, the second does the work.
+    """
+    token = get_access_token()
+    if token is None or not token.subject:
+        return registry.owner
+    return await registry.store_for_subject(token.subject)
 
 
 # ------------------------------------------------------------------ auth (optional)
@@ -161,7 +180,7 @@ async def kb_projects() -> list[dict[str, Any]]:
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_projects()
+    return await (await current_store()).kb_projects()
 
 
 @mcp.tool(meta=_nav_meta)
@@ -200,7 +219,7 @@ async def kb_load(project: str, lite: bool = False) -> dict[str, Any]:
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_load(project, lite)
+    return await (await current_store()).kb_load(project, lite)
 
 
 @mcp.tool()
@@ -217,7 +236,7 @@ async def kb_read(path: str, depth: int = 0) -> dict[str, Any]:
 
     Returns {path, content, meta, hash} plus links + backlinks when depth=1.
     """
-    return await store.kb_read(path, depth)
+    return await (await current_store()).kb_read(path, depth)
 
 
 @mcp.tool()
@@ -267,7 +286,7 @@ async def kb_write(
 
     Returns {path, created, no_change, sha, pushed, warnings, indexes_updated, superseded}.
     """
-    return await store.kb_write(path, content, message, description, base_hash, session)
+    return await (await current_store()).kb_write(path, content, message, description, base_hash, session)
 
 
 @mcp.tool()
@@ -302,7 +321,7 @@ async def kb_edit(
 
     Returns {path, sha, pushed, operation, warnings}.
     """
-    return await store.kb_edit(path, operation, content, find, section, occurrence, session)
+    return await (await current_store()).kb_edit(path, operation, content, find, section, occurrence, session)
 
 
 @mcp.tool()
@@ -320,7 +339,7 @@ async def kb_move(old_path: str, new_path: str) -> dict[str, Any]:
 
     Returns {old, new, links_rewritten, sha, pushed}.
     """
-    return await store.kb_move(old_path, new_path)
+    return await (await current_store()).kb_move(old_path, new_path)
 
 
 @mcp.tool()
@@ -339,7 +358,7 @@ async def kb_append_log(project: str, entry: str) -> dict[str, Any]:
 
     Returns {ok, path, sha, date, pushed}.
     """
-    return await store.kb_append_log(project, entry)
+    return await (await current_store()).kb_append_log(project, entry)
 
 
 @mcp.tool()
@@ -361,7 +380,7 @@ async def kb_leave_message(
 
     Returns {path, sha, pushed, warnings}.
     """
-    return await store.kb_leave_message(project, title, body, to, priority, expires)
+    return await (await current_store()).kb_leave_message(project, title, body, to, priority, expires)
 
 
 @mcp.tool()
@@ -373,7 +392,7 @@ async def kb_mark_read(message_path: str) -> dict[str, Any]:
 
     Returns {archived_path, sha, pushed}.
     """
-    return await store.kb_mark_read(message_path)
+    return await (await current_store()).kb_mark_read(message_path)
 
 
 @mcp.tool(meta=_nav_meta)
@@ -411,7 +430,7 @@ async def kb_search(
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_search(
+    return await (await current_store()).kb_search(
         query, project=project, type=type, limit=limit, expand=expand, since=since, until=until
     )
 
@@ -427,7 +446,7 @@ async def kb_inbox(text: str) -> dict[str, Any]:
 
     Returns {path, sha, pushed}.
     """
-    return await store.kb_inbox(text)
+    return await (await current_store()).kb_inbox(text)
 
 
 @mcp.tool()
@@ -478,7 +497,7 @@ async def kb_thread_post(
     Returns {thread, seq, status, participants, posted, pushed, warnings} plus {reply, waited?}
     when wait_for_reply=True.
     """
-    return await store.kb_thread_post(
+    return await (await current_store()).kb_thread_post(
         thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
     )
 
@@ -501,7 +520,7 @@ async def kb_thread_read(thread: str, since: str | None = None, wait_seconds: in
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?}.
     """
-    return await store.kb_thread_read(thread, since, wait_seconds)
+    return await (await current_store()).kb_thread_read(thread, since, wait_seconds)
 
 
 @mcp.tool()
@@ -512,7 +531,7 @@ async def kb_threads() -> list[dict[str, Any]]:
 
     Returns [{thread, status, topic, participants, turn_count, last_activity}].
     """
-    return await store.kb_threads()
+    return await (await current_store()).kb_threads()
 
 
 @mcp.tool(meta=_meet_meta)
@@ -528,7 +547,7 @@ async def kb_meetings() -> dict[str, Any]:
 
     Mounts the meetings widget; keep your text to one short line after it mounts.
     """
-    return await meetings_payload(store)
+    return await meetings_payload(await current_store())
 
 
 @mcp.tool(meta=_meet_app_meta)
@@ -538,7 +557,7 @@ async def meetings_state() -> dict[str, Any]:
 
     Returns {threads: [...]} (see kb_meetings).
     """
-    return await meetings_payload(store)
+    return await meetings_payload(await current_store())
 
 
 @mcp.tool(meta=_meet_app_meta)
@@ -550,7 +569,7 @@ async def meeting_transcript(thread: str, since: str = "") -> dict[str, Any]:
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?}.
     """
-    return await store.kb_thread_read(thread, since=since or None, wait_seconds=0)
+    return await (await current_store()).kb_thread_read(thread, since=since or None, wait_seconds=0)
 
 
 @mcp.tool(meta=_meet_app_meta)
@@ -564,7 +583,7 @@ async def meeting_reply(thread: str, message: str) -> dict[str, Any]:
 
     Returns {thread, seq, status, participants, posted, pushed, warnings}.
     """
-    return await _meeting_reply_impl(store, thread, message)
+    return await _meeting_reply_impl(await current_store(), thread, message)
 
 
 @mcp.tool()
@@ -595,7 +614,7 @@ async def kb_presence(
     Returns {session, updated, roster_active} where roster_active = sessions active in the
     last 15 minutes (including this one).
     """
-    return await store.kb_presence(
+    return await (await current_store()).kb_presence(
         session, name, status, working_on, repo, branch, repo_remote, cwd, project, note, host
     )
 
@@ -612,7 +631,7 @@ async def kb_roster(active_within_min: int = 15) -> list[dict[str, Any]]:
     Returns [{session, name, status, working_on, repo, branch, repo_remote, cwd, project,
     host, updated, age_min}].
     """
-    return await store.kb_roster(active_within_min)
+    return await (await current_store()).kb_roster(active_within_min)
 
 
 @mcp.tool()
@@ -644,7 +663,7 @@ async def kb_handoff(
 
     Returns {path, sha, pushed, notified, room_error?}.
     """
-    return await store.kb_handoff(
+    return await (await current_store()).kb_handoff(
         from_session, summary, repo, branch, state, next_steps, refs, to, room, allow_secrets
     )
 
@@ -660,7 +679,7 @@ async def kb_workspace() -> dict[str, Any]:
     recent_handoffs: [{path, from, to, summary, repo, branch, state, next_steps, refs,
     created, status}]}.
     """
-    return await store.kb_workspace()
+    return await (await current_store()).kb_workspace()
 
 
 @mcp.tool()
@@ -676,7 +695,7 @@ async def kb_claim(session: str, path: str, note: str = "") -> dict[str, Any]:
 
     Returns {path, session, claimed_at, already_claimed_by?}.
     """
-    return await store.kb_claim(session, path, note)
+    return await (await current_store()).kb_claim(session, path, note)
 
 
 @mcp.tool()
@@ -687,7 +706,7 @@ async def kb_release(session: str, path: str) -> dict[str, Any]:
 
     Returns {path, released, note?}.
     """
-    return await store.kb_release(session, path)
+    return await (await current_store()).kb_release(session, path)
 
 
 @mcp.tool()
@@ -698,7 +717,7 @@ async def kb_claims() -> list[dict[str, Any]]:
 
     Returns [{path, session, note, claimed_at, age_min, stale}].
     """
-    return await store.kb_claims()
+    return await (await current_store()).kb_claims()
 
 
 @mcp.tool()
@@ -716,7 +735,7 @@ async def kb_import(source: str, payload: str, dry_run: bool = True) -> dict[str
     Returns {source, proposed: [{path, title, timestamp, message_count, truncated}],
     imported: [paths], skipped: [paths]}.
     """
-    return await store.kb_import(source, payload, dry_run)
+    return await (await current_store()).kb_import(source, payload, dry_run)
 
 
 @mcp.tool()
@@ -732,7 +751,10 @@ async def kb_doctor() -> dict[str, Any]:
 
     Returns {status, checks: [{name, status, detail}], counts, head}.
     """
-    return await run_doctor(settings, store)
+    s = await current_store()
+    # Each store carries its own settings (per-user brain_path for tenants), so
+    # the doctor round-trips the CALLER's brain, not the operator's.
+    return await run_doctor(s.settings, s)
 
 
 @mcp.tool()
@@ -748,7 +770,7 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
 
     Returns {old, new, links_rewritten, sha, pushed}.
     """
-    return await store.kb_rename_project(old_id, new_id)
+    return await (await current_store()).kb_rename_project(old_id, new_id)
 
 
 @mcp.tool(meta=_nav_meta)
@@ -770,7 +792,7 @@ async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await store.kb_artifacts(project)
+    return await (await current_store()).kb_artifacts(project)
 
 
 @mcp.tool(meta=_nav_meta)
@@ -785,7 +807,7 @@ async def kb_recipes(project: str | None = None) -> list[dict[str, Any]]:
     type: recipe concept.
 
     Returns [{path, project, title, description, timestamp, sources, instruction}], newest first."""
-    return await store.kb_recipes(project)
+    return await (await current_store()).kb_recipes(project)
 
 
 @mcp.tool()
@@ -805,7 +827,7 @@ async def kb_share_artifact(path: str, allow_secrets: bool = False) -> dict[str,
 
     Returns {path, share_url, sha, pushed}.
     """
-    return await store.kb_share_artifact(path, allow_secrets)
+    return await (await current_store()).kb_share_artifact(path, allow_secrets)
 
 
 @mcp.tool()
@@ -816,7 +838,7 @@ async def kb_unshare_artifact(path: str) -> dict[str, Any]:
 
     Returns {path, sha, pushed}.
     """
-    return await store.kb_unshare_artifact(path)
+    return await (await current_store()).kb_unshare_artifact(path)
 
 
 # ------------------------------------------------------------------ prompts
@@ -931,7 +953,7 @@ if _AUTH_ENABLED:
 register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
-register_office_widget(mcp, settings, store)
+register_office_widget(mcp, settings, store, resolver=current_store)
 
 
 # ------------------------------------------------------------------ entrypoint
@@ -952,6 +974,14 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
     log.info("engram: starting (semantic=%s scheduler=%s)", store.semantic is not None, settings.scheduler_enabled)
+    if settings.multiuser and not _AUTH_ENABLED:
+        # Without OAuth every request resolves to the owner store — one shared
+        # brain served to anyone who can reach the port. Never in multiuser.
+        raise SystemExit(
+            "engram: refusing to start — ENGRAM_MULTIUSER=1 requires OAuth "
+            "(IdP client id + secret); unauthenticated multiuser would serve "
+            "the owner brain to every caller."
+        )
     if settings.dev_no_access and not (
         _public_host.startswith(("localhost", "127.0.0.1"))
         and _explorer_host.startswith(("localhost", "127.0.0.1"))

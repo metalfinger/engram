@@ -122,15 +122,27 @@ def office_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def register_office_widget(mcp: "FastMCP", settings: "Settings", store: "KBStore") -> None:
+def register_office_widget(
+    mcp: "FastMCP",
+    settings: "Settings",
+    store: "KBStore",
+    resolver: "Callable[[], Awaitable[KBStore]] | None" = None,
+) -> None:
     """Register the office resource (+ 3 floor-art sub-resources) and the
     kb_office/office_state tools when ``settings.widget`` is on; a no-op when off —
     zero behavior change with the flag off, matching ``register_navigator``.
+
+    ``resolver`` (M0.4) resolves the CALLER's store per request so a tenant sees
+    their own office, never the operator's presence data (session names, cwds,
+    repos). Omitted (tests, single-user) -> the fixed ``store``.
     """
     if not settings.widget:
         return
 
-    brain = store.root
+    async def _brain() -> "Path":
+        if resolver is None:
+            return store.root
+        return (await resolver()).root
 
     @mcp.resource(OFFICE_URI, mime_type=OFFICE_MIME, meta=office_resource_meta())
     def office_resource() -> str:
@@ -161,7 +173,7 @@ def register_office_widget(mcp: "FastMCP", settings: "Settings", store: "KBStore
         payload (the widget itself pulls that over the bridge via office_state).
         """
         now = dt.datetime.now(dt.timezone.utc)
-        payload = await to_thread.run_sync(office_payload, brain, now)
+        payload = await to_thread.run_sync(office_payload, await _brain(), now)
         return office_summary(payload)
 
     @mcp.tool(meta=office_state_tool_meta(True))
@@ -174,7 +186,7 @@ def register_office_widget(mcp: "FastMCP", settings: "Settings", store: "KBStore
         Returns {now, sessions, recent, rooms, threads, activity}.
         """
         now = dt.datetime.now(dt.timezone.utc)
-        return await to_thread.run_sync(office_payload, brain, now)
+        return await to_thread.run_sync(office_payload, await _brain(), now)
 
 
 # ---------------------------------------------------------------------------
