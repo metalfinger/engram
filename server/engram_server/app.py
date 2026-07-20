@@ -980,16 +980,22 @@ if _AUTH_ENABLED:
         return RedirectResponse(redirect)
 
 
+# Public homepage (M1.2) — registered BEFORE the explorer because both bind GET "/"
+# and Starlette matches the first route added. In multiuser the homepage owns "/";
+# single-user keeps the explorer's host-based root_redirect (this is a no-op then),
+# so Hiren's current deployment is unchanged.
+if settings.multiuser:
+    register_homepage(mcp, settings)
+
 register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
 register_office_widget(mcp, settings, store, resolver=current_store)
 
-# Public homepage + multi-user dashboard/onboarding (M1). The dashboard offers
-# every configured IdP for browser sign-in (GitHub for devs, Google for everyone
-# else) — independent of settings.oauth_provider, which only picks the MCP
-# connector's IdP. Homepage is public; dashboard is a no-op outside multiuser.
-register_homepage(mcp, settings)
+# Multi-user dashboard/onboarding (M1.4). The dashboard offers every configured IdP
+# for browser sign-in (GitHub for devs, Google for everyone else) — independent of
+# settings.oauth_provider, which only picks the MCP connector's IdP. No-op outside
+# multiuser.
 _dashboard_idps: dict = {}
 if settings.github_client_id and settings.github_client_secret:
     _dashboard_idps["github"] = get_idp("github", settings)
