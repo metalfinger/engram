@@ -43,6 +43,7 @@ from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.office_widget import register_office_widget
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
+from engram_server import limits
 from engram_server.oauth.store import InMemoryOAuthStore
 from engram_server.registry import StoreRegistry
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -73,7 +74,13 @@ async def current_store() -> KBStore:
     token = get_access_token()
     if token is None or not token.subject:
         return registry.owner
-    return await registry.store_for_subject(token.subject)
+    resolved = await registry.store_for_subject(token.subject)
+    if resolved is not registry.owner:
+        # Per-tenant quota + rate limit (M0.7). Skipped for the owner store
+        # (returned in single-user mode and for owner subjects/handle), so the
+        # operator is never throttled or quota-capped.
+        limits.enforce(resolved, token.subject, settings)
+    return resolved
 
 
 # ------------------------------------------------------------------ auth (optional)

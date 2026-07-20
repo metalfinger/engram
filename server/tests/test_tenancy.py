@@ -40,6 +40,30 @@ def test_handle_rejects_reserved():
             validate_handle(reserved)
 
 
+@pytest.mark.parametrize(
+    "device", ["con", "CON", "Con", "nul", "prn", "aux", "com1", "com9", "lpt1", "lpt9"]
+)
+def test_handle_rejects_windows_device_names(device):
+    # These pass the regex but soft-brick the account on Windows (git can't mkdir them).
+    with pytest.raises(TenancyError, match="reserved"):
+        validate_handle(device)
+
+
+@pytest.mark.parametrize("device", ["con.md", "nul.txt"])
+def test_handle_rejects_dotted_device_names(device):
+    # Dots aren't allowed in a handle at all, so these are rejected by the regex
+    # first (a device name can never actually carry an extension); the extension
+    # strip in validate_handle is belt-and-suspenders for any future caller.
+    with pytest.raises(TenancyError):
+        validate_handle(device)
+
+
+def test_handle_allows_device_name_as_substring():
+    # Only the exact stem is reserved — "console", "computer", "connor" are fine.
+    for ok in ("console", "computer", "connor", "com10", "lpt10"):
+        assert validate_handle(ok) == ok
+
+
 # -- bootstrap owner --------------------------------------------------------
 
 

@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # with the user's handle (see provisioning.user_settings).
     tenant_id: str = "hiren"
 
+    # Per-tenant limits (M0.7). Applied at the current_store() seam for NON-owner
+    # callers only. Quota is the tenant checkout's on-disk ceiling (checked with a
+    # short TTL cache); the rate limit is tool calls per minute per token subject.
+    tenant_quota_mb: int = 200
+    tenant_rate_per_min: int = 120
+
     # Off-site backups (M0.8): nightly mirror of every user bare repo to ONE
     # private git remote, each user on branch users/<handle> (no per-user repo
     # creation, one deploy key). Empty = mirror disabled. The operator brain is

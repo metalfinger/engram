@@ -47,6 +47,16 @@ RESERVED_HANDLES = frozenset(
     }
 )
 
+# Windows reserved device names: a handle becomes a directory under users_root, and
+# on Windows `git init` (or any mkdir) for one of these FAILS with "Invalid argument".
+# The handle would already be claimed in the DB, so the account soft-bricks forever.
+# Reject at validation. Case-insensitive, with or without an extension (e.g. "con.md").
+_WIN_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
+
 _INVITE_TTL_DAYS = 14
 
 
@@ -73,6 +83,9 @@ def validate_handle(handle: str) -> str:
         )
     if normalized in RESERVED_HANDLES:
         raise TenancyError(f"Handle {handle!r} is reserved — pick another.")
+    # Strip any extension before the device-name check ("con.md" is still CON on Windows).
+    if normalized.split(".", 1)[0] in _WIN_RESERVED:
+        raise TenancyError(f"Handle {handle!r} is a reserved system name — pick another.")
     return normalized
 
 
