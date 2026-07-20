@@ -107,6 +107,19 @@ class Settings(BaseSettings):
     tenancy_db_path: str = ""  # empty -> Path.home()/".engram"/"engram.db"
     users_root: str = ""  # empty -> Path.home()/".engram"/"users"
 
+    # Search isolation (M0.5): every Qdrant point is stamped with this tenant id
+    # and every query/delete/scroll carries it as a mandatory filter. The shared
+    # collection is the ONE cross-tenant surface — per-user stores override this
+    # with the user's handle (see provisioning.user_settings).
+    tenant_id: str = "hiren"
+
+    # Off-site backups (M0.8): nightly mirror of every user bare repo to ONE
+    # private git remote, each user on branch users/<handle> (no per-user repo
+    # creation, one deploy key). Empty = mirror disabled. The operator brain is
+    # excluded — it already pushes to its own GitHub remote on every write.
+    backup_remote: str = ""  # e.g. git@github.com:metalfinger/brains-mirror.git
+    backup_at: str = "04:30"
+
 
 @lru_cache
 def get_settings() -> Settings:
