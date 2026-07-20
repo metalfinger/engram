@@ -132,6 +132,20 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.
 
+## Contacts, DMs & context sharing (multi-user only)
+
+These tools exist only when Engram runs multi-user (other people have accounts). In Hiren's solo brain they're inert — skip this section. Your identity everywhere is your `@handle` (ONE account; the MCP connector, the dashboard, and the Chrome notifier all resolve to it).
+
+- **Surface social activity at session start.** In multi-user, `kb_load` returns a `social` block `{unread_dms, unread_notifications}` — if either is non-zero, say so and offer to show them, the same way you surface unread project messages. `kb_notifications()` lists unread notifications (new DMs, contact requests, share requests/grants); pass `mark_read=True` once you've shown them. `kb_messages()` with no argument lists conversations (each with the other party + unread count); `kb_messages(with_handle="@x")` reads that conversation and marks it read.
+- **Contacts gate DMs (anti-spam).** `kb_contacts()` shows your contacts plus incoming/outgoing requests. `kb_add_contact("@x")` sends a request (auto-accepts if they already requested you); `kb_accept_contact("@x")` accepts an incoming one. You can only DM an accepted contact.
+- **DM a contact.** `kb_dm("@x", message)` — the recipient gets a notification (and a desktop/push alert if they've set one up). Bodies are secret-scanned; a message containing an apparent key/token is refused.
+- **Share knowledge access — the core feature.** Instead of pasting context, grant a contact SCOPED read access to part of your brain so THEIR Claude reads your shelf directly:
+  - `kb_share_context("@x", ["projects/alt"], verbs=["read","search"], days=30)` grants directly and notifies them.
+  - `kb_request_context("@owner", ["projects/alt"], reason)` asks for access; the owner approves with `kb_grant_request("@requester")` (or denies with `approve=False`).
+  - `kb_shared_with_me()` lists what others have shared with you and until when.
+  - `kb_guest_read("@owner", path)` reads one shared concept; `kb_guest_search("@owner", query)` searches within the shared paths. Both are STRICTLY scoped to the granted path prefixes — a grant on `projects/alt` never exposes `projects/alt-secret`, a sibling, or a linked-but-unshared neighbour. If a read is refused, the user needs a broader grant (`kb_request_context`).
+- **Send a one-off.** `kb_send("@contact", path)` copies ONE concept from your brain into a contact's inbox with `adopted_from` provenance — a one-time copy, not a live grant. Requires being contacts; their Claude finds it in `inbox/imports/` next session.
+
 ## Token thrift — every kb_* result lands in Hiren's context and costs his plan
 
 Engram must stay CHEAP to run. Rules, in priority order:
