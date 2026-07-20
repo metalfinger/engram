@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from engram_server.registry import StoreRegistry
 
 SESSION_COOKIE = "engram_session"
+OAUTH_STATE_COOKIE = "engram_oauth_state"
 CALLBACK_PATH = "/dashboard/callback"
 
 
@@ -204,11 +205,31 @@ class Dashboard:
             return PlainTextResponse("Missing invite token.", status_code=400)
         state = secrets.token_urlsafe(24)
         self._pending[state] = _Pending(idp_name=idp.name, kind=kind, invite_token=invite_token)
-        return RedirectResponse(idp.authorize_url(self.callback_url, state), status_code=302)
+        resp = RedirectResponse(idp.authorize_url(self.callback_url, state), status_code=302)
+        # Bind this flow to THIS browser (OAuth login-CSRF / session-fixation defense):
+        # the callback only proceeds if this cookie comes back matching the state param.
+        resp.set_cookie(
+            OAUTH_STATE_COOKIE, state,
+            max_age=900, httponly=True, secure=True, samesite="lax", path="/",
+        )
+        return resp
 
     async def callback(self, request: "Request") -> "Response":
-        state = request.query_params.get("state", "")
-        code = request.query_params.get("code", "")
+        # Delete the single-use state cookie on EVERY exit (pass or fail).
+        resp = await self._callback(
+            request.query_params.get("state", ""),
+            request.query_params.get("code", ""),
+            request.cookies.get(OAUTH_STATE_COOKIE),
+        )
+        resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+        return resp
+
+    async def _callback(self, state: str, code: str, cookie_state: str | None) -> "Response":
+        # The flow must complete in the SAME browser that started it: the state param
+        # (from the IdP redirect) must equal the cookie we set in start_oauth. Without
+        # this, an attacker who initiates a flow could fixate their code onto a victim.
+        if not state or cookie_state is None or not secrets.compare_digest(cookie_state, state):
+            return PlainTextResponse("Sign-in could not be verified — please start again.", status_code=400)
         pending = self._pending.pop(state, None)
         if pending is None:
             return PlainTextResponse("Sign-in session expired — please try again.", status_code=400)
