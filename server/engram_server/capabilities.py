@@ -169,6 +169,11 @@ CREATE TABLE IF NOT EXISTS capabilities (
     expires TEXT NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS public_shares (
+    token TEXT PRIMARY KEY,
+    owner_handle TEXT NOT NULL,
+    created TEXT NOT NULL
+);
 """
 
 
@@ -187,6 +192,31 @@ class CapabilityStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # -- public artifact share tokens (which tenant owns a /share/<token> link) ----
+
+    def register_public_share(self, token: str, owner_handle: str) -> None:
+        """Map a public artifact-share token to the tenant whose brain to scan.
+        The public /share route has no session, so this index is the only way it can
+        find WHICH brain a token belongs to in multi-user. Idempotent (REPLACE)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO public_shares (token, owner_handle, created) VALUES (?, ?, ?)",
+                (token, owner_handle, _now()),
+            )
+            self._conn.commit()
+
+    def resolve_public_share(self, token: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT owner_handle FROM public_shares WHERE token = ?", (token,)
+            ).fetchone()
+        return row["owner_handle"] if row else None
+
+    def drop_public_share(self, token: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM public_shares WHERE token = ?", (token,))
+            self._conn.commit()
 
     # -- row -> dataclass helpers ---------------------------------------------
 

@@ -38,6 +38,8 @@ CURRENT_TOOLS = (
     "kb_dm", "kb_messages", "kb_notifications",
     "kb_share_context", "kb_request_context", "kb_grant_request",
     "kb_shared_with_me", "kb_guest_read", "kb_guest_search", "kb_send",
+    "kb_inbox_card", "social_state", "social_conversation",
+    "social_send", "social_accept", "social_mark_read",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so

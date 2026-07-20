@@ -42,6 +42,11 @@ from engram_server.meetings_widget import (
 )
 from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.office_widget import register_office_widget
+from engram_server.social_widget import (
+    register_social_widget,
+    social_app_tool_meta,
+    social_tool_meta,
+)
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server import limits, notify
@@ -880,7 +885,15 @@ async def kb_share_artifact(path: str, allow_secrets: bool = False) -> dict[str,
 
     Returns {path, share_url, sha, pushed}.
     """
-    return await (await current_store()).kb_share_artifact(path, allow_secrets)
+    result = await (await current_store()).kb_share_artifact(path, allow_secrets)
+    # Multi-user: index which tenant owns this public token so the unauthenticated
+    # /share route (which has no session) knows which brain to scan.
+    if settings.multiuser:
+        user = current_user()
+        url = result.get("share_url") or ""
+        if user is not None and "/share/" in url:
+            registry.capabilities.register_public_share(url.rsplit("/", 1)[-1], user.handle)
+    return result
 
 
 @mcp.tool()
@@ -1105,6 +1118,117 @@ async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
         "unread": [{"kind": n.kind, "body": n.body, "at": n.created} for n in notes],
         "counts": counts,
     }
+
+
+# ------------------------------------------------------------------ social widget (app-only data plane)
+#
+# The "Messages" MCP App widget (ui://engram/messages). kb_inbox_card mounts it;
+# the app-only tools below are its data plane (visibility:["app"] — invisible to the
+# model, zero context). Each resolves the caller via current_user() exactly like the
+# conversational social tools, and the widget only ever reaches them over the bridge.
+
+_social_meta = social_tool_meta(settings.widget)
+_social_app_meta = social_app_tool_meta(settings.widget)
+
+
+def _profile_of(uid: int, umap: dict) -> dict[str, Any]:
+    u = umap.get(uid)
+    return {
+        "handle": u.handle if u else str(uid),
+        "display_name": (u.display_name if u else None),
+        "avatar_url": (u.avatar_url if u else None),
+    }
+
+
+@mcp.tool(meta=_social_meta)
+async def kb_inbox_card() -> dict[str, Any]:
+    """Show the user their Engram messages — DMs, contacts, notifications — as a card.
+    Call when they ask to see/open their messages, inbox, DMs, or notifications in a
+    claude.ai chat. Mounts the Messages widget; after it mounts, say one short line and
+    let them use it.
+
+    Returns a compact summary {unread_dms, unread_notifications, contacts}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"unread_dms": 0, "unread_notifications": 0, "contacts": 0, "note": "single-user mode"}
+    counts = registry.social.unread_counts(me.id)
+    graph = registry.social.list_contacts(me.id)
+    return {
+        "unread_dms": counts.get("dms", 0),
+        "unread_notifications": counts.get("notifications", 0),
+        "contacts": len(graph["accepted"]),
+    }
+
+
+@mcp.tool(meta=_social_app_meta)
+async def social_state() -> dict[str, Any]:
+    """App-only data plane for the Messages widget (invisible to the model). The full
+    snapshot the widget renders + polls. Never call directly — use kb_inbox_card."""
+    me = _require_user()
+    if me is None:
+        return {"me": None, "contacts": [], "incoming": [], "outgoing": [],
+                "conversations": [], "notifications": [], "counts": {"dms": 0, "notifications": 0}}
+    umap = {u.id: u for u in registry.tenancy.list_users()}
+    graph = registry.social.list_contacts(me.id)
+    convs = []
+    for c in registry.social.list_conversations(me.id):
+        others = [o for o in c["members"] if o != me.id]
+        p = _profile_of(others[0], umap) if len(others) == 1 else {"handle": c["title"] or "group"}
+        last = c["last_message"]
+        convs.append({**p, "unread": c["unread"], "last": (last.body[:120] if last else None),
+                      "at": (last.created if last else None)})
+    return {
+        "me": _profile_of(me.id, umap),
+        "contacts": [_profile_of(i, umap) for i in graph["accepted"]],
+        "incoming": [_profile_of(i, umap) for i in graph["incoming"]],
+        "outgoing": [_profile_of(i, umap) for i in graph["outgoing"]],
+        "conversations": convs,
+        "notifications": [{"kind": n.kind, "body": n.body, "at": n.created}
+                          for n in registry.social.list_notifications(me.id, unread_only=True)],
+        "counts": registry.social.unread_counts(me.id),
+    }
+
+
+@mcp.tool(meta=_social_app_meta)
+async def social_conversation(with_handle: str) -> dict[str, Any]:
+    """App-only: one conversation's messages (marks it read). Widget use only."""
+    me = _require_user()
+    if me is None:
+        return {"with": with_handle, "messages": []}
+    other = registry.tenancy.user_by_handle(with_handle.lstrip("@"))
+    if other is None or not registry.social.are_contacts(me.id, other.id):
+        return {"with": with_handle, "messages": []}
+    umap = {u.id: u for u in registry.tenancy.list_users()}
+    conv = registry.social.get_or_create_dm(me.id, other.id)
+    msgs = registry.social.list_messages(conv.id, me.id)
+    registry.social.mark_read(conv.id, me.id)
+    return {
+        "with": other.handle,
+        "messages": [{"from": umap[m.sender_id].handle if m.sender_id in umap else str(m.sender_id),
+                      "body": m.body, "at": m.created, "mine": m.sender_id == me.id} for m in msgs],
+    }
+
+
+@mcp.tool(meta=_social_app_meta)
+async def social_send(to: str, message: str) -> dict[str, Any]:
+    """App-only: send a DM from the widget. Same contact + secret-scan guards as kb_dm."""
+    return await kb_dm(to, message)
+
+
+@mcp.tool(meta=_social_app_meta)
+async def social_accept(handle: str) -> dict[str, Any]:
+    """App-only: accept a contact request from the widget."""
+    return await kb_accept_contact(handle)
+
+
+@mcp.tool(meta=_social_app_meta)
+async def social_mark_read() -> dict[str, Any]:
+    """App-only: mark all notifications read from the widget."""
+    me = _require_user()
+    if me is not None:
+        registry.social.mark_notifications_read(me.id)
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------ context sharing (M3)
@@ -1439,10 +1563,26 @@ if _AUTH_ENABLED:
 if settings.multiuser:
     register_homepage(mcp, settings)
 
-register_explorer(mcp, settings, store)
+async def _share_resolver(token: str):
+    """Which brain owns a public /share/<token>? Indexed tenant shares -> that tenant's
+    brain; anything not indexed (legacy owner shares from single-user) -> the owner brain."""
+    handle = registry.capabilities.resolve_public_share(token)
+    if handle is None:
+        return registry.owner.root
+    try:
+        return (await registry.store_for_handle(handle)).root
+    except KBError:
+        return None
+
+
+register_explorer(
+    mcp, settings, store,
+    share_resolver=_share_resolver if settings.multiuser else None,
+)
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
 register_office_widget(mcp, settings, store, resolver=current_store)
+register_social_widget(mcp, settings.widget)
 
 # Multi-user dashboard/onboarding (M1.4). The dashboard offers every configured IdP
 # for browser sign-in (GitHub for devs, Google for everyone else) — independent of

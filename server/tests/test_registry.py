@@ -58,6 +58,12 @@ EXPECTED_TOOLS = frozenset(
         "kb_guest_read",
         "kb_guest_search",
         "kb_send",
+        "kb_inbox_card",
+        "social_state",
+        "social_conversation",
+        "social_send",
+        "social_accept",
+        "social_mark_read",
     }
 )
 

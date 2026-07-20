@@ -1615,13 +1615,22 @@ def _unfence_html(body: str) -> str:
     return text
 
 
-def register(mcp: FastMCP, settings: Settings, store: object | None = None) -> None:
+def register(
+    mcp: FastMCP,
+    settings: Settings,
+    store: object | None = None,
+    share_resolver: object | None = None,
+) -> None:
     """Register all explorer routes, every one behind the Access guard.
 
     ``store`` is the ONE production KBStore instance — passed so the web thread-post
     endpoint routes through the SAME lock-safe kb_thread_post path as the MCP tools (never
     a parallel git writer). When omitted (some tests), a local KBStore is bound as a
     fallback; production MUST pass the shared instance so its single write lock is honored.
+
+    ``share_resolver`` (multi-user) is an async callable(token) -> Path | None that returns
+    which BRAIN a public /share/<token> belongs to. Omitted (single-user) -> /share scans
+    the one owner brain, as before.
     """
     guard = make_guard(settings)
     brain = settings.brain_path
@@ -2566,7 +2575,13 @@ def register(mcp: FastMCP, settings: Settings, store: object | None = None) -> N
         token = str(request.path_params.get("token", ""))
         if len(token) < 20:
             return PlainTextResponse("Not found", status_code=404)
-        found = await to_thread.run_sync(_find_shared_artifact, brain, token)
+        # Multi-user: resolve which brain owns this token; single-user: the one brain.
+        scan_brain = brain
+        if share_resolver is not None:
+            scan_brain = await share_resolver(token)
+            if scan_brain is None:
+                return PlainTextResponse("Not found", status_code=404)
+        found = await to_thread.run_sync(_find_shared_artifact, scan_brain, token)
         if found is None:
             return PlainTextResponse("Not found", status_code=404)
         _target, meta, body_md = found
