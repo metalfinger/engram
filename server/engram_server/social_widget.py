@@ -308,9 +308,13 @@ function partyInfo(handle){
 
 // ─────────────────────────── LIST view ──────────────────────────
 async function loadState(showSkeleton){
+  // The widget's own data plane is the app-only social_state() (full shape). The
+  // model-visible kb_inbox_card launcher returns only a COMPACT summary (to keep the
+  // model's context cheap), so never fetch render data from it — mirrors how the
+  // office widget polls office_state(), not kb_office.
   if(showSkeleton){ state.dataStatus="loading"; renderList(); }
   try{
-    const d=await callTool("kb_inbox_card",{});
+    const d=await callTool("social_state",{});
     if(d && d.error) throw new Error(d.error);
     state.data=(d && typeof d==="object")?d:{}; state.dataStatus="ok";
   }catch(e){ if(!state.data) state.dataStatus="error"; }
