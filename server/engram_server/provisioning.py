@@ -94,8 +94,29 @@ def _skeleton(handle: str) -> dict[str, str]:
     return {
         "index.md": (
             f"# {handle}'s brain\n\n"
+            "* [Welcome](welcome.md) - what Engram is and what you can do\n"
             "* [Projects](projects/index.md) - active work\n"
             "* [Inbox](inbox/index.md) - quick captures awaiting filing\n"
+        ),
+        "welcome.md": (
+            "---\ntype: reference\ntitle: Welcome to Engram\n"
+            f"description: What Engram is and what {handle} can do with it.\n---\n\n"
+            "# Welcome to Engram\n\n"
+            "This is **your brain** — a private, git-backed knowledge base your AI reads and\n"
+            "writes across every session and device. Nothing here is shared unless you say so.\n\n"
+            "## What you can do (just ask your Claude)\n\n"
+            "- **Remember things that outlive a chat.** Decisions, specs, notes, people — say\n"
+            "  \"save this\" and it's written as a concept you'll recall in any future session\n"
+            "  (`kb_write`); load a project's state anytime with `kb_load`.\n"
+            "- **Pick up where you left off.** Start a fresh session on any device and your\n"
+            "  Claude already knows your projects — context, open loops, decisions.\n"
+            "- **Connect with people.** `kb_add_contact(\"@handle\")` to connect, then\n"
+            "  `kb_dm(\"@handle\", \"…\")` to message them — their Claude delivers it.\n"
+            "- **Share knowledge access.** `kb_share_context(\"@handle\", [\"projects/x\"])` lets a\n"
+            "  contact's AI read that part of your brain directly — no copy-paste.\n"
+            "- **Get pinged.** Install the Engram Chrome extension (Sign in with Engram) for a\n"
+            "  desktop alert when someone messages you.\n\n"
+            "Delete this note whenever you like — your brain is yours to shape.\n"
         ),
         "projects/index.md": "# Projects\n\nNothing here yet.\n",
         "inbox/index.md": "# Inbox\n\nNothing here yet.\n",

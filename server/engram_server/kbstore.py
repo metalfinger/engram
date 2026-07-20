@@ -796,7 +796,12 @@ class KBStore:
             if pdir.is_dir()
             else []
         )
-        return ids + ["metalfinger"]
+        # The 'metalfinger' personal top-level tree is the operator's; only surface it
+        # as a pseudo-project when it actually exists. A fresh tenant brain has no such
+        # dir, so this stops a phantom empty 'metalfinger' project appearing for them.
+        if (self.root / "metalfinger").is_dir():
+            ids = ids + ["metalfinger"]
+        return ids
 
     def _count_unread(self, messages_dir: Path) -> int:
         if not messages_dir.is_dir():

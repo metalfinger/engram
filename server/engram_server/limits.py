@@ -122,6 +122,15 @@ class QuotaCache:
 # of reaching into these, so production state never leaks into a test.
 _rate_limiter = RateLimiter()
 _quota_cache = QuotaCache()
+# Separate, tighter budget for thread/DM posts (a post storm is a narrower abuse).
+_thread_limiter = RateLimiter()
+
+
+def check_thread_post(subject: str, limit_per_min: int, limiter: "RateLimiter | None" = None) -> None:
+    """Rate-limit thread/DM posts for a subject on their OWN budget (not the general
+    tool-call one). No-op when limit_per_min <= 0."""
+    if limit_per_min > 0:
+        (limiter or _thread_limiter).check(f"{subject}:post", limit_per_min)
 
 
 # ------------------------------------------------------------------ composed enforcement

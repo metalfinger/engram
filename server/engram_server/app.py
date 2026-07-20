@@ -549,6 +549,7 @@ async def kb_thread_post(
     Returns {thread, seq, status, participants, posted, pushed, warnings} plus {reply, waited?}
     when wait_for_reply=True.
     """
+    _rate_limit_post()
     return await (await current_store()).kb_thread_post(
         thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
     )
@@ -903,6 +904,16 @@ async def kb_unshare_artifact(path: str) -> dict[str, Any]:
 _social_bg: set = set()
 
 
+def _rate_limit_post() -> None:
+    """Apply the tighter thread/DM-post cap to a non-owner caller (M2/#13)."""
+    if not settings.multiuser:
+        return
+    token = get_access_token()
+    if token is None or not token.subject or token.subject in _OWNER_SUBJECTS:
+        return
+    limits.check_thread_post(token.subject, settings.thread_post_per_min)
+
+
 def _require_user():
     """The caller's account, or a KBError teaching that social features need an account."""
     if not settings.multiuser:
@@ -1024,6 +1035,7 @@ async def kb_dm(to: str, message: str) -> dict[str, Any]:
             f"Refusing to send: this message contains what look like secrets ({', '.join(kinds)}). "
             "Remove them — DMs are stored and may be emailed to the recipient."
         )
+    _rate_limit_post()
     conv = registry.social.get_or_create_dm(me.id, other.id)
     msg = registry.social.send_message(conv.id, me.id, message)
     preview = message if len(message) <= 80 else message[:77] + "..."

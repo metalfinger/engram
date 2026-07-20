@@ -45,6 +45,8 @@ def test_provision_creates_pair_and_skeleton(settings):
 
     index = (brain.checkout / "index.md").read_text(encoding="utf-8")
     assert "amiyanshu's brain" in index
+    welcome = (brain.checkout / "welcome.md").read_text(encoding="utf-8")
+    assert "Welcome to Engram" in welcome and "kb_dm" in welcome
     assert (brain.checkout / "projects" / "index.md").is_file()
     assert (brain.checkout / "inbox" / "index.md").is_file()
     assert (brain.checkout / ".gitattributes").is_file()

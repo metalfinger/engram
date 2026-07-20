@@ -148,6 +148,9 @@ class Settings(BaseSettings):
     # short TTL cache); the rate limit is tool calls per minute per token subject.
     tenant_quota_mb: int = 200
     tenant_rate_per_min: int = 120
+    # A thread/DM post storm is a nastier, narrower abuse than general tool chatter,
+    # so posts get their own tighter per-minute cap (0 disables). Owner exempt.
+    thread_post_per_min: int = 20
 
     # Off-site backups (M0.8): nightly mirror of every user bare repo to ONE
     # private git remote, each user on branch users/<handle> (no per-user repo

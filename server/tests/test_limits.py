@@ -39,6 +39,22 @@ class FakeClock:
 # ------------------------------------------------------------------ RateLimiter
 
 
+def test_check_thread_post_uses_own_budget_and_disables_at_zero():
+    from engram_server.limits import RateLimitError, RateLimiter, check_thread_post
+
+    clock = FakeClock()
+    limiter = RateLimiter(clock=clock)
+    for _ in range(3):
+        check_thread_post("google:a@example.com", 3, limiter=limiter)
+    with pytest.raises(RateLimitError):
+        check_thread_post("google:a@example.com", 3, limiter=limiter)
+    # a different subject has its own budget
+    check_thread_post("google:b@example.com", 3, limiter=limiter)
+    # limit 0 disables entirely
+    for _ in range(50):
+        check_thread_post("google:c@example.com", 0, limiter=limiter)
+
+
 def test_rate_limiter_allows_up_to_the_limit():
     clock = FakeClock()
     limiter = RateLimiter(clock=clock)
