@@ -40,6 +40,7 @@ from anyio import to_thread
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from engram_server.provisioning import ensure_user_brain
+from engram_server.social import SocialError
 from engram_server.tenancy import TenancyError
 
 if TYPE_CHECKING:
@@ -372,6 +373,51 @@ class Dashboard:
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
+    def _session_user(self, session: dict):
+        return self.registry.tenancy.user_by_subject(session.get("sub", ""))
+
+    async def add_contact(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        other = self.registry.tenancy.user_by_handle(str(form.get("handle", "")).strip().lstrip("@"))
+        if me is None or other is None:
+            return HTMLResponse(self._render_dashboard(session, error="No such user."), status_code=400)
+        try:
+            c = self.registry.social.request_contact(me.id, other.id)
+            kind = "contact_accepted" if c.status == "accepted" else "contact_request"
+            self.registry.social.create_notification(other.id, kind, f"@{me.handle} wants to connect")
+            return HTMLResponse(self._render_dashboard(session, notice=f"Request sent to @{other.handle}."))
+        except SocialError as exc:
+            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+
+    async def accept_contact(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        other = self.registry.tenancy.user_by_handle(str(form.get("handle", "")).strip().lstrip("@"))
+        if me is None or other is None:
+            return HTMLResponse(self._render_dashboard(session, error="No such user."), status_code=400)
+        try:
+            self.registry.social.accept_contact(me.id, other.id)
+            self.registry.social.create_notification(other.id, "contact_accepted", f"@{me.handle} accepted your request")
+            return HTMLResponse(self._render_dashboard(session, notice=f"You're now connected with @{other.handle}."))
+        except SocialError as exc:
+            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+
+    async def read_notifications(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        if me is not None:
+            self.registry.social.mark_notifications_read(me.id)
+        return HTMLResponse(self._render_dashboard(session, notice="Notifications cleared."))
+
     async def save_profile(self, request: "Request") -> "Response":
         session = self._session(request)
         if session is None:
@@ -512,7 +558,9 @@ class Dashboard:
         banner = (f"<p class=notice>{_html.escape(notice)}</p>" if notice else "") + (
             f"<p class=error>{_html.escape(error)}</p>" if error else ""
         )
-        body = [banner, self._render_profile_block(session, handle), self._connect_block(handle)]
+        body = [banner, self._render_profile_block(session, handle)]
+        body.append(self._render_social_block(session))
+        body.append(self._connect_block(handle))
         body.append(self._render_extension_block(session, handle))
         if self._is_owner(session):
             body.append(self._render_admin())
@@ -548,6 +596,52 @@ class Dashboard:
             "<p>Avatar image URL (https)<br><input name=avatar_url style='width:100%' "
             f"value='{_html.escape(avatar)}' placeholder='https://…/me.png'></p>"
             "<button type=submit>Save profile</button></form></div>"
+        )
+
+    def _render_social_block(self, session: dict) -> str:
+        me = self._session_user(session)
+        if me is None:
+            return ""
+        social = self.registry.social
+        hmap = self.registry.tenancy_handle_map()
+        graph = social.list_contacts(me.id)
+        counts = social.unread_counts(me.id)
+        notes = social.list_notifications(me.id, unread_only=True)
+
+        def _h(uid):
+            return _html.escape(hmap.get(uid, str(uid)))
+
+        contacts = ", ".join(f"@{_h(i)}" for i in graph["accepted"]) or "none yet"
+        incoming = "".join(
+            f"<li>@{_h(i)} "
+            "<form style='display:inline' method=post action='/dashboard/contact/accept'>"
+            f"<input type=hidden name=handle value='{_h(i)}'>"
+            "<button type=submit>accept</button></form></li>"
+            for i in graph["incoming"]
+        ) or "<li>none</li>"
+        outgoing = ", ".join(f"@{_h(i)}" for i in graph["outgoing"]) or "none"
+        notif_items = "".join(
+            f"<li>{_html.escape(n.body)} <span style='opacity:.6;font-size:12px'>{_html.escape(n.created)}</span></li>"
+            for n in notes
+        ) or "<li>No unread notifications.</li>"
+        clear = (
+            "<form method=post action='/dashboard/notifications/read'>"
+            "<button type=submit>Mark all read</button></form>" if notes else ""
+        )
+        return (
+            "<div class=card><h2>Notifications"
+            + (f" <span class=mono>{len(notes)}</span>" if notes else "")
+            + f"</h2><ul>{notif_items}</ul>{clear}"
+            + (f"<p style='font-size:13px;color:#8a7960'>{counts.get('dms', 0)} unread DM(s) — "
+               "read them from your Claude with kb_messages.</p>" if counts.get("dms") else "")
+            + "</div>"
+            "<div class=card><h2>Contacts</h2>"
+            f"<p>{contacts}</p>"
+            f"<p><b>Requests to accept:</b></p><ul>{incoming}</ul>"
+            f"<p style='font-size:13px;color:#8a7960'>Sent, awaiting: {outgoing}</p>"
+            "<form method=post action='/dashboard/contact/add'>"
+            "<input name=handle placeholder='@handle' required> "
+            "<button type=submit>Add contact</button></form></div>"
         )
 
     def _render_extension_block(self, session: dict, handle: str) -> str:
@@ -612,6 +706,9 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
     mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
+    mcp.custom_route("/dashboard/contact/add", ["POST"])(dash.add_contact)
+    mcp.custom_route("/dashboard/contact/accept", ["POST"])(dash.accept_contact)
+    mcp.custom_route("/dashboard/notifications/read", ["POST"])(dash.read_notifications)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
