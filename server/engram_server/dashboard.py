@@ -29,6 +29,7 @@ constructing Starlette requests.
 from __future__ import annotations
 
 import html as _html
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -357,6 +358,29 @@ class Dashboard:
         )
         return HTMLResponse(self._render_dashboard(session, notice=note))
 
+    async def create_github_invite(self, request: "Request") -> "Response":
+        """Invite by GitHub username — bound to that GitHub identity, no email needed.
+        The owner shares the returned link; only that GitHub account can accept."""
+        session = self._session(request)
+        if session is None or not self._is_owner(session):
+            return PlainTextResponse("Only the operator can send invites.", status_code=403)
+        form = await request.form()
+        login = re.sub(r"[^a-zA-Z0-9-]", "", str(form.get("login", "")).strip().lstrip("@")).lower()
+        if not login:
+            return HTMLResponse(self._render_dashboard(session, error="Enter a GitHub username."), status_code=400)
+        inviter = self.registry.tenancy.user_by_subject(session.get("sub", ""))
+        try:
+            invite = self.registry.tenancy.create_invite(
+                f"{login}@users.noreply.github.com",
+                invited_by=inviter.id if inviter else None,
+                bind_subject=f"github:{login}",
+            )
+        except TenancyError as exc:
+            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+        join_url = f"{self.settings.public_url}/join?token={invite.token}"
+        note = f"Invite for GitHub @{login} — send them this link: {join_url}"
+        return HTMLResponse(self._render_dashboard(session, notice=note))
+
     async def revoke_invite(self, request: "Request") -> "Response":
         session = self._session(request)
         if session is None or not self._is_owner(session):
@@ -682,9 +706,15 @@ class Dashboard:
         return (
             "<div class=card><h2>Members</h2><ul>" + rows + "</ul></div>"
             "<div class=card><h2>Invite someone</h2>"
+            "<p style='font-size:13px;color:#8a7960'>By email (they sign in with Google or GitHub):</p>"
             "<form method=post action='/dashboard/invite'>"
             "<p><input name=email type=email placeholder='colleague@example.com' required> "
             "<button type=submit>Send invite</button></p></form>"
+            "<p style='font-size:13px;color:#8a7960'>Or by GitHub username (no email — you share the link; "
+            "only that GitHub account can accept):</p>"
+            "<form method=post action='/dashboard/invite/github'>"
+            "<p><input name=login placeholder='octocat' required> "
+            "<button type=submit>Invite GitHub user</button></p></form>"
             "<h3>Pending invites</h3><ul>" + inv_rows + "</ul></div>"
         )
 
@@ -703,6 +733,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/join", ["GET"])(dash.join)
     mcp.custom_route("/join/claim", ["POST"])(dash.claim)
     mcp.custom_route("/dashboard/invite", ["POST"])(dash.create_invite)
+    mcp.custom_route("/dashboard/invite/github", ["POST"])(dash.create_github_invite)
     mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
     mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)

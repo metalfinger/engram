@@ -102,6 +102,27 @@ def test_invite_accept_creates_user_and_consumes_invite(tenancy):
         )
 
 
+def test_github_bound_invite_only_that_subject_can_accept(tenancy):
+    inv = tenancy.create_invite(
+        "octocat@users.noreply.github.com", bind_subject="github:octocat"
+    )
+    assert inv.bind_subject == "github:octocat"
+    # a different identity cannot accept it
+    with pytest.raises(TenancyError, match="reserved for github:octocat"):
+        tenancy.accept_invite(inv.token, "cat", "cat@x.com", "google", "google:someone@x.com")
+    # the bound GitHub identity can
+    user = tenancy.accept_invite(
+        inv.token, "octocat", "octocat@users.noreply.github.com", "github", "github:octocat"
+    )
+    assert user.handle == "octocat"
+
+
+def test_github_bound_invite_refused_if_subject_has_account(tenancy):
+    tenancy.bootstrap_owner("hiren", "h@x.com", "github", "github:metalfinger")
+    with pytest.raises(TenancyError, match="already has an account"):
+        tenancy.create_invite("x@users.noreply.github.com", bind_subject="github:metalfinger")
+
+
 def test_invite_expired_and_revoked_paths(tenancy):
     expired = tenancy.create_invite("late@example.com", ttl_days=-1)
     with pytest.raises(TenancyError, match="expired"):

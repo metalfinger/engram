@@ -112,6 +112,9 @@ class Invite:
     expires: str
     accepted_by: int | None
     revoked: bool
+    # When set (e.g. "github:octocat"), ONLY that exact identity may accept — the
+    # basis for GitHub-username invites (no email delivery needed).
+    bind_subject: str | None = None
 
     @property
     def live(self) -> bool:
@@ -142,7 +145,8 @@ CREATE TABLE IF NOT EXISTS invites (
     created TEXT NOT NULL,
     expires TEXT NOT NULL,
     accepted_by INTEGER REFERENCES users(id),
-    revoked INTEGER NOT NULL DEFAULT 0
+    revoked INTEGER NOT NULL DEFAULT 0,
+    bind_subject TEXT
 );
 """
 
@@ -162,6 +166,9 @@ class TenancyStore:
             for col in ("display_name", "avatar_url"):
                 if col not in cols:
                     self._conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+            icols = {r[1] for r in self._conn.execute("PRAGMA table_info(invites)")}
+            if "bind_subject" not in icols:
+                self._conn.execute("ALTER TABLE invites ADD COLUMN bind_subject TEXT")
             self._conn.commit()
 
     def close(self) -> None:
@@ -297,7 +304,7 @@ class TenancyStore:
             token=row["token"], email=row["email"], preset=row["preset"],
             invited_by=row["invited_by"], created=row["created"],
             expires=row["expires"], accepted_by=row["accepted_by"],
-            revoked=bool(row["revoked"]),
+            revoked=bool(row["revoked"]), bind_subject=row["bind_subject"],
         )
 
     def create_invite(
@@ -306,18 +313,21 @@ class TenancyStore:
         preset: str = "member",
         invited_by: int | None = None,
         ttl_days: int = _INVITE_TTL_DAYS,
+        bind_subject: str | None = None,
     ) -> Invite:
         email = email.strip()
         if "@" not in email or len(email) < 5:
             raise TenancyError(f"{email!r} does not look like an email address.")
         if self.user_by_email(email) is not None:
             raise TenancyError(f"{email} already has an account — no invite needed.")
+        if bind_subject is not None and self.user_by_subject(bind_subject) is not None:
+            raise TenancyError(f"{bind_subject} already has an account — no invite needed.")
         token = secrets.token_urlsafe(24)
         with self._lock:
             self._conn.execute(
-                "INSERT INTO invites (token, email, preset, invited_by, created, expires) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (token, email, preset, invited_by, _now(), _days_from_now(ttl_days)),
+                "INSERT INTO invites (token, email, preset, invited_by, created, expires, bind_subject) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (token, email, preset, invited_by, _now(), _days_from_now(ttl_days), bind_subject),
             )
             self._conn.commit()
         invite = self.get_invite(token)
@@ -374,6 +384,10 @@ class TenancyStore:
                 raise TenancyError("This invite was already used.")
             if invite.expires <= _now():
                 raise TenancyError("This invite has expired — ask for a fresh one.")
+            if invite.bind_subject is not None and invite.bind_subject != idp_subject:
+                raise TenancyError(
+                    f"This invite is reserved for {invite.bind_subject} — sign in as that account to accept."
+                )
             user = self._insert_user(canonical, email, idp, idp_subject)
             self._conn.execute(
                 "UPDATE invites SET accepted_by = ? WHERE token = ?",
