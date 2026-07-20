@@ -40,8 +40,30 @@ The "100x workspace" wave — sessions coordinate in real time. **Threads** (`kb
 ## Auto-presence (shipped 2026-07-09)
 Sessions now announce themselves to the roster automatically — no `kb_presence` call. **Spool pattern** (the only lock-safe way): Claude Code hooks (`hooks/` in this repo, installed to `~/.claude/hooks/` + wired into settings.json SessionStart/UserPromptSubmit/SessionEnd) do a bare JSON file write to `~/.engram/presence-spool/<session>.json` (git-detected repo/branch/remote/host, status working→done on SessionEnd) — they NEVER touch the checkout. The server ingests the spool on a ~30s scheduler tick (`engram_server/presence_spool.py` → `kbstore._presence_write_batch`), upserting through its single write lock in ONE batched commit, deduped/throttled (re-commit only on a meaningful field change OR record >`presence_refresh_minutes` stale). No second git writer ever exists. Config (`ENGRAM_` prefix): `presence_spool_dir`, `presence_ingest_seconds=30`, `presence_refresh_minutes=5`. 440 tests. Decision + build: `decisions/2026-07-auto-presence-spool.md`; per-PC install: `hooks/README.md`.
 
-## v2 direction (documented, not started)
-Social brains — federated knowledge, AI-mediated (public shelves, guest MCP, cross-brain adoption, agent-to-agent Q&A). The vision + reserved conventions live in the brain: `projects/engram/ideas/2026-07-social-brains.md`. Do not start before the personal-tightening backlog below is done and Hiren says go.
+## v2 multi-user — BUILT (2026-07-20), gated OFF by `ENGRAM_MULTIUSER`
+The whole social/multi-tenant vision shipped as code, dormant until the operator flips
+`ENGRAM_MULTIUSER=1` (single-user is byte-identical with it off). Milestones: **M0** tenant
+engine (per-user brains under `~/.engram/users/<handle>/`, `registry` store map,
+`current_store()`/`current_user()` seams, Qdrant `user_id` isolation, adversarial
+`test_isolation_harness.py`, quotas, nightly off-site mirror), **M1** front door (accounts
+replace the allowlist, email + **GitHub-username** invites, homepage, dashboard +
+magic-link onboarding — OAuth only, no passwords; owner auto-admin via `owner_subjects`),
+**M2** social (contacts/DMs/notifications in the NEUTRAL `engram.db`, never in a brain;
+fanout email/Chrome), **M3** context sharing (capability tokens + `kb_guest_read`/
+`kb_guest_search`, boundary-safe `covers_path`, `kb_send`). Plus: Chrome notifier extension
+(`clients/chrome-extension/`, OAuth sign-in), profile avatars, Messages widget
+(`kb_inbox_card`), dashboard social panel. Architecture principle: Engram is DATA +
+COORDINATION only — **no server-side LLM**; all intelligence runs on the user's own Claude
+(`decisions/2026-07-no-server-llm.md`). Runbook: `docs/MULTIUSER-SETUP.md`. To go live the
+operator must: set `ENGRAM_MULTIUSER=1` + a 32-char `ENGRAM_DASHBOARD_SESSION_SECRET`,
+register `/dashboard/callback` in the GitHub+Google OAuth apps, set `ENGRAM_BACKUP_REMOTE`
+(hard gate), restart. 867 tests. Future (NOT built): per-user explorer at `brain.*` (M4),
+persona/"alt" distillation, headless triage (the only thing needing a cloud LLM).
+
+## v2 social-brains vision (documented, future)
+Federated knowledge, AI-mediated (public shelves, guest MCP, cross-brain adoption,
+agent-to-agent Q&A). Vision + the multi-user build plan live in the brain:
+`projects/engram/ideas/2026-07-social-brains.md` + `specs/v2-build-plan.md`.
 
 ## MCP Apps wave 2 (shipped 2026-07-10)
 Spec-compliance pass (ext-apps 2026-01-26; explicit visibility + teardown ack + shape-pin tests) + `kb_meetings` (live thread transcripts + reply-as-Hiren from any claude.ai chat incl. mobile; app-only data tools = zero context cost) + `kb_office` (glanceable office card, floor art via resources/read). Spec: `projects/engram/specs/mcp-apps-wave-2.md` in the brain. 565 tests, 30 model-visible tools (+4 app-only).

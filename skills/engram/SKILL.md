@@ -145,6 +145,7 @@ These tools exist only when Engram runs multi-user (other people have accounts).
   - `kb_shared_with_me()` lists what others have shared with you and until when.
   - `kb_guest_read("@owner", path)` reads one shared concept; `kb_guest_search("@owner", query)` searches within the shared paths. Both are STRICTLY scoped to the granted path prefixes — a grant on `projects/alt` never exposes `projects/alt-secret`, a sibling, or a linked-but-unshared neighbour. If a read is refused, the user needs a broader grant (`kb_request_context`).
 - **Send a one-off.** `kb_send("@contact", path)` copies ONE concept from your brain into a contact's inbox with `adopted_from` provenance — a one-time copy, not a live grant. Requires being contacts; their Claude finds it in `inbox/imports/` next session.
+- **Messages widget (claude.ai).** `kb_inbox_card` mounts a Messages card — DMs, contact requests, and notifications, glanceable and interactive in chat. Call it when the user asks to see/open their messages or inbox in a claude.ai chat; after it mounts, say one short line and let them use it.
 
 ## Token thrift — every kb_* result lands in Hiren's context and costs his plan
 

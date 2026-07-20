@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-07-10.meetings-widget"
+SERVER_VERSION = "2026-07-20.v2-multiuser"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -52,6 +52,12 @@ CHANGES = (
     "office.json: sessions[] is live-only (+recent[])",
     "presence: automatic via Claude Code hooks (hooks/README.md in the code repo)",
     "skill: token-thrift rules — sync your local copy",
+    "v2 MULTI-USER: accounts/invites/dashboard; your @handle is your identity everywhere",
+    "contacts + DMs: kb_add_contact / kb_accept_contact / kb_dm / kb_messages",
+    "context sharing: kb_share_context / kb_request_context / kb_guest_read / kb_guest_search",
+    "kb_send: copy a concept into a contact's inbox with provenance",
+    "kb_inbox_card: Messages widget (DMs/contacts/notifications) in claude.ai",
+    "notifications: kb_notifications + Chrome extension (clients/chrome-extension)",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.
