@@ -18,6 +18,7 @@ the one place to fix it.
 
 from __future__ import annotations
 
+import html as _html
 import logging
 from typing import Any
 
@@ -47,17 +48,23 @@ def build_invite_email(
         "If you weren't expecting this, you can ignore this email."
     )
 
+    # Escape every interpolated value before embedding in HTML (defense-in-depth:
+    # inviter_name is a validated handle and join_url is server-built, but the HTML
+    # email should never trust an interpolated string).
+    safe_lead = _html.escape(lead)
+    safe_from = _html.escape(from_name)
+    safe_url = _html.escape(join_url, quote=True)
     html = (
         '<div style="font-family: -apple-system, Segoe UI, sans-serif; '
         'max-width: 480px; margin: 0 auto; padding: 24px; color: #1a1a1a;">'
-        f"<p style=\"font-size: 15px;\">{lead} <strong>{from_name}</strong>, "
+        f"<p style=\"font-size: 15px;\">{safe_lead} <strong>{safe_from}</strong>, "
         "a private cross-session knowledge base.</p>"
         '<p style="margin: 24px 0;">'
-        f'<a href="{join_url}" style="background: #2563eb; color: #ffffff; '
+        f'<a href="{safe_url}" style="background: #2563eb; color: #ffffff; '
         'padding: 10px 20px; border-radius: 6px; text-decoration: none; '
         f'font-size: 14px; display: inline-block;">Accept invite</a></p>'
         '<p style="font-size: 13px; color: #666;">Or copy this link: '
-        f'<a href="{join_url}">{join_url}</a></p>'
+        f'<a href="{safe_url}">{safe_url}</a></p>'
         "</div>"
     )
 

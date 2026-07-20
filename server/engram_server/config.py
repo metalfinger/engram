@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     # matching oauth/provider.subject_for's "<idp>:<login>" format.
     owner_handle: str = "hiren"
     owner_subjects: str = "github:metalfinger"
+    # Owner's account email (M2): so the operator is a first-class user in the social
+    # graph (contacts/DMs/notifications). Empty -> synthesized as <owner_handle>@engram.local.
+    owner_email: str = ""
 
     # M1 dashboard + onboarding (browser session on the MCP host, separate from the
     # MCP bearer-token OAuth and from the explorer's Cloudflare Access).
@@ -128,6 +131,11 @@ class Settings(BaseSettings):
     cf_email_account_id: str = ""
     invite_from_email: str = "no-reply@metalfinger.xyz"
     invite_from_name: str = "Engram"
+
+    # M2 notifications. Telegram push channel: empty bot token = channel off (email
+    # + dashboard badge still work). Per-user chat linking is a later step; a user
+    # with no linked chat id simply doesn't get Telegram pushes.
+    telegram_bot_token: str = ""
 
     # Search isolation (M0.5): every Qdrant point is stamped with this tenant id
     # and every query/delete/scroll carries it as a mandatory filter. The shared

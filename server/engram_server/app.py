@@ -27,9 +27,9 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
 from engram_server.config import Settings, get_settings
 from engram_server.doctor import run_doctor
-from engram_server.errors import GitError
+from engram_server.errors import GitError, KBError
 from engram_server.explorer import register as register_explorer
-from engram_server.kbstore import KBStore
+from engram_server.kbstore import KBStore, _scan_secrets
 from engram_server.meetings_widget import (
     meeting_reply as _meeting_reply_impl,
 )
@@ -43,7 +43,7 @@ from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.office_widget import register_office_widget
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
-from engram_server import limits
+from engram_server import limits, notify
 from engram_server.dashboard import register_dashboard
 from engram_server.explorer.homepage import register_homepage
 from engram_server.oauth.store import InMemoryOAuthStore
@@ -83,6 +83,17 @@ async def current_store() -> KBStore:
         # operator is never throttled or quota-capped.
         limits.enforce(resolved, token.subject, settings)
     return resolved
+
+
+def current_user():
+    """M2 social identity — resolve the caller to their tenancy account (User), or
+    None when there's no auth context (localhost/tests) or no account. Distinct from
+    current_store(): social tools key on WHO you are, not which brain you own. The
+    owner is bootstrapped into an account at startup so they appear here too."""
+    token = get_access_token()
+    if token is None or not token.subject:
+        return None
+    return registry.tenancy.user_by_subject(token.subject)
 
 
 # ------------------------------------------------------------------ auth (optional)
@@ -245,8 +256,21 @@ async def kb_load(project: str, lite: bool = False) -> dict[str, Any]:
     newer tools (writes here are still safe). Do this only when there's an actual gap.
 
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
+
+    In multi-user mode the result also carries a `social` block {unread_dms, unread_notifications}
+    — surface these too when non-zero (the user has new DMs / notifications waiting;
+    kb_notifications and kb_messages show them).
     """
-    return await (await current_store()).kb_load(project, lite)
+    result = await (await current_store()).kb_load(project, lite)
+    if settings.multiuser:
+        user = current_user()
+        if user is not None:
+            counts = registry.social.unread_counts(user.id)
+            result["social"] = {
+                "unread_dms": counts.get("dms", 0),
+                "unread_notifications": counts.get("notifications", 0),
+            }
+    return result
 
 
 @mcp.tool()
@@ -868,6 +892,208 @@ async def kb_unshare_artifact(path: str) -> dict[str, Any]:
     return await (await current_store()).kb_unshare_artifact(path)
 
 
+# ------------------------------------------------------------------ social (M2)
+#
+# Contacts, DMs, and notifications live in the neutral engram.db (registry.social),
+# NOT in anyone's brain. Every tool resolves the caller via current_user() (WHO you
+# are, not which brain you own) and refuses outside multiuser. DM bodies are
+# secret-scanned at THIS boundary before they touch the shared DB.
+
+_social_bg: set = set()
+
+
+def _require_user():
+    """The caller's account, or a KBError teaching that social features need an account."""
+    if not settings.multiuser:
+        return None  # single-user: social tools are inert (handled per-tool)
+    user = current_user()
+    if user is None:
+        raise KBError(
+            "Social features need an Engram account. Accept an invite at "
+            f"{settings.public_url}/ and sign in, then try again."
+        )
+    return user
+
+
+def _push_notification(user_id: int, kind: str, body: str, ref: str | None = None) -> None:
+    """Persist a notification and fan it out (email/telegram) best-effort, off the
+    caller's critical path. Fanout never raises; a failed push never fails the tool."""
+    social = registry.social
+    social.create_notification(user_id, kind, body, ref)
+    recipient_user = registry.tenancy  # resolve email for the push
+    user = None
+    for u in recipient_user.list_users():
+        if u.id == user_id:
+            user = u
+            break
+    if user is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    recipient = notify.Recipient(handle=user.handle, email=user.email, telegram_chat_id=None, prefs={})
+    task = loop.create_task(
+        notify.fanout(settings, recipient, {"kind": kind, "body": body, "ref": ref})
+    )
+    _social_bg.add(task)
+    task.add_done_callback(_social_bg.discard)
+
+
+@mcp.tool()
+async def kb_contacts() -> dict[str, Any]:
+    """List your Engram contacts and pending requests. Call when the user asks who
+    they're connected to, or before sending a DM to check a contact exists.
+    Contacts are mutual-consent: you can only DM someone you're both connected to.
+
+    Returns {contacts: [@handle...], incoming: [@handle...] (requests to accept),
+    outgoing: [@handle...] (requests you sent, awaiting)}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"contacts": [], "incoming": [], "outgoing": [], "note": "single-user mode"}
+    graph = registry.social.list_contacts(me.id)
+    handle = registry.tenancy_handle_map()
+    return {
+        "contacts": [handle.get(i, str(i)) for i in graph["accepted"]],
+        "incoming": [handle.get(i, str(i)) for i in graph["incoming"]],
+        "outgoing": [handle.get(i, str(i)) for i in graph["outgoing"]],
+    }
+
+
+@mcp.tool()
+async def kb_add_contact(handle: str) -> dict[str, Any]:
+    """Send a contact request to another Engram user by @handle. They must accept
+    before you can DM. If they already requested you, this accepts it (mutual).
+    Use when the user says to connect with / add / follow someone.
+
+    Returns {status: 'pending'|'accepted', handle}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Contacts require multi-user mode.")
+    other = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    contact = registry.social.request_contact(me.id, other.id)
+    if contact.status == "accepted":
+        _push_notification(other.id, "contact_accepted", f"@{me.handle} is now your contact")
+    else:
+        _push_notification(other.id, "contact_request", f"@{me.handle} wants to connect")
+    return {"status": contact.status, "handle": other.handle}
+
+
+@mcp.tool()
+async def kb_accept_contact(handle: str) -> dict[str, Any]:
+    """Accept a pending contact request from @handle. After this you can DM each other.
+    Use when the user says to accept / approve a contact request.
+
+    Returns {status: 'accepted', handle}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Contacts require multi-user mode.")
+    other = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    registry.social.accept_contact(me.id, other.id)
+    _push_notification(other.id, "contact_accepted", f"@{me.handle} accepted your request")
+    return {"status": "accepted", "handle": other.handle}
+
+
+@mcp.tool()
+async def kb_dm(to: str, message: str) -> dict[str, Any]:
+    """Send a direct message to a contact by @handle. You must both be contacts first
+    (kb_add_contact). Use when the user says to message / DM / tell another Engram user
+    something. The recipient gets a notification (and a push if they've enabled one).
+
+    Returns {sent: true, to, at}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("DMs require multi-user mode.")
+    other = registry.tenancy.user_by_handle(to.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{to.lstrip('@')}.")
+    # Secret-scan at the boundary — the DM lands in the shared DB (and a push email).
+    findings = _scan_secrets(message)
+    if findings:
+        kinds = sorted({k for k, _ in findings})
+        raise KBError(
+            f"Refusing to send: this message contains what look like secrets ({', '.join(kinds)}). "
+            "Remove them — DMs are stored and may be emailed to the recipient."
+        )
+    conv = registry.social.get_or_create_dm(me.id, other.id)
+    msg = registry.social.send_message(conv.id, me.id, message)
+    preview = message if len(message) <= 80 else message[:77] + "..."
+    _push_notification(other.id, "dm", f"@{me.handle}: {preview}", ref=str(conv.id))
+    return {"sent": True, "to": other.handle, "at": msg.created}
+
+
+@mcp.tool()
+async def kb_messages(with_handle: str = "", since: str = "") -> dict[str, Any]:
+    """Read your DMs. With no argument, lists your conversations (each with the other
+    party, last message, and unread count). With with_handle=@someone, returns that
+    conversation's messages and marks them read. Call at session start or when the user
+    asks about their messages / who messaged them.
+
+    Returns either {conversations: [...]} or {with, messages: [{from, body, at}...]}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"conversations": [], "note": "single-user mode"}
+    handle = registry.tenancy_handle_map()
+    if not with_handle:
+        convs = registry.social.list_conversations(me.id)
+        out = []
+        for c in convs:
+            others = [handle.get(m, str(m)) for m in c["members"] if m != me.id]
+            last = c["last_message"]
+            out.append({
+                "with": others[0] if len(others) == 1 else others,
+                "title": c["title"],
+                "unread": c["unread"],
+                "last": (last.body[:80] if last else None),
+            })
+        return {"conversations": out}
+    other = registry.tenancy.user_by_handle(with_handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{with_handle.lstrip('@')}.")
+    if not registry.social.are_contacts(me.id, other.id):
+        raise KBError(f"You're not contacts with @{other.handle} yet.")
+    conv = registry.social.get_or_create_dm(me.id, other.id)
+    msgs = registry.social.list_messages(conv.id, me.id, since=since or None)
+    registry.social.mark_read(conv.id, me.id)
+    return {
+        "with": other.handle,
+        "messages": [
+            {"from": handle.get(m.sender_id, str(m.sender_id)), "body": m.body, "at": m.created}
+            for m in msgs
+        ],
+    }
+
+
+@mcp.tool()
+async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
+    """List your unread Engram notifications (new DMs, contact requests, invite
+    acceptances). Pass mark_read=True to mark them all read after showing them.
+    Call at session start to surface what happened while you were away.
+
+    Returns {unread: [{kind, body, at}...], counts: {dms, notifications}}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"unread": [], "counts": {"dms": 0, "notifications": 0}, "note": "single-user mode"}
+    notes = registry.social.list_notifications(me.id, unread_only=True)
+    counts = registry.social.unread_counts(me.id)
+    if mark_read:
+        registry.social.mark_notifications_read(me.id)
+    return {
+        "unread": [{"kind": n.kind, "body": n.body, "at": n.created} for n in notes],
+        "counts": counts,
+    }
+
+
 # ------------------------------------------------------------------ prompts
 # One-tap workflows for claude.ai (the host surfaces these as runnable prompts).
 
@@ -1030,6 +1256,9 @@ def main() -> None:
             "(IdP client id + secret); unauthenticated multiuser would serve "
             "the owner brain to every caller."
         )
+    if settings.multiuser:
+        # Bootstrap the operator's account so they're a first-class social user.
+        registry.ensure_owner_account()
     if settings.multiuser and len(settings.dashboard_session_secret) < 32:
         # The dashboard signs its browser session cookie with this secret (HS256);
         # a short/empty secret would let anyone forge an onboarding/admin session.

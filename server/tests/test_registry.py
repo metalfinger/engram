@@ -45,6 +45,12 @@ EXPECTED_TOOLS = frozenset(
         "meetings_state",
         "meeting_transcript",
         "meeting_reply",
+        "kb_contacts",
+        "kb_add_contact",
+        "kb_accept_contact",
+        "kb_dm",
+        "kb_messages",
+        "kb_notifications",
     }
 )
 

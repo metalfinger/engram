@@ -34,6 +34,8 @@ CURRENT_TOOLS = (
     "kb_claim", "kb_release", "kb_claims",
     "kb_meetings", "meetings_state", "meeting_transcript", "meeting_reply",
     "kb_office", "office_state",
+    "kb_contacts", "kb_add_contact", "kb_accept_contact",
+    "kb_dm", "kb_messages", "kb_notifications",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so

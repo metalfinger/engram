@@ -27,6 +27,7 @@ from .config import Settings
 from .errors import KBError
 from .kbstore import KBStore
 from .provisioning import ensure_user_brain, user_settings
+from .social import SocialStore
 from .tenancy import TenancyStore
 
 
@@ -45,6 +46,7 @@ class StoreRegistry:
         self._stores: dict[str, KBStore] = {}
         self._construct_lock = asyncio.Lock()
         self._tenancy: TenancyStore | None = None
+        self._social: SocialStore | None = None
         self._owner_subjects = frozenset(
             s.strip() for s in settings.owner_subjects.split(",") if s.strip()
         )
@@ -55,6 +57,32 @@ class StoreRegistry:
         if self._tenancy is None:
             self._tenancy = TenancyStore(tenancy_db_path(self._settings))
         return self._tenancy
+
+    @property
+    def social(self) -> SocialStore:
+        """Contacts/DMs/notifications over the SAME engram.db as tenancy. Touch
+        tenancy first so its `users` table exists before social's FKs reference it."""
+        if self._social is None:
+            _ = self.tenancy  # ensure users table is created
+            self._social = SocialStore(tenancy_db_path(self._settings))
+        return self._social
+
+    def tenancy_handle_map(self) -> dict[int, str]:
+        """{user_id: handle} for rendering social ids as @handles in tool output."""
+        return {u.id: u.handle for u in self.tenancy.list_users()}
+
+    def ensure_owner_account(self):
+        """Bootstrap the operator as a first-class account so they join the social
+        graph (contacts/DMs/notifications) like any user. Idempotent; owner keeps
+        mapping to the original brain via owner_subjects regardless."""
+        subject = next(iter(sorted(self._owner_subjects)), None)
+        if subject is None:
+            return None
+        idp = subject.split(":", 1)[0]
+        email = self._settings.owner_email or f"{self._settings.owner_handle}@engram.local"
+        return self.tenancy.bootstrap_owner(
+            self._settings.owner_handle, email, idp, subject
+        )
 
     def cached_handles(self) -> list[str]:
         """Handles with a live store this process (for iteration/diagnostics)."""
