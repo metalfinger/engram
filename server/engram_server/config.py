@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     presence_ingest_seconds: int = 30
     presence_refresh_minutes: int = 5
 
+    # v2 multi-tenancy (M0). Single-user behavior is untouched while multiuser is
+    # False. tenancy_db_path holds accounts/invites (SQLite, WAL); users_root is
+    # where per-user brains live (users_root/<handle>/brain.git bare + /brain
+    # checkout). Empty strings resolve to the ~/.engram defaults below.
+    multiuser: bool = False
+    tenancy_db_path: str = ""  # empty -> Path.home()/".engram"/"engram.db"
+    users_root: str = ""  # empty -> Path.home()/".engram"/"users"
+
 
 @lru_cache
 def get_settings() -> Settings:
