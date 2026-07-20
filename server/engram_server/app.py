@@ -44,6 +44,8 @@ from engram_server.office_widget import register_office_widget
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server import limits
+from engram_server.dashboard import register_dashboard
+from engram_server.explorer.homepage import register_homepage
 from engram_server.oauth.store import InMemoryOAuthStore
 from engram_server.registry import StoreRegistry
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -99,6 +101,26 @@ _AUTH_ENABLED = _idp_creds_present(settings)
 _provider: ProxyOAuthProvider | None = None
 _auth_kwargs: dict[str, Any] = {}
 
+_OWNER_SUBJECTS = frozenset(
+    s.strip() for s in settings.owner_subjects.split(",") if s.strip()
+)
+
+
+def _allow_subject(subject: str) -> bool:
+    """Authorization predicate for the MCP OAuth layer (M1.1).
+
+    Owner subjects always pass. In single-user mode nobody else does — the old
+    allowlist-of-one behavior. In multiuser, an active tenancy account passes;
+    everyone else is refused (they must accept an invite on the dashboard first).
+    """
+    if subject in _OWNER_SUBJECTS:
+        return True
+    if not settings.multiuser:
+        return False
+    user = registry.tenancy.user_by_subject(subject)
+    return user is not None and user.status == "active"
+
+
 if _AUTH_ENABLED:
     _oauth_store = InMemoryOAuthStore(path=settings.oauth_store_path or None)
     _idp = get_idp(settings.oauth_provider, settings)
@@ -107,9 +129,7 @@ if _AUTH_ENABLED:
         idp=_idp,
         public_url=settings.public_url,
         callback_path=settings.oauth_callback_path,
-        allowed_logins=frozenset(
-            login.strip() for login in settings.allowed_logins.split(",") if login.strip()
-        ),
+        allow_subject=_allow_subject,
     )
     _auth_kwargs = {
         "auth_server_provider": _provider,
@@ -942,11 +962,14 @@ if _AUTH_ENABLED:
                 redirect = await handle_callback(_provider, code=code, state=state, http=http)
             except LoginNotAllowedError as exc:
                 # MUST precede the generic handlers: names the login, states policy.
-                return PlainTextResponse(
-                    f"403 Forbidden: '{exc.login}' is not on the allowlist. "
-                    "This server is private — only Hiren's accounts may connect.",
-                    status_code=403,
+                msg = (
+                    f"403 Forbidden: '{exc.login}' has no Engram account yet. "
+                    f"Accept your invite at {settings.public_url}/ first, then reconnect."
+                    if settings.multiuser
+                    else f"403 Forbidden: '{exc.login}' is not on the allowlist. "
+                    "This server is private — only Hiren's accounts may connect."
                 )
+                return PlainTextResponse(msg, status_code=403)
             except ValueError:
                 return PlainTextResponse("invalid or expired login state", status_code=400)
             except (httpx.HTTPError, Exception):  # noqa: B014 — mirror Survey's callback
@@ -961,6 +984,18 @@ register_explorer(mcp, settings, store)
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
 register_office_widget(mcp, settings, store, resolver=current_store)
+
+# Public homepage + multi-user dashboard/onboarding (M1). The dashboard offers
+# every configured IdP for browser sign-in (GitHub for devs, Google for everyone
+# else) — independent of settings.oauth_provider, which only picks the MCP
+# connector's IdP. Homepage is public; dashboard is a no-op outside multiuser.
+register_homepage(mcp, settings)
+_dashboard_idps: dict = {}
+if settings.github_client_id and settings.github_client_secret:
+    _dashboard_idps["github"] = get_idp("github", settings)
+if settings.google_client_id and settings.google_client_secret:
+    _dashboard_idps["google"] = get_idp("google", settings)
+register_dashboard(mcp, settings, registry, _dashboard_idps)
 
 
 # ------------------------------------------------------------------ entrypoint
@@ -988,6 +1023,15 @@ def main() -> None:
             "engram: refusing to start — ENGRAM_MULTIUSER=1 requires OAuth "
             "(IdP client id + secret); unauthenticated multiuser would serve "
             "the owner brain to every caller."
+        )
+    if settings.multiuser and len(settings.dashboard_session_secret) < 32:
+        # The dashboard signs its browser session cookie with this secret (HS256);
+        # a short/empty secret would let anyone forge an onboarding/admin session.
+        raise SystemExit(
+            "engram: refusing to start — ENGRAM_MULTIUSER=1 requires "
+            "ENGRAM_DASHBOARD_SESSION_SECRET of at least 32 characters "
+            "(signs the dashboard session cookie). Generate one with e.g. "
+            "`python -c \"import secrets;print(secrets.token_urlsafe(32))\"`."
         )
     if settings.dev_no_access and not (
         _public_host.startswith(("localhost", "127.0.0.1"))

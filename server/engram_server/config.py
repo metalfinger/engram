@@ -113,6 +113,22 @@ class Settings(BaseSettings):
     owner_handle: str = "hiren"
     owner_subjects: str = "github:metalfinger"
 
+    # M1 dashboard + onboarding (browser session on the MCP host, separate from the
+    # MCP bearer-token OAuth and from the explorer's Cloudflare Access).
+    # dashboard_session_secret signs the session cookie (HMAC) — REQUIRED in
+    # multiuser (main() refuses to start without it). dashboard_google/github creds
+    # default to the same app creds as the MCP OAuth unless overridden.
+    dashboard_session_secret: str = ""
+    dashboard_session_ttl_hours: int = 168  # 7 days
+
+    # Invite email (Cloudflare Email Sending REST API). Empty api_token = mailer
+    # disabled: create_invite still works, the dashboard just shows the link to
+    # copy manually instead of emailing it.
+    cf_email_api_token: str = ""
+    cf_email_account_id: str = ""
+    invite_from_email: str = "no-reply@metalfinger.xyz"
+    invite_from_name: str = "Engram"
+
     # Search isolation (M0.5): every Qdrant point is stamped with this tenant id
     # and every query/delete/scroll carries it as a mandatory filter. The shared
     # collection is the ONE cross-tenant surface — per-user stores override this

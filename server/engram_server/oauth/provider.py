@@ -43,23 +43,39 @@ class ProxyOAuthProvider:
         public_url: str,
         callback_path: str,
         allowed_logins: frozenset[str] = frozenset(),
+        allow_subject: Callable[[str], bool] | None = None,
         token_factory: Callable[..., str] = secrets.token_urlsafe,
     ):
         self.store = store
         self.idp = idp
         self.public_url = public_url.rstrip("/")
         self.callback_path = callback_path
-        self.allowed_logins = frozenset(login.lower() for login in allowed_logins)
         self._new = token_factory
+        # M1: authorization is a subject-level predicate. In multiuser it consults
+        # the tenancy DB (owner + active accounts); pass ``allow_subject``. When it's
+        # absent we fall back to the legacy static allowlist (single-user, tests) so
+        # existing callers keep working unchanged.
+        legacy = frozenset(login.lower() for login in allowed_logins)
+        self.allowed_logins = legacy
+        self._allow_subject = allow_subject or self._legacy_allow
+
+    def _legacy_allow(self, subject: str) -> bool:
+        """Static-allowlist predicate (single-user / tests): '<idp>:<login>' in the set."""
+        login = self._login_from_subject(subject)
+        return login is not None and login.lower() in self.allowed_logins
 
     @property
     def callback_url(self) -> str:
         return f"{self.public_url}{self.callback_path}"
 
-    # --- allowlist ---
+    # --- authorization ---
+    def allow_subject(self, subject: str) -> bool:
+        """Is this token subject permitted to connect? Fails closed."""
+        return self._allow_subject(subject)
+
     def is_allowed(self, user: UpstreamUser) -> bool:
-        """Case-insensitive allowlist check. Fails closed: an empty allowlist admits nobody."""
-        return user.login.lower() in self.allowed_logins
+        """Whether an upstream-authenticated user may mint a token."""
+        return self._allow_subject(self.subject_for(user))
 
     def subject_for(self, user: UpstreamUser) -> str:
         """Stable token subject, e.g. 'github:metalfinger'."""
@@ -148,13 +164,12 @@ class ProxyOAuthProvider:
     async def exchange_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
     ) -> OAuthToken:
-        # Re-check the allowlist: a login removed after issuance must not keep refreshing.
-        # The SDK's TokenHandler catches TokenError and returns an RFC 6749 error (HTTP 400).
-        login = self._login_from_subject(refresh_token.subject)
-        if login is None or login.lower() not in self.allowed_logins:
-            self.store.del_refresh(refresh_token.token)
-            raise TokenError(error="invalid_grant", error_description="login is no longer allowed")
+        # Re-check authorization: an account suspended/removed after issuance must not
+        # keep refreshing. The SDK's TokenHandler catches TokenError -> RFC 6749 (HTTP 400).
         subject = refresh_token.subject
+        if subject is None or not self._allow_subject(subject):
+            self.store.del_refresh(refresh_token.token)
+            raise TokenError(error="invalid_grant", error_description="account is no longer allowed")
         access = self._new(32)
         self.store.put_access(
             AccessToken(
