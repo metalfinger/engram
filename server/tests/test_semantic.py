@@ -100,7 +100,25 @@ class FakeQdrant:
 
     @staticmethod
     def _match(query_filter, payload) -> bool:
-        return all(payload.get(c.key) == c.match.value for c in query_filter.must)
+        # Recursive: must lists now always carry the nested tenant Filter
+        # (should=[FieldCondition, IsEmptyCondition]) from M0.5 search isolation.
+        def _cond(cond) -> bool:
+            is_empty = getattr(cond, "is_empty", None)
+            if is_empty is not None:
+                value = payload.get(is_empty.key)
+                return value is None or value == "" or value == []
+            match = getattr(cond, "match", None)
+            if match is not None:
+                return payload.get(cond.key) == match.value
+            return FakeQdrant._match(cond, payload)  # nested Filter
+
+        must = query_filter.must or []
+        should = query_filter.should or []
+        if must and not all(_cond(c) for c in must):
+            return False
+        if should and not any(_cond(c) for c in should):
+            return False
+        return True
 
 
 def _index() -> SemanticIndex:

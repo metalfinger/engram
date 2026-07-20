@@ -49,20 +49,45 @@ class FakeQdrant:
         for p in points:
             self.points[collection_name][p.id] = (p.vector, p.payload)
 
+    # Recursive filter matcher: must lists now always carry the nested tenant
+    # Filter (should=[FieldCondition, IsEmptyCondition]) from M0.5 search isolation.
+    @staticmethod
+    def _match(query_filter, payload) -> bool:
+        def _cond(cond) -> bool:
+            is_empty = getattr(cond, "is_empty", None)
+            if is_empty is not None:
+                value = payload.get(is_empty.key)
+                return value is None or value == "" or value == []
+            match = getattr(cond, "match", None)
+            if match is not None:
+                return payload.get(cond.key) == match.value
+            return FakeQdrant._match(cond, payload)  # nested Filter
+
+        must = getattr(query_filter, "must", None) or []
+        should = getattr(query_filter, "should", None) or []
+        if must and not all(_cond(c) for c in must):
+            return False
+        if should and not any(_cond(c) for c in should):
+            return False
+        return True
+
     def delete(self, collection_name, points_selector):
         if hasattr(points_selector, "points"):
             for pid in points_selector.points:
                 self.points[collection_name].pop(str(pid), None)
             return
-        cond = points_selector.must[0]
-        drop = [pid for pid, (_v, pl) in self.points[collection_name].items() if pl.get(cond.key) == cond.match.value]
+        drop = [
+            pid
+            for pid, (_v, pl) in self.points[collection_name].items()
+            if self._match(points_selector, pl)
+        ]
         for pid in drop:
             del self.points[collection_name][pid]
 
     def scroll(self, collection_name, scroll_filter=None, with_vectors=True, with_payload=True, limit=10000):
         recs = []
         for pid, (vec, pl) in self.points[collection_name].items():
-            if scroll_filter is not None and not all(pl.get(c.key) == c.match.value for c in scroll_filter.must):
+            if scroll_filter is not None and not self._match(scroll_filter, pl):
                 continue
             recs.append(SimpleNamespace(id=pid, vector=list(vec), payload=pl))
         return recs, None

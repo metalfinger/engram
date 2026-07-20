@@ -15,6 +15,9 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any, Callable, Coroutine
 
+from anyio import to_thread
+
+from .backup import mirror_all
 from .briefing import build_briefing
 from .config import Settings
 from .presence_spool import ingest_spool
@@ -67,6 +70,15 @@ class Scheduler:
             )
         if briefing_t:
             self._jobs.append(("briefing", briefing_t, lambda: build_briefing(self._store)))
+        # Off-site mirror of tenant bares (M0.8) — only scheduled when a remote is
+        # configured. mirror_all is synchronous git subprocess work, so it runs in
+        # a worker thread; the event loop (and the stores' write locks) never block.
+        backup_t = _parse_hhmm(self._settings.backup_at) if self._settings.backup_remote else None
+        if backup_t:
+            self._jobs.append(
+                ("backup", backup_t,
+                 lambda: to_thread.run_sync(lambda: mirror_all(self._settings)))
+            )
         ingest_secs = self._settings.presence_ingest_seconds
         if ingest_secs and ingest_secs > 0:
             self._interval_jobs.append(

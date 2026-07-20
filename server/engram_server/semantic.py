@@ -11,6 +11,13 @@ any body preamble) plus one chunk per ``##`` section body, hard-capped at
 ~1500 chars. Point ids are ``uuid5(path#heading#idx)`` so re-indexing a file
 upserts deterministically; ``upsert_file`` also deletes the file's prior points
 first, so shrinking a document never leaves orphan chunks behind.
+
+Multi-tenancy: every point is stamped with ``user_id`` (``settings.tenant_id``)
+and every read/mutation carries it as a mandatory filter condition (see
+``_tenant_condition``) — the shared Qdrant collection is otherwise the one
+cross-tenant leak in an else-isolated-per-user system. The "hiren" tenant is
+grandfathered: its point ids and filter both stay compatible with points
+indexed before this existed (see ``_point_id`` / ``_tenant_condition``).
 """
 
 from __future__ import annotations
@@ -150,6 +157,7 @@ class SemanticIndex:
     def __init__(self, settings: Settings, controls: _FakeControls | None = None) -> None:
         self.settings = settings
         self.collection = settings.qdrant_collection
+        self.tenant = settings.tenant_id
         self._ctl = controls or _FakeControls()
         self._collection_ready = False
 
@@ -199,6 +207,25 @@ class SemanticIndex:
 
         return qm
 
+    def _tenant_condition(self) -> Any:
+        """Mandatory tenant-scoping condition, folded into the ``must=[...]`` list of
+        EVERY Qdrant read/mutation that touches points (search, scroll, delete) — the
+        one thing that stands between tenants sharing this collection. Non-hiren
+        tenants require an exact user_id match. "hiren" points that predate the
+        user_id field entirely (indexed before multi-tenancy) must still be his —
+        so his condition is a nested Filter(should=...) matching EITHER
+        user_id == "hiren" OR the field missing, instead of a single equality check.
+        """
+        qm = self._models()
+        if self.tenant == "hiren":
+            return qm.Filter(
+                should=[
+                    qm.FieldCondition(key="user_id", match=qm.MatchValue(value="hiren")),
+                    qm.IsEmptyCondition(is_empty=qm.PayloadField(key="user_id")),
+                ]
+            )
+        return qm.FieldCondition(key="user_id", match=qm.MatchValue(value=self.tenant))
+
     # ------------------------------------------------------------------ collection
 
     def ensure_collection(self) -> bool:
@@ -216,9 +243,10 @@ class SemanticIndex:
                     ),
                 )
             # Qdrant Cloud requires a payload index for every filtered field
-            # (delete-by-path on upsert; project/type filters at search time) —
-            # without these, filtered requests 400. Idempotent per field.
-            for field in ("path", "project", "type"):
+            # (delete-by-path on upsert; project/type filters at search time;
+            # user_id on every call post-multi-tenancy) — without these, filtered
+            # requests 400. Idempotent per field.
+            for field in ("path", "project", "type", "user_id"):
                 try:
                     client.create_payload_index(
                         collection_name=self.collection,
@@ -271,11 +299,18 @@ class SemanticIndex:
             "description": str(meta.get("description") or ""),
             "heading": chunk.heading,
             "timestamp": str(meta.get("timestamp") or ""),
+            "user_id": self.tenant,
         }
 
-    @staticmethod
-    def _point_id(path: str, heading: str, idx: int) -> str:
-        return str(uuid.uuid5(_NAMESPACE, f"{path}#{heading}#{idx}"))
+    def _point_id(self, path: str, heading: str, idx: int) -> str:
+        # Tenant-namespaced so two users' same repo-relative path never collide on
+        # one point id. Back-compat: "hiren" is the pre-multi-tenant tenant and
+        # production's Qdrant Cloud collection already has points under the OLD
+        # name format (no tenant folded in) — keep that exact format for "hiren"
+        # so this change never orphans his existing indexed points. Every other
+        # tenant gets the tenant folded into the uuid5 name.
+        name = f"{path}#{heading}#{idx}" if self.tenant == "hiren" else f"{self.tenant}:{path}#{heading}#{idx}"
+        return str(uuid.uuid5(_NAMESPACE, name))
 
     # ------------------------------------------------------------------ writes
 
@@ -312,7 +347,10 @@ class SemanticIndex:
         records, _next = self._client().scroll(
             collection_name=self.collection,
             scroll_filter=qm.Filter(
-                must=[qm.FieldCondition(key="path", match=qm.MatchValue(value=path))]
+                must=[
+                    qm.FieldCondition(key="path", match=qm.MatchValue(value=path)),
+                    self._tenant_condition(),
+                ]
             ),
             with_vectors=True,
             with_payload=True,
@@ -409,7 +447,10 @@ class SemanticIndex:
         self._client().delete(
             collection_name=self.collection,
             points_selector=qm.Filter(
-                must=[qm.FieldCondition(key="path", match=qm.MatchValue(value=path))]
+                must=[
+                    qm.FieldCondition(key="path", match=qm.MatchValue(value=path)),
+                    self._tenant_condition(),
+                ]
             ),
         )
 
@@ -431,14 +472,16 @@ class SemanticIndex:
         try:
             qvec = self._embed([query])[0]
             qm = self._models()
-            conditions = []
+            # Tenant condition is mandatory, not opt-in like project/type — a bare
+            # search() with no filters must still never cross tenants.
+            conditions = [self._tenant_condition()]
             if project:
                 conditions.append(
                     qm.FieldCondition(key="project", match=qm.MatchValue(value=project))
                 )
             if type:
                 conditions.append(qm.FieldCondition(key="type", match=qm.MatchValue(value=type)))
-            query_filter = qm.Filter(must=conditions) if conditions else None
+            query_filter = qm.Filter(must=conditions)
             # qdrant-client >= 1.12 removed .search(); query_points is the API.
             hits = self._client().query_points(
                 collection_name=self.collection,
