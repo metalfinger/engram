@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     tenancy_db_path: str = ""  # empty -> Path.home()/".engram"/"engram.db"
     users_root: str = ""  # empty -> Path.home()/".engram"/"users"
 
+    # The operator: OAuth subjects that map to the ORIGINAL brain (settings.brain_path
+    # + its GitHub remote) instead of a provisioned users_root brain. Comma-separated,
+    # matching oauth/provider.subject_for's "<idp>:<login>" format.
+    owner_handle: str = "hiren"
+    owner_subjects: str = "github:metalfinger"
+
     # Search isolation (M0.5): every Qdrant point is stamped with this tenant id
     # and every query/delete/scroll carries it as a mandatory filter. The shared
     # collection is the ONE cross-tenant surface — per-user stores override this

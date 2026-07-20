@@ -44,12 +44,17 @@ from engram_server.office_widget import register_office_widget
 from engram_server.oauth.idp import get_idp
 from engram_server.oauth.provider import LoginNotAllowedError, ProxyOAuthProvider, handle_callback
 from engram_server.oauth.store import InMemoryOAuthStore
+from engram_server.registry import StoreRegistry
 from engram_server.scheduler import start_schedulers
 
 log = logging.getLogger("engram.app")
 
 settings = get_settings()
-store = KBStore(settings)
+registry = StoreRegistry(settings)
+# Single-user surfaces (explorer, office, widgets, scheduler, presence spool) stay
+# owner-scoped; per-request tenant resolution arrives in M0.4 via
+# registry.store_for_subject(subject-from-access-token).
+store = registry.owner
 
 
 # ------------------------------------------------------------------ auth (optional)
