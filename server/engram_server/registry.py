@@ -25,6 +25,7 @@ from anyio import to_thread
 
 from .config import Settings
 from .errors import KBError
+from .capabilities import CapabilityStore
 from .kbstore import KBStore
 from .provisioning import ensure_user_brain, user_settings
 from .social import SocialStore
@@ -47,6 +48,7 @@ class StoreRegistry:
         self._construct_lock = asyncio.Lock()
         self._tenancy: TenancyStore | None = None
         self._social: SocialStore | None = None
+        self._capabilities: CapabilityStore | None = None
         self._owner_subjects = frozenset(
             s.strip() for s in settings.owner_subjects.split(",") if s.strip()
         )
@@ -66,6 +68,14 @@ class StoreRegistry:
             _ = self.tenancy  # ensure users table is created
             self._social = SocialStore(tenancy_db_path(self._settings))
         return self._social
+
+    @property
+    def capabilities(self) -> CapabilityStore:
+        """Share requests + capability grants over the SAME engram.db (M3)."""
+        if self._capabilities is None:
+            _ = self.tenancy
+            self._capabilities = CapabilityStore(tenancy_db_path(self._settings))
+        return self._capabilities
 
     def tenancy_handle_map(self) -> dict[int, str]:
         """{user_id: handle} for rendering social ids as @handles in tool output."""
@@ -106,6 +116,20 @@ class StoreRegistry:
             )
         if user.handle == self._settings.owner_handle:
             return self.owner
+        return await self._store_for_handle(user.handle)
+
+    async def store_for_handle(self, handle: str) -> KBStore:
+        """The store for a NAMED user (M3 guest reads read someone else's brain).
+        Owner handle -> the original brain; an active tenant -> their provisioned
+        brain. Raises if the handle is unknown or suspended. Authorization that the
+        CALLER may read this store is enforced separately (capability check)."""
+        if handle == self._settings.owner_handle:
+            return self.owner
+        user = self.tenancy.user_by_handle(handle)
+        if user is None:
+            raise KBError(f"No Engram user @{handle}.")
+        if user.status != "active":
+            raise KBError(f"@{handle}'s account is not active.")
         return await self._store_for_handle(user.handle)
 
     async def _store_for_handle(self, handle: str) -> KBStore:

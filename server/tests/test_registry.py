@@ -51,6 +51,13 @@ EXPECTED_TOOLS = frozenset(
         "kb_dm",
         "kb_messages",
         "kb_notifications",
+        "kb_share_context",
+        "kb_request_context",
+        "kb_grant_request",
+        "kb_shared_with_me",
+        "kb_guest_read",
+        "kb_guest_search",
+        "kb_send",
     }
 )
 

@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Engram Notifications — Options</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        max-width: 480px;
+        font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #fff;
+        color: #1b1b1f;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #1e1f22;
+          color: #e7e7ea;
+        }
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 4px;
+      }
+      p.hint {
+        opacity: 0.7;
+        margin: 0 0 16px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(127, 127, 127, 0.4);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+      button {
+        margin-top: 12px;
+        padding: 8px 16px;
+        border-radius: 6px;
+        border: 1px solid #3a5cd6;
+        background: #3a5cd6;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 13px;
+        min-height: 18px;
+      }
+      #status.ok {
+        color: #2a9d5c;
+      }
+      #status.err {
+        color: #d64545;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Engram Notifications</h1>
+    <p class="hint">
+      Copy your extension token from the Engram dashboard (Settings → Extension token) and paste
+      it below. The origin defaults to the hosted instance — change it only if you're self-hosting
+      or testing locally.
+    </p>
+    <label for="token">Extension token</label>
+    <input type="text" id="token" placeholder="paste your extension token" />
+    <label for="origin" style="margin-top: 16px">Engram origin</label>
+    <input type="text" id="origin" placeholder="https://engram.metalfinger.xyz" />
+    <div>
+      <button id="save">Save</button>
+    </div>
+    <div id="status"></div>
+    <script src="options.js"></script>
+  </body>
+</html>

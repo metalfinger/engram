@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -1092,6 +1093,219 @@ async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
         "unread": [{"kind": n.kind, "body": n.body, "at": n.created} for n in notes],
         "counts": counts,
     }
+
+
+# ------------------------------------------------------------------ context sharing (M3)
+#
+# The core Engram feature: grant another user SCOPED read access to part of YOUR
+# brain, so their Claude reads your shelf directly. Every guest read checks a
+# capability (owner, grantee, path, verb) against the OWNER's store — a capability
+# NEVER exposes anything outside its granted path prefixes, and guest reads force
+# depth=0 so a shared concept's links can't leak an unshared neighbour.
+
+
+def _covered_prefixes(owner_id: int, grantee_id: int, verb: str) -> list[str]:
+    """Union of path prefixes the grantee holds a live `verb` capability for."""
+    prefixes: list[str] = []
+    for cap in registry.capabilities.list_granted_to(grantee_id, live_only=True):
+        if cap.owner_id == owner_id and verb in cap.verbs:
+            prefixes.extend(cap.paths)
+    return prefixes
+
+
+@mcp.tool()
+async def kb_share_context(with_handle: str, paths: list[str], verbs: list[str] = ["read", "search"], days: int = 30) -> dict[str, Any]:
+    """Grant another Engram user scoped read access to part of YOUR brain by @handle.
+    Use when the user says to share a project/folder with someone so THEIR AI can read
+    it. paths = repo-relative prefixes in your brain (e.g. ['projects/alt']); verbs =
+    any of read/search/browse; days = how long before it expires. The grantee is
+    notified. Revoke anytime the grant shows in kb_shared_with_me on their side; you
+    manage yours implicitly by letting it expire or asking to revoke.
+
+    Returns {granted_to, paths, verbs, expires}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Context sharing requires multi-user mode.")
+    other = registry.tenancy.user_by_handle(with_handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{with_handle.lstrip('@')}.")
+    cap = registry.capabilities.grant(me.id, other.id, paths, verbs, days=days)
+    _push_notification(
+        other.id, "context_shared",
+        f"@{me.handle} shared {', '.join(cap.paths)} with you (kb_guest_read/@{me.handle})",
+    )
+    return {"granted_to": other.handle, "paths": cap.paths, "verbs": cap.verbs, "expires": cap.expires}
+
+
+@mcp.tool()
+async def kb_request_context(owner_handle: str, paths: list[str], reason: str = "") -> dict[str, Any]:
+    """Ask another Engram user for scoped read access to part of THEIR brain.
+    Use when the user wants access to someone's project and doesn't have it yet.
+    paths = prefixes in the owner's brain you want; reason = a short why. The owner is
+    notified and can approve with kb_grant_request.
+
+    Returns {requested_from, paths, status: 'pending'}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Context sharing requires multi-user mode.")
+    owner = registry.tenancy.user_by_handle(owner_handle.lstrip("@"))
+    if owner is None:
+        raise KBError(f"No Engram user @{owner_handle.lstrip('@')}.")
+    req = registry.capabilities.create_request(me.id, owner.id, paths, reason)
+    _push_notification(
+        owner.id, "context_request",
+        f"@{me.handle} requests access to {', '.join(req.paths)}"
+        + (f" — {reason}" if reason else ""),
+    )
+    return {"requested_from": owner.handle, "paths": req.paths, "status": req.status}
+
+
+@mcp.tool()
+async def kb_grant_request(from_handle: str, approve: bool = True, verbs: list[str] = ["read", "search"], days: int = 30) -> dict[str, Any]:
+    """Approve (or deny) a pending context-access request someone sent YOU.
+    Use when the user decides on a request surfaced by kb_notifications. On approve,
+    a capability for the requested paths is minted with the given verbs/expiry and the
+    requester is notified.
+
+    Returns {from, status: 'approved'|'denied', paths?, expires?}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Context sharing requires multi-user mode.")
+    other = registry.tenancy.user_by_handle(from_handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{from_handle.lstrip('@')}.")
+    pending = [r for r in registry.capabilities.list_incoming_requests(me.id) if r.requester_id == other.id]
+    if not pending:
+        raise KBError(f"No pending access request from @{other.handle}.")
+    req = pending[0]
+    registry.capabilities.resolve_request(req.id, me.id, approve)
+    if not approve:
+        _push_notification(other.id, "context_denied", f"@{me.handle} declined your access request")
+        return {"from": other.handle, "status": "denied"}
+    cap = registry.capabilities.grant(me.id, other.id, req.paths, verbs, days=days)
+    _push_notification(
+        other.id, "context_granted",
+        f"@{me.handle} granted you {', '.join(cap.paths)} (kb_guest_read/@{me.handle})",
+    )
+    return {"from": other.handle, "status": "approved", "paths": cap.paths, "expires": cap.expires}
+
+
+@mcp.tool()
+async def kb_shared_with_me() -> dict[str, Any]:
+    """List the brains (and paths) other Engram users have shared with you — what you
+    can reach via kb_guest_read / kb_guest_search. Call when the user asks what they
+    have access to.
+
+    Returns {grants: [{from, paths, verbs, expires}...]}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"grants": [], "note": "single-user mode"}
+    handle = registry.tenancy_handle_map()
+    grants = []
+    for cap in registry.capabilities.list_granted_to(me.id, live_only=True):
+        grants.append({
+            "from": handle.get(cap.owner_id, str(cap.owner_id)),
+            "paths": cap.paths, "verbs": cap.verbs, "expires": cap.expires,
+        })
+    return {"grants": grants}
+
+
+@mcp.tool()
+async def kb_guest_read(owner_handle: str, path: str) -> dict[str, Any]:
+    """Read a concept from ANOTHER user's brain that they've shared with you.
+    Use when the user wants to look at a specific file in a shelf @someone shared
+    (check kb_shared_with_me for what's available). Only paths covered by a live
+    'read' grant are reachable; anything else is refused. Links are not expanded
+    (a shared concept can't leak an unshared neighbour).
+
+    Returns {owner, path, content, meta}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Guest reads require multi-user mode.")
+    owner = registry.tenancy.user_by_handle(owner_handle.lstrip("@"))
+    if owner is None:
+        raise KBError(f"No Engram user @{owner_handle.lstrip('@')}.")
+    if not registry.capabilities.check(owner.id, me.id, path, "read"):
+        raise KBError(
+            f"You don't have a 'read' grant covering {path!r} from @{owner.handle}. "
+            "Ask for access with kb_request_context."
+        )
+    owner_store = await registry.store_for_handle(owner.handle)
+    result = await owner_store.kb_read(path, depth=0)  # depth 0: never expand to unshared neighbours
+    return {"owner": owner.handle, "path": result["path"], "content": result["content"], "meta": result["meta"]}
+
+
+@mcp.tool()
+async def kb_guest_search(owner_handle: str, query: str) -> dict[str, Any]:
+    """Search ANOTHER user's brain within what they've shared with you. Use when the
+    user asks a question that a shared shelf would answer ('what did @X decide about
+    auth?'). Results are limited to paths covered by a live 'search' grant.
+
+    Returns {owner, results: [{path, score, snippet}...]}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Guest search requires multi-user mode.")
+    owner = registry.tenancy.user_by_handle(owner_handle.lstrip("@"))
+    if owner is None:
+        raise KBError(f"No Engram user @{owner_handle.lstrip('@')}.")
+    prefixes = _covered_prefixes(owner.id, me.id, "search")
+    if not prefixes:
+        raise KBError(f"You don't have a 'search' grant from @{owner.handle}.")
+    owner_store = await registry.store_for_handle(owner.handle)
+    hits = await owner_store.kb_search(query)
+    results = hits.get("results", hits) if isinstance(hits, dict) else hits
+    covered = [
+        h for h in results
+        if registry.capabilities.check(owner.id, me.id, h.get("path", ""), "search")
+    ]
+    return {"owner": owner.handle, "results": covered}
+
+
+@mcp.tool()
+async def kb_send(to_handle: str, path: str) -> dict[str, Any]:
+    """Send a concept from YOUR brain to a contact's inbox — a one-time copy with
+    provenance, not a live grant. Use when the user says to send / forward a specific
+    note or doc to another Engram user. They must be a contact. Their Claude finds it
+    in their inbox next session.
+
+    Returns {sent_to, as_path}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("kb_send requires multi-user mode.")
+    other = registry.tenancy.user_by_handle(to_handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{to_handle.lstrip('@')}.")
+    if not registry.social.are_contacts(me.id, other.id):
+        raise KBError(f"You can only send to a contact — connect with @{other.handle} first.")
+    src = await (await current_store()).kb_read(path, depth=0)
+    findings = _scan_secrets(src["content"])
+    if findings:
+        raise KBError("Refusing to send: the concept contains what look like secrets.")
+    # Strip the source's own frontmatter so the sent copy has exactly ONE (ours).
+    raw = src["content"]
+    body_only = raw
+    if raw.startswith("---"):
+        parts = raw.split("\n---", 1)
+        if len(parts) == 2:
+            body_only = parts[1].lstrip("\n")
+    slug = posixpath.basename(path).removesuffix(".md") or "shared"
+    dest = f"inbox/imports/from-{me.handle}-{slug}.md"
+    body = (
+        f"---\ntype: shared\nshared_by: {me.handle}\n"
+        f"adopted_from: brain://{me.handle}/{path}\n"
+        f"description: shared by {me.handle}\n---\n\n{body_only}\n"
+    )
+    recipient_store = await registry.store_for_handle(other.handle)
+    await recipient_store.kb_write(dest, body, f"chore: shared from @{me.handle}")
+    _push_notification(other.id, "shared_concept", f"@{me.handle} sent you {slug} (in your inbox)", ref=dest)
+    return {"sent_to": other.handle, "as_path": dest}
 
 
 # ------------------------------------------------------------------ prompts

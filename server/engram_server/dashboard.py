@@ -62,21 +62,30 @@ class DashboardAuth:
         self._secret = secret
         self._ttl = ttl_seconds
 
-    def issue(self, subject: str, email: str, handle: str | None) -> str:
+    def issue(self, subject: str, email: str, handle: str | None,
+              ttl: int | None = None, scope: str = "session") -> str:
         now = int(time.time())
         return jwt.encode(
-            {"sub": subject, "email": email, "handle": handle, "iat": now, "exp": now + self._ttl},
+            {"sub": subject, "email": email, "handle": handle, "scope": scope,
+             "iat": now, "exp": now + (ttl if ttl is not None else self._ttl)},
             self._secret,
             algorithm="HS256",
         )
 
-    def verify(self, cookie: str | None) -> dict | None:
+    def verify(self, cookie: str | None, expected_scope: str = "session") -> dict | None:
+        """Decode + validate a token, REQUIRING it was issued for ``expected_scope``.
+        This stops a token minted for one purpose (e.g. the long-lived extension
+        'notify' token) being replayed for another (a full dashboard 'session')."""
         if not cookie:
             return None
         try:
-            return jwt.decode(cookie, self._secret, algorithms=["HS256"])
+            claims = jwt.decode(cookie, self._secret, algorithms=["HS256"])
         except jwt.PyJWTError:
             return None
+        # Legacy/unscoped tokens count as 'session' so pre-scope cookies still verify.
+        if claims.get("scope", "session") != expected_scope:
+            return None
+        return claims
 
 
 @dataclass
@@ -254,7 +263,7 @@ class Dashboard:
             resp = HTMLResponse(self._render_claim(user.login, invite.email))
             resp.set_cookie(
                 "engram_onboarding",
-                self.auth.issue(subject, invite.email, None),
+                self.auth.issue(subject, invite.email, None, ttl=900, scope="onboarding"),
                 max_age=900, httponly=True, secure=True, samesite="lax", path="/join",
             )
             resp.set_cookie(
@@ -277,7 +286,7 @@ class Dashboard:
         return self._logged_in_redirect(subject, user.login, handle)
 
     async def claim(self, request: "Request") -> "Response":
-        onboarding = self.auth.verify(request.cookies.get("engram_onboarding"))
+        onboarding = self.auth.verify(request.cookies.get("engram_onboarding"), expected_scope="onboarding")
         invite_token = request.cookies.get("engram_invite")
         if onboarding is None or not invite_token:
             return PlainTextResponse("Onboarding session expired — reopen your invite link.", status_code=400)
@@ -324,6 +333,46 @@ class Dashboard:
         resp = RedirectResponse("/dashboard/login", status_code=302)
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
+
+    # -- extension notification API (bearer-token, for the Chrome notifier) ---
+
+    _EXT_TOKEN_TTL = 30 * 24 * 3600  # scope='notify' only — cannot act as a session
+
+    def _bearer_user(self, request: "Request"):
+        """Resolve the Authorization: Bearer <extension token> to a tenancy user, or None.
+        Requires scope='notify' — a session cookie can't be replayed on this API, nor
+        this token replayed as a session."""
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer "):
+            return None
+        claims = self.auth.verify(auth[7:].strip(), expected_scope="notify")
+        if claims is None:
+            return None
+        return self.registry.tenancy.user_by_subject(claims.get("sub", ""))
+
+    async def api_notifications(self, request: "Request") -> "Response":
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request)
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        social = self.registry.social
+        notes = social.list_notifications(user.id, unread_only=True)
+        counts = social.unread_counts(user.id)
+        return JSONResponse({
+            "ok": True,
+            "unread": [{"id": n.id, "kind": n.kind, "body": n.body, "at": n.created} for n in notes],
+            "counts": counts,
+        })
+
+    async def api_mark_read(self, request: "Request") -> "Response":
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request)
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        self.registry.social.mark_notifications_read(user.id)
+        return JSONResponse({"ok": True})
 
     def _logged_in_redirect(self, subject: str, email_or_login: str, handle: str) -> "Response":
         resp = RedirectResponse("/dashboard", status_code=302)
@@ -401,11 +450,28 @@ class Dashboard:
             f"<p class=error>{_html.escape(error)}</p>" if error else ""
         )
         body = [banner, self._connect_block(handle)]
+        body.append(self._render_extension_block(session, handle))
         if self._is_owner(session):
             body.append(self._render_admin())
         body.append("<div class=card><form method=post action='/dashboard/logout'>"
                     "<button type=submit>Sign out</button></form></div>")
         return self._page(f"Welcome, @{handle}", "".join(body))
+
+    def _render_extension_block(self, session: dict, handle: str) -> str:
+        """The long-lived bearer token the Chrome notifier extension pastes into its options."""
+        token = self.auth.issue(
+            session["sub"], session.get("email", ""), handle,
+            ttl=self._EXT_TOKEN_TTL, scope="notify",
+        )
+        return (
+            "<div class=card><h2>Desktop notifications</h2>"
+            "<p>Install the Engram Chrome extension, open its Options, and paste this "
+            "token (and your server URL). It'll ping you when you get a DM.</p>"
+            f"<p><span class=mono style='word-break:break-all'>{_html.escape(token)}</span></p>"
+            "<p style='font-size:13px;color:#8a7960'>Treat this like a password — anyone "
+            "with it can read your notifications. Rotate by asking the operator to reset "
+            "the server secret.</p></div>"
+        )
 
     def _render_admin(self) -> str:
         users = self.registry.tenancy.list_users()
@@ -448,4 +514,6 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/invite", ["POST"])(dash.create_invite)
     mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
+    mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
+    mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
     return dash
