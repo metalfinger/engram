@@ -151,6 +151,24 @@ def test_unique_handle_email_subject(tenancy):
 # -- listings + status ------------------------------------------------------
 
 
+def test_set_profile(tenancy):
+    tenancy.bootstrap_owner("hiren", "hir@example.com", "github", "github:metalfinger")
+    u = tenancy.set_profile("hiren", display_name="Hiren K", avatar_url="https://cdn.example/me.png")
+    assert u.display_name == "Hiren K"
+    assert u.avatar_url == "https://cdn.example/me.png"
+    # partial update leaves the other field
+    u = tenancy.set_profile("hiren", display_name="H")
+    assert u.display_name == "H" and u.avatar_url == "https://cdn.example/me.png"
+    # non-https avatar refused
+    with pytest.raises(TenancyError, match="https"):
+        tenancy.set_profile("hiren", avatar_url="http://insecure/x.png")
+    with pytest.raises(TenancyError, match="javascript|https"):
+        tenancy.set_profile("hiren", avatar_url="javascript:alert(1)")
+    # clearing works (empty string -> None)
+    u = tenancy.set_profile("hiren", avatar_url="")
+    assert u.avatar_url is None
+
+
 def test_listings_and_status(tenancy):
     tenancy.bootstrap_owner("hiren", "hir.012612@gmail.com", "github", "github:metalfinger")
     live = tenancy.create_invite("x@example.com")

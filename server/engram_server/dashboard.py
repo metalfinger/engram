@@ -372,6 +372,24 @@ class Dashboard:
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
+    async def save_profile(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        handle = self._account_handle(session)
+        if handle is None:
+            return PlainTextResponse("No account.", status_code=403)
+        form = await request.form()
+        try:
+            self.registry.tenancy.set_profile(
+                handle,
+                display_name=str(form.get("display_name", "")),
+                avatar_url=str(form.get("avatar_url", "")),
+            )
+            return HTMLResponse(self._render_dashboard(session, notice="Profile saved."))
+        except TenancyError as exc:
+            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+
     # -- extension notification API (bearer-token, for the Chrome notifier) ---
 
     _EXT_TOKEN_TTL = 30 * 24 * 3600  # scope='notify' only — cannot act as a session
@@ -494,13 +512,43 @@ class Dashboard:
         banner = (f"<p class=notice>{_html.escape(notice)}</p>" if notice else "") + (
             f"<p class=error>{_html.escape(error)}</p>" if error else ""
         )
-        body = [banner, self._connect_block(handle)]
+        body = [banner, self._render_profile_block(session, handle), self._connect_block(handle)]
         body.append(self._render_extension_block(session, handle))
         if self._is_owner(session):
             body.append(self._render_admin())
         body.append("<div class=card><form method=post action='/dashboard/logout'>"
                     "<button type=submit>Sign out</button></form></div>")
         return self._page(f"Welcome, @{handle}", "".join(body))
+
+    def _avatar_img(self, user, size: int = 40) -> str:
+        """A safe <img> for a user's avatar (escaped https URL), or a letter fallback."""
+        if user is not None and user.avatar_url:
+            return (
+                f"<img src='{_html.escape(user.avatar_url, quote=True)}' "
+                f"width={size} height={size} alt='' "
+                f"style='border-radius:50%;object-fit:cover;vertical-align:middle'>"
+            )
+        letter = (user.handle[0].upper() if user else "?")
+        return (
+            f"<span style='display:inline-flex;width:{size}px;height:{size}px;border-radius:50%;"
+            "background:#c26a3f;color:#fff;align-items:center;justify-content:center;"
+            f"font-weight:600;vertical-align:middle'>{_html.escape(letter)}</span>"
+        )
+
+    def _render_profile_block(self, session: dict, handle: str) -> str:
+        user = self.registry.tenancy.user_by_handle(handle)
+        name = (user.display_name if user else "") or ""
+        avatar = (user.avatar_url if user else "") or ""
+        return (
+            "<div class=card><h2>Your profile</h2>"
+            f"<p>{self._avatar_img(user)} <span class=mono>@{_html.escape(handle)}</span></p>"
+            "<form method=post action='/dashboard/profile'>"
+            "<p>Display name<br><input name=display_name maxlength=60 "
+            f"value='{_html.escape(name)}' placeholder='e.g. Amiyanshu'></p>"
+            "<p>Avatar image URL (https)<br><input name=avatar_url style='width:100%' "
+            f"value='{_html.escape(avatar)}' placeholder='https://…/me.png'></p>"
+            "<button type=submit>Save profile</button></form></div>"
+        )
 
     def _render_extension_block(self, session: dict, handle: str) -> str:
         """The long-lived bearer token the Chrome notifier extension pastes into its options."""
@@ -524,8 +572,10 @@ class Dashboard:
         users = self.registry.tenancy.list_users()
         invites = self.registry.tenancy.list_invites(live_only=True)
         rows = "".join(
-            f"<li><span class=mono>@{_html.escape(u.handle)}</span> — "
-            f"{_html.escape(u.email)} ({_html.escape(u.status)})</li>"
+            f"<li style='margin:.4rem 0'>{self._avatar_img(u, 28)} "
+            f"<span class=mono>@{_html.escape(u.handle)}</span>"
+            + (f" · {_html.escape(u.display_name)}" if u.display_name else "")
+            + f" — {_html.escape(u.email)} ({_html.escape(u.status)})</li>"
             for u in users
         ) or "<li>No members yet.</li>"
         inv_rows = "".join(
@@ -561,6 +611,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/invite", ["POST"])(dash.create_invite)
     mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
+    mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
