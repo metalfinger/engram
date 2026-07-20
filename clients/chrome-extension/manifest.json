@@ -3,7 +3,7 @@
   "name": "Engram Notifications",
   "version": "1.0.0",
   "description": "Desktop notifications for new Engram DMs and notifications.",
-  "permissions": ["notifications", "storage", "alarms"],
+  "permissions": ["notifications", "storage", "alarms", "identity"],
   "host_permissions": ["https://engram.metalfinger.xyz/*"],
   "optional_host_permissions": ["https://*/*"],
   "background": {

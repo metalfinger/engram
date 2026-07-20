@@ -73,17 +73,21 @@
   <body>
     <h1>Engram Notifications</h1>
     <p class="hint">
-      Copy your extension token from the Engram dashboard (Settings → Extension token) and paste
-      it below. The origin defaults to the hosted instance — change it only if you're self-hosting
-      or testing locally.
+      The easiest way to connect: set your origin (defaults to the hosted instance), then
+      <strong>Sign in with Engram</strong> — the same GitHub/Google login as your Claude connector.
+      No token to copy. (Advanced: you can still paste a token from the dashboard instead.)
     </p>
-    <label for="token">Extension token</label>
-    <input type="text" id="token" placeholder="paste your extension token" />
-    <label for="origin" style="margin-top: 16px">Engram origin</label>
+    <label for="origin">Engram origin</label>
     <input type="text" id="origin" placeholder="https://engram.metalfinger.xyz" />
     <div>
-      <button id="save">Save</button>
+      <button id="signin">Sign in with Engram</button>
     </div>
+    <details style="margin-top: 20px">
+      <summary style="cursor: pointer; opacity: 0.8">Advanced: paste a token manually</summary>
+      <label for="token" style="margin-top: 12px">Extension token</label>
+      <input type="text" id="token" placeholder="paste your extension token" />
+      <div><button id="save">Save token</button></div>
+    </details>
     <div id="status"></div>
     <script src="options.js"></script>
   </body>

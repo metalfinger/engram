@@ -91,8 +91,9 @@ class DashboardAuth:
 @dataclass
 class _Pending:
     idp_name: str
-    kind: str  # "login" | "join"
+    kind: str  # "login" | "join" | "ext"
     invite_token: str | None
+    ext_redirect: str | None = None
 
 
 class Dashboard:
@@ -203,6 +204,35 @@ class Dashboard:
             )
         return HTMLResponse(self._render_login(next_kind="join", invite_token=token))
 
+    @staticmethod
+    def _valid_ext_redirect(url: str) -> bool:
+        """A Chrome extension's launchWebAuthFlow redirect is always
+        https://<extension-id>.chromiumapp.org/... — only allow that, so a
+        signed-in user's notify token can never be exfiltrated to an arbitrary host."""
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        return parts.scheme == "https" and (parts.hostname or "").endswith(".chromiumapp.org")
+
+    async def ext_auth(self, request: "Request") -> "Response":
+        """Sign the Chrome notifier extension in with the SAME GitHub/Google OAuth
+        as everything else, then hand it a scope='notify' token via the extension's
+        chromiumapp.org redirect (no manual token paste)."""
+        redirect = request.query_params.get("redirect", "")
+        if not self._valid_ext_redirect(redirect):
+            return PlainTextResponse("Invalid or missing extension redirect.", status_code=400)
+        session = self._session(request)
+        if session is not None:
+            return self._ext_token_redirect(session["sub"], session.get("email", ""),
+                                            self._account_handle(session), redirect)
+        # No session yet — sign in first, carrying the ext redirect through OAuth.
+        return HTMLResponse(self._render_login(next_kind="ext", invite_token=None, ext_redirect=redirect))
+
+    def _ext_token_redirect(self, subject, email, handle, redirect) -> "Response":
+        token = self.auth.issue(subject, email or "", handle,
+                                ttl=self._EXT_TOKEN_TTL, scope="notify")
+        return RedirectResponse(f"{redirect}#token={token}", status_code=302)
+
     async def start_oauth(self, request: "Request") -> "Response":
         idp_name = request.path_params.get("idp")
         idp = self.idps.get(idp_name or "")
@@ -210,10 +240,15 @@ class Dashboard:
             return PlainTextResponse(f"Unknown sign-in method: {idp_name}", status_code=404)
         kind = request.query_params.get("kind", "login")
         invite_token = request.query_params.get("token")
+        ext_redirect = request.query_params.get("redirect")
         if kind == "join" and not invite_token:
             return PlainTextResponse("Missing invite token.", status_code=400)
+        if kind == "ext" and not self._valid_ext_redirect(ext_redirect or ""):
+            return PlainTextResponse("Invalid extension redirect.", status_code=400)
         state = secrets.token_urlsafe(24)
-        self._pending[state] = _Pending(idp_name=idp.name, kind=kind, invite_token=invite_token)
+        self._pending[state] = _Pending(
+            idp_name=idp.name, kind=kind, invite_token=invite_token, ext_redirect=ext_redirect
+        )
         resp = RedirectResponse(idp.authorize_url(self.callback_url, state), status_code=302)
         # Bind this flow to THIS browser (OAuth login-CSRF / session-fixation defense):
         # the callback only proceeds if this cookie comes back matching the state param.
@@ -272,7 +307,7 @@ class Dashboard:
             )
             return resp
 
-        # login: the subject must already be an account (or owner)
+        # login/ext: the subject must already be an account (or owner)
         handle = self._account_handle({"sub": subject})
         if handle is None:
             return HTMLResponse(
@@ -283,6 +318,9 @@ class Dashboard:
                 ),
                 status_code=403,
             )
+        if pending.kind == "ext":
+            # Hand the extension its scope='notify' token via its chromiumapp.org redirect.
+            return self._ext_token_redirect(subject, user.login, handle, pending.ext_redirect)
         return self._logged_in_redirect(subject, user.login, handle)
 
     async def claim(self, request: "Request") -> "Response":
@@ -420,14 +458,21 @@ class Dashboard:
             "(needs a plan with custom MCP connectors).</p></div>"
         )
 
-    def _render_login(self, next_kind: str, invite_token: str | None) -> str:
-        q = f"?kind={next_kind}" + (f"&token={_html.escape(invite_token)}" if invite_token else "")
+    def _render_login(self, next_kind: str, invite_token: str | None, ext_redirect: str | None = None) -> str:
+        from urllib.parse import quote
+
+        q = f"?kind={next_kind}"
+        if invite_token:
+            q += f"&token={_html.escape(invite_token)}"
+        if ext_redirect:
+            q += f"&redirect={_html.escape(quote(ext_redirect, safe=''))}"
         buttons = "".join(
             f"<p><a class=mono href='/dashboard/auth/{name}{q}'>Sign in with "
             f"{name.capitalize()}</a></p>"
             for name in self.idps
         )
-        return self._page("Sign in", f"<div class=card>{buttons or '<p>No sign-in method configured.</p>'}</div>")
+        lead = "<p>Sign in to connect the notifier extension.</p>" if next_kind == "ext" else ""
+        return self._page("Sign in", f"{lead}<div class=card>{buttons or '<p>No sign-in method configured.</p>'}</div>")
 
     def _render_claim(self, suggested: str, email: str, error: str | None = None) -> str:
         # Suggest a handle from the login/email local-part, sanitized.
@@ -465,12 +510,14 @@ class Dashboard:
         )
         return (
             "<div class=card><h2>Desktop notifications</h2>"
-            "<p>Install the Engram Chrome extension, open its Options, and paste this "
-            "token (and your server URL). It'll ping you when you get a DM.</p>"
+            "<p>Install the Engram Chrome extension, open its Options, and click "
+            "<b>Sign in with Engram</b> — same login as your Claude connector, no token to copy. "
+            "It'll ping you when you get a DM.</p>"
+            "<details><summary style='cursor:pointer;font-size:13px'>Advanced: paste a token instead</summary>"
             f"<p><span class=mono style='word-break:break-all'>{_html.escape(token)}</span></p>"
             "<p style='font-size:13px;color:#8a7960'>Treat this like a password — anyone "
             "with it can read your notifications. Rotate by asking the operator to reset "
-            "the server secret.</p></div>"
+            "the server secret.</p></details></div>"
         )
 
     def _render_admin(self) -> str:
@@ -516,4 +563,5 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
+    mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
     return dash
