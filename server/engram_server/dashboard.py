@@ -224,12 +224,13 @@ class Dashboard:
         project = str(request.path_params.get("project", ""))
         if store is None:
             return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
-        try:
-            data = await store.kb_load(project)
-        except KBError as exc:
-            return HTMLResponse(self._page("Not found", f"<p>{_html.escape(str(exc))}</p>"
-                                           "<p><a href='/dashboard'>&larr; home</a></p>"), status_code=404)
-        return HTMLResponse(self._render_project(project, data))
+        rel = "metalfinger" if project == "metalfinger" else f"projects/{project}"
+        if not re.fullmatch(r"[a-z0-9-]+", project) or not (store.root / rel).is_dir():
+            return HTMLResponse(self._brain_shell("Not found",
+                "<p class='empty'>No such project.</p>", [("home", "/dashboard")],
+                self._brain_sidebar(await self._user_projects(session))), status_code=404)
+        projects = await self._user_projects(session)
+        return HTMLResponse(self._render_project(store, project, rel, projects))
 
     async def browse_concept(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -241,10 +242,12 @@ class Dashboard:
             return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
         try:
             concept = await store.kb_read(path)  # path-safe + scoped to THIS user's brain
-        except KBError as exc:
-            return HTMLResponse(self._page("Not found", f"<p>{_html.escape(str(exc))}</p>"
-                                           "<p><a href='/dashboard'>&larr; home</a></p>"), status_code=404)
-        return HTMLResponse(self._render_concept(path, concept))
+        except KBError:
+            return HTMLResponse(self._brain_shell("Not found",
+                "<p class='empty'>No such concept.</p>", [("home", "/dashboard")],
+                self._brain_sidebar(await self._user_projects(session))), status_code=404)
+        projects = await self._user_projects(session)
+        return HTMLResponse(self._render_concept(store, path, concept, projects))
 
     async def login(self, request: "Request") -> "Response":
         return HTMLResponse(self._render_login(next_kind="login", invite_token=None))
@@ -728,79 +731,118 @@ class Dashboard:
             "<button type=submit>Add contact</button></form></div>"
         )
 
-    # -- brain rendering (scoped to the caller's own brain) ------------------
+    # -- brain rendering: the per-user home reuses the explorer's rich CSS +
+    #    content helpers, pointed at THIS user's brain with /dashboard/ links.
+    #    (The operator explorer at /brain/* is untouched.)
 
-    def _md(self, content: str, path: str) -> str:
-        """Render a concept's markdown body; internal links point at THIS home's
-        /dashboard/f/ (not the operator explorer's /brain/f/)."""
-        from engram_server.explorer.render import render_markdown, split_frontmatter
+    @staticmethod
+    def _dash_links(html: str) -> str:
+        """Repoint explorer-built internal links (/brain/f/, /brain/p/) at this home."""
+        return html.replace('="/brain/f/', '="/dashboard/f/').replace('="/brain/p/', '="/dashboard/p/')
 
-        _meta, body = split_frontmatter(content)
-        html = render_markdown(body, path)
-        return html.replace('href="/brain/f/', 'href="/dashboard/f/')
+    def _brain_shell(self, title: str, body: str, crumbs, sidebar_html: str) -> str:
+        from engram_server.explorer.html import CSS, esc
+
+        crumb_html = ""
+        if crumbs:
+            links = [f'<a href="{esc(h)}">{esc(l)}</a>' for l, h in crumbs]
+            crumb_html = '<nav class="crumbs">' + '<span class="sep">/</span>'.join(links) + "</nav>"
+        return (
+            "<!doctype html><html lang=en><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width, initial-scale=1'>"
+            f"<title>{esc(title)} — Engram</title><style>{CSS}</style></head><body>"
+            "<input type=checkbox id=navcb class=navcb aria-hidden=true>"
+            "<header class=topbar><div class=topbar-inner>"
+            "<label for=navcb class=burger aria-label='Toggle navigation'>≡</label>"
+            "<a class=wordmark href='/dashboard'><span class=mark>◗</span>Engram</a>"
+            "<nav class=topnav><a href='/dashboard'>Home</a></nav>"
+            "</div></header><div class=layout>"
+            f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
+            f"<main>{crumb_html}{body}</main></div></body></html>"
+        )
+
+    def _brain_sidebar(self, projects: list, active: str | None = None) -> str:
+        from engram_server.explorer.html import esc
+
+        items = ["<a class='nav-link' href='/dashboard'>← Home</a>"]
+        if projects:
+            items.append("<p class='nav-group'>Projects</p>")
+            for p in projects:
+                cls = "nav-link active" if str(p["id"]) == active else "nav-link"
+                items.append(
+                    f"<a class='{cls}' href='/dashboard/p/{esc(str(p['id']))}'>"
+                    f"{esc(str(p.get('title') or p['id']))}</a>"
+                )
+        return "<nav class='nav-sub'>" + "".join(items) + "</nav>"
 
     def _render_projects_block(self, projects: list) -> str:
+        from engram_server.explorer.html import esc
+
         if not projects:
             return ("<div class=card><h2>Your projects</h2>"
                     "<p style='color:#8a7960'>No projects yet — start one from your Claude "
                     "(<span class=mono>kb_write</span>), and it'll show here.</p></div>")
         cards = "".join(
-            f"<li style='margin:.5rem 0'><a href='/dashboard/p/{_html.escape(str(p['id']))}'>"
-            f"<b>{_html.escape(str(p.get('title') or p['id']))}</b></a>"
-            + (f" — {_html.escape(str(p['description']))}" if p.get("description") else "")
-            + (f" <span style='color:#8a7960;font-size:12px'>· {_html.escape(str(p['last_session']))}</span>"
-               if p.get("last_session") else "")
-            + "</li>"
+            f"<a class='card' href='/dashboard/p/{esc(str(p['id']))}'>"
+            f"<h3>{esc(str(p.get('title') or p['id']))}</h3>"
+            + (f"<p class='desc'>{esc(str(p['description']))}</p>" if p.get("description") else "")
+            + (f"<p class='meta'>{esc(str(p['last_session']))}</p>" if p.get("last_session") else "")
+            + "</a>"
             for p in projects
         )
-        return f"<div class=card><h2>Your projects</h2><ul style='list-style:none;padding:0'>{cards}</ul></div>"
+        return f"<div class=card><h2>Your projects</h2><div class='cards'>{cards}</div></div>"
 
-    def _tree_html(self, node: dict) -> str:
-        """Recursive nav list of a project's concepts, linking to /dashboard/f/."""
-        parts = []
-        for f in node.get("files", []):
-            label = f.get("title") or f.get("name")
-            parts.append(
-                f"<li><a href='/dashboard/f/{_html.escape(f['path'])}'>{_html.escape(str(label))}</a>"
-                + (f" <span style='color:#8a7960;font-size:12px'>— {_html.escape(str(f['description']))}</span>"
-                   if f.get("description") else "")
-                + "</li>"
-            )
-        for d in node.get("dirs", []):
-            inner = self._tree_html(d)
-            if inner.strip():
-                parts.append(f"<li><b>{_html.escape(d.get('title') or d['name'])}/</b>{inner}</li>")
-        return f"<ul>{''.join(parts)}</ul>" if parts else ""
-
-    def _render_project(self, project: str, data: dict) -> str:
-        ctx = data.get("context_md") or ""
-        log_entries = data.get("recent_log") or []
-        tree = data.get("index_tree") or {}
-        body = [f"<p><a href='/dashboard'>&larr; home</a></p>"]
-        if ctx:
-            body.append(f"<div class=card>{self._md(ctx, f'{project}/context.md')}</div>")
-        if log_entries:
-            logs = "".join(f"<div class=card>{self._md(e, f'{project}/log.md')}</div>"
-                           for e in log_entries[:3])
-            body.append(f"<h2>Recent log</h2>{logs}")
-        tree_html = self._tree_html(tree)
-        if tree_html.strip():
-            body.append(f"<div class=card><h2>Concepts</h2>{tree_html}</div>")
-        return self._page(str(project), "".join(body))
-
-    def _render_concept(self, path: str, concept: dict) -> str:
-        title = str((concept.get("meta") or {}).get("title") or path.rsplit("/", 1)[-1])
-        # breadcrumb from the path
-        parts = path.split("/")
-        crumbs = ["<a href='/dashboard'>home</a>"]
-        if len(parts) > 1:
-            crumbs.append(f"<a href='/dashboard/p/{_html.escape(parts[0] if parts[0] != 'projects' else parts[1])}'>"
-                          f"{_html.escape(parts[1] if parts[0] == 'projects' and len(parts) > 1 else parts[0])}</a>")
-        body = (
-            f"<p style='font-size:13px;color:#8a7960'>{' / '.join(crumbs)}</p>"
-            f"<div class=card>{self._md(concept.get('content') or '', path)}</div>"
+    def _render_project(self, store, project: str, rel: str, projects: list) -> str:
+        from engram_server.explorer.html import esc
+        from engram_server.explorer.render import render_markdown, split_frontmatter
+        from engram_server.explorer.routes import (
+            _log_entries, _project_section_render, _timeline,
         )
-        return self._page(title, body)
+
+        pdir = store.root / rel
+        meta, body_md = ({}, "")
+        ctx = pdir / "context.md"
+        if ctx.is_file():
+            try:
+                meta, body_md = split_frontmatter(ctx.read_text(encoding="utf-8"))
+            except OSError:
+                pass
+        title = str(meta.get("title") or project)
+        parts = [f"<div class='page-head'><div><p class='eyebrow'>Project</p><h1>{esc(title)}</h1></div></div>"]
+        if body_md:
+            parts.append(f"<div class='md'>{self._dash_links(render_markdown(body_md, f'{rel}/context.md'))}</div>")
+        entries = _log_entries(pdir / "log.md")
+        parts.append("<p class='section-label'>Recent sessions</p>")
+        parts.append(self._dash_links(_timeline(entries, f"{rel}/log.md")) if entries
+                     else "<p class='empty'>No sessions logged yet.</p>")
+        try:
+            _stat, section_html, _browse, _demoted = _project_section_render(pdir, store.root)
+            for sec in section_html:
+                parts.append(self._dash_links(sec))
+        except Exception:  # noqa: BLE001 — section rendering is best-effort
+            pass
+        crumbs = [("home", "/dashboard"), (project, f"/dashboard/p/{project}")]
+        return self._brain_shell(title, "\n".join(parts), crumbs, self._brain_sidebar(projects, active=project))
+
+    def _render_concept(self, store, path: str, concept: dict, projects: list) -> str:
+        from engram_server.explorer.html import esc
+        from engram_server.explorer.render import render_markdown, split_frontmatter
+
+        meta, body_md = ({}, concept.get("content") or "")
+        try:
+            meta, body_md = split_frontmatter(concept.get("content") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        title = str(meta.get("title") or path.rsplit("/", 1)[-1])
+        segs = path.split("/")
+        crumbs = [("home", "/dashboard")]
+        proj = segs[1] if segs[0] == "projects" and len(segs) > 1 else segs[0]
+        if proj:
+            crumbs.append((proj, f"/dashboard/p/{proj}"))
+        head = (f"<div class='page-head'><div>"
+                f"<p class='eyebrow'>{esc(str(meta.get('type') or 'concept'))}</p><h1>{esc(title)}</h1></div></div>")
+        body = head + f"<div class='md'>{self._dash_links(render_markdown(body_md, path))}</div>"
+        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects, active=proj))
 
     def _render_extension_block(self, session: dict, handle: str) -> str:
         """The long-lived bearer token the Chrome notifier extension pastes into its options."""
