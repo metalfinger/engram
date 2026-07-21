@@ -82,6 +82,29 @@ async def test_cannot_browse_another_users_brain(env):
 
 
 @pytest.mark.asyncio
+async def test_graph_activity_search_views(env):
+    await _write(env.registry, "alice", "google:alice@example.com",
+                 "projects/alt/context.md", "alt", "distinctivetermxyz plan")
+    c = env.client
+    ck = {"engram_session": env.cookies["alice"]}
+    # graph
+    g = c.get("/dashboard/graph", cookies=ck, follow_redirects=False)
+    assert g.status_code == 200 and "/dashboard/f/" in g.text and 'href="/brain/office"' not in g.text
+    # activity
+    a = c.get("/dashboard/activity", cookies=ck, follow_redirects=False)
+    assert a.status_code == 200 and "timeline" in a.text
+    # search finds the concept
+    s = c.get("/dashboard/search?q=distinctivetermxyz", cookies=ck, follow_redirects=False)
+    assert s.status_code == 200 and "/dashboard/f/projects/alt/context.md" in s.text
+
+
+@pytest.mark.asyncio
+async def test_new_views_require_auth(env):
+    for path in ("/dashboard/graph", "/dashboard/activity", "/dashboard/search?q=x"):
+        assert env.client.get(path, follow_redirects=False).status_code == 302
+
+
+@pytest.mark.asyncio
 async def test_traversal_and_auth(env):
     c = env.client
     # path traversal is rejected by the store's resolver -> 404, never escapes

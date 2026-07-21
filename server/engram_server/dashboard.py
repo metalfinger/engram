@@ -249,6 +249,50 @@ class Dashboard:
         projects = await self._user_projects(session)
         return HTMLResponse(self._render_concept(store, path, concept, projects))
 
+    async def browse_search(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain to search.</p>"), status_code=403)
+        q = str(request.query_params.get("q", "")).strip()
+        projects = await self._user_projects(session)
+        results = []
+        if q:
+            try:
+                res = await store.kb_search(q)
+                results = res.get("results", res) if isinstance(res, dict) else res
+            except Exception:  # noqa: BLE001
+                results = []
+        return HTMLResponse(self._render_search(q, results, projects))
+
+    async def browse_activity(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain.</p>"), status_code=403)
+        projects = await self._user_projects(session)
+        return HTMLResponse(await self._render_activity(store, projects))
+
+    async def browse_graph(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain.</p>"), status_code=403)
+        from anyio import to_thread as _tt
+
+        from engram_server.explorer.format import TYPE_GLYPHS
+        from engram_server.explorer.html import graph_page
+        from engram_server.explorer.routes import _graph_data
+
+        data = await _tt.run_sync(_graph_data, store.root)
+        return HTMLResponse(self._graph_dashify(graph_page(data, dict(TYPE_GLYPHS))))
+
     async def login(self, request: "Request") -> "Response":
         return HTMLResponse(self._render_login(next_kind="login", invite_token=None))
 
@@ -755,7 +799,10 @@ class Dashboard:
             "<header class=topbar><div class=topbar-inner>"
             "<label for=navcb class=burger aria-label='Toggle navigation'>≡</label>"
             "<a class=wordmark href='/dashboard'><span class=mark>◗</span>Engram</a>"
-            "<nav class=topnav><a href='/dashboard'>Home</a></nav>"
+            "<form class=search role=search action='/dashboard/search' method=get>"
+            "<input type=search name=q placeholder='Search your brain…' aria-label='Search' autocomplete=off></form>"
+            "<nav class=topnav><a href='/dashboard'>Home</a>"
+            "<a href='/dashboard/graph'>Graph</a><a href='/dashboard/activity'>Activity</a></nav>"
             "</div></header><div class=layout>"
             f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
             f"<main>{crumb_html}{body}</main></div></body></html>"
@@ -823,6 +870,68 @@ class Dashboard:
             pass
         crumbs = [("home", "/dashboard"), (project, f"/dashboard/p/{project}")]
         return self._brain_shell(title, "\n".join(parts), crumbs, self._brain_sidebar(projects, active=project))
+
+    @staticmethod
+    def _graph_dashify(html: str) -> str:
+        """Repoint the standalone graph page at the per-user home. The node-click JS
+        uses a '/brain/f/' literal; the operator-only topnav items are neutered to Home."""
+        html = html.replace("'/brain/f/'", "'/dashboard/f/'").replace('"/brain/f/', '"/dashboard/f/')
+        html = html.replace('href="/brain/graph"', 'href="/dashboard/graph"')
+        html = html.replace('href="/brain/activity"', 'href="/dashboard/activity"')
+        for op in ("/brain/office", "/brain/workspace", "/brain/threads", "/brain/system"):
+            html = html.replace(f'href="{op}"', 'href="/dashboard"')
+        return html.replace('href="/brain"', 'href="/dashboard"')
+
+    def _render_search(self, q: str, results: list, projects: list) -> str:
+        from engram_server.explorer.html import esc
+
+        parts = [f"<div class='page-head'><div><p class='eyebrow'>Search</p>"
+                 f"<h1>{esc(q) if q else 'Search your brain'}</h1></div></div>"]
+        if not q:
+            parts.append("<p class='empty'>Type a query above.</p>")
+        elif not results:
+            parts.append("<p class='empty'>No matches.</p>")
+        else:
+            cards = []
+            for h in results:
+                path = str(h.get("path", "")) if isinstance(h, dict) else str(h)
+                title = str((h.get("title") if isinstance(h, dict) else None) or path.rsplit("/", 1)[-1])
+                snip = str(h.get("snippet") or h.get("description") or "") if isinstance(h, dict) else ""
+                cards.append(
+                    f"<a class='card' href='/dashboard/f/{esc(path)}'><h3>{esc(title)}</h3>"
+                    + (f"<p class='desc'>{esc(snip[:180])}</p>" if snip else "")
+                    + f"<p class='meta'>{esc(path)}</p></a>"
+                )
+            parts.append(f"<div class='cards'>{''.join(cards)}</div>")
+        crumbs = [("home", "/dashboard"), ("search", "/dashboard/search")]
+        return self._brain_shell("Search", "".join(parts), crumbs, self._brain_sidebar(projects))
+
+    async def _render_activity(self, store, projects: list) -> str:
+        from anyio import to_thread as _tt
+
+        from engram_server.explorer.format import humanize_time
+        from engram_server.explorer.html import badge, esc
+        from engram_server.explorer.routes import _git_log
+
+        parts = ["<div class='page-head'><div><p class='eyebrow'>Activity</p><h1>Recent changes</h1></div></div>"]
+        try:
+            rows = await _tt.run_sync(_git_log, store.root, self.settings.git_timeout)
+        except Exception as exc:  # noqa: BLE001
+            rows = []
+            parts.append(f"<p class='empty'>History unavailable: {esc(exc)}</p>")
+        if rows:
+            items = []
+            for sha, date, author, subject in rows:
+                rel, exact = humanize_time(date)
+                items.append(
+                    "<div class='tl-item'>"
+                    f"<span class='tl-date' title='{esc(exact)}'>{esc(rel)}</span>"
+                    f"<h3>{esc(subject)}</h3>"
+                    f"<div class='tl-body meta'><code>{esc(sha)}</code> · {badge(author, 'accent')}</div></div>"
+                )
+            parts.append("<div class='timeline'>" + "".join(items) + "</div>")
+        crumbs = [("home", "/dashboard"), ("activity", "/dashboard/activity")]
+        return self._brain_shell("Activity", "".join(parts), crumbs, self._brain_sidebar(projects))
 
     def _render_concept(self, store, path: str, concept: dict, projects: list) -> str:
         from engram_server.explorer.html import esc
@@ -915,6 +1024,9 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
     mcp.custom_route("/dashboard/p/{project}", ["GET"])(dash.browse_project)
     mcp.custom_route("/dashboard/f/{path:path}", ["GET"])(dash.browse_concept)
+    mcp.custom_route("/dashboard/search", ["GET"])(dash.browse_search)
+    mcp.custom_route("/dashboard/activity", ["GET"])(dash.browse_activity)
+    mcp.custom_route("/dashboard/graph", ["GET"])(dash.browse_graph)
     mcp.custom_route("/dashboard/contact/add", ["POST"])(dash.add_contact)
     mcp.custom_route("/dashboard/contact/accept", ["POST"])(dash.accept_contact)
     mcp.custom_route("/dashboard/notifications/read", ["POST"])(dash.read_notifications)
