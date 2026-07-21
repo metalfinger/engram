@@ -30,9 +30,15 @@ ENGRAM_GITHUB_CLIENT_SECRET=...
 ENGRAM_GOOGLE_CLIENT_ID=...
 ENGRAM_GOOGLE_CLIENT_SECRET=...
 ```
-Register these **redirect URIs** in each OAuth app:
-- `https://engram.metalfinger.xyz/oauth/callback` — MCP connector sign-in (existing).
-- `https://engram.metalfinger.xyz/dashboard/callback` — dashboard/onboarding sign-in (**new**).
+Redirect URIs:
+- **GitHub — no change needed.** The dashboard/onboarding callback is
+  `https://engram.metalfinger.xyz/oauth/callback/dashboard`, nested UNDER the MCP
+  connector's existing `https://engram.metalfinger.xyz/oauth/callback` registration.
+  GitHub allows any redirect that is a subdirectory of the registered callback, so your
+  current GitHub OAuth App already covers it — do NOT replace `/oauth/callback`.
+- **Google (when you add it) — exact match:** register both
+  `https://engram.metalfinger.xyz/oauth/callback` and
+  `https://engram.metalfinger.xyz/oauth/callback/dashboard` (Google requires exact URIs).
 
 You (the operator) are always allowed via `ENGRAM_OWNER_SUBJECTS` (default
 `github:metalfinger`) and map to your existing brain — nothing about your setup changes.

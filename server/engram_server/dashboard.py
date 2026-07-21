@@ -54,7 +54,11 @@ if TYPE_CHECKING:
 
 SESSION_COOKIE = "engram_session"
 OAUTH_STATE_COOKIE = "engram_oauth_state"
-CALLBACK_PATH = "/dashboard/callback"
+# Nested UNDER the MCP connector's /oauth/callback so a GitHub OAuth App that already
+# registered /oauth/callback covers this too (GitHub allows any redirect that is a
+# subdirectory of the registered callback) — the operator needs no GitHub change.
+# (Google requires exact-match, so a Google app registers this full path.)
+CALLBACK_PATH = "/oauth/callback/dashboard"
 
 
 class DashboardAuth:

@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from engram_server.dashboard import OAUTH_STATE_COOKIE, register_dashboard
+from engram_server.dashboard import CALLBACK_PATH, OAUTH_STATE_COOKIE, register_dashboard
 from engram_server.registry import StoreRegistry
 
 
@@ -52,14 +52,14 @@ def _start_flow(client):
 def test_callback_rejects_missing_state_cookie(client):
     state = _start_flow(client)
     client.cookies.clear()  # simulate a different browser (no state cookie)
-    r = client.get(f"/dashboard/callback?state={state}&code=abc", follow_redirects=False)
+    r = client.get(f"{CALLBACK_PATH}?state={state}&code=abc", follow_redirects=False)
     assert r.status_code == 400
     assert "could not be verified" in r.text
 
 
 def test_callback_rejects_mismatched_state(client):
     _start_flow(client)  # sets a cookie for one state
-    r = client.get("/dashboard/callback?state=attacker-supplied&code=abc", follow_redirects=False)
+    r = client.get(f"{CALLBACK_PATH}?state=attacker-supplied&code=abc", follow_redirects=False)
     assert r.status_code == 400
 
 
@@ -68,6 +68,6 @@ def test_callback_accepts_matching_state_and_continues(client):
     'no account yet' page (this login has no account) — proving binding didn't block a
     legitimate flow."""
     state = _start_flow(client)  # TestClient retains the Set-Cookie automatically
-    r = client.get(f"/dashboard/callback?state={state}&code=abc", follow_redirects=False)
+    r = client.get(f"{CALLBACK_PATH}?state={state}&code=abc", follow_redirects=False)
     assert r.status_code == 403
     assert "No account" in r.text
