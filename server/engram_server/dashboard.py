@@ -40,6 +40,7 @@ import jwt
 from anyio import to_thread
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
+from engram_server.errors import KBError
 from engram_server.provisioning import ensure_user_brain
 from engram_server.social import SocialError
 from engram_server.tenancy import TenancyError
@@ -191,7 +192,59 @@ class Dashboard:
         session = self._session(request)
         if session is None:
             return RedirectResponse("/dashboard/login", status_code=302)
-        return HTMLResponse(self._render_dashboard(session))
+        projects = await self._user_projects(session)
+        return HTMLResponse(self._render_dashboard(session, projects=projects))
+
+    # -- per-user brain browser (M4: the unified home browses YOUR own brain) ----
+
+    async def _user_store(self, session: dict):
+        """The signed-in user's OWN KBStore (owner -> the operator brain). None if no account."""
+        handle = self._account_handle(session)
+        if handle is None:
+            return None
+        try:
+            return await self.registry.store_for_handle(handle)
+        except KBError:
+            return None
+
+    async def _user_projects(self, session: dict) -> list:
+        store = await self._user_store(session)
+        if store is None:
+            return []
+        try:
+            return await store.kb_projects()
+        except Exception:  # noqa: BLE001 — a browse convenience, never fail the home
+            return []
+
+    async def browse_project(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        project = str(request.path_params.get("project", ""))
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
+        try:
+            data = await store.kb_load(project)
+        except KBError as exc:
+            return HTMLResponse(self._page("Not found", f"<p>{_html.escape(str(exc))}</p>"
+                                           "<p><a href='/dashboard'>&larr; home</a></p>"), status_code=404)
+        return HTMLResponse(self._render_project(project, data))
+
+    async def browse_concept(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        path = str(request.path_params.get("path", ""))
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
+        try:
+            concept = await store.kb_read(path)  # path-safe + scoped to THIS user's brain
+        except KBError as exc:
+            return HTMLResponse(self._page("Not found", f"<p>{_html.escape(str(exc))}</p>"
+                                           "<p><a href='/dashboard'>&larr; home</a></p>"), status_code=404)
+        return HTMLResponse(self._render_concept(path, concept))
 
     async def login(self, request: "Request") -> "Response":
         return HTMLResponse(self._render_login(next_kind="login", invite_token=None))
@@ -581,12 +634,15 @@ class Dashboard:
             "<button type=submit>Create my brain</button></div></form>",
         )
 
-    def _render_dashboard(self, session: dict, notice: str | None = None, error: str | None = None) -> str:
+    def _render_dashboard(self, session: dict, notice: str | None = None, error: str | None = None,
+                          projects: list | None = None) -> str:
         handle = self._account_handle(session) or "?"
         banner = (f"<p class=notice>{_html.escape(notice)}</p>" if notice else "") + (
             f"<p class=error>{_html.escape(error)}</p>" if error else ""
         )
         body = [banner, self._render_profile_block(session, handle)]
+        if projects is not None:
+            body.append(self._render_projects_block(projects))
         body.append(self._render_social_block(session))
         body.append(self._connect_block(handle))
         body.append(self._render_extension_block(session, handle))
@@ -672,6 +728,80 @@ class Dashboard:
             "<button type=submit>Add contact</button></form></div>"
         )
 
+    # -- brain rendering (scoped to the caller's own brain) ------------------
+
+    def _md(self, content: str, path: str) -> str:
+        """Render a concept's markdown body; internal links point at THIS home's
+        /dashboard/f/ (not the operator explorer's /brain/f/)."""
+        from engram_server.explorer.render import render_markdown, split_frontmatter
+
+        _meta, body = split_frontmatter(content)
+        html = render_markdown(body, path)
+        return html.replace('href="/brain/f/', 'href="/dashboard/f/')
+
+    def _render_projects_block(self, projects: list) -> str:
+        if not projects:
+            return ("<div class=card><h2>Your projects</h2>"
+                    "<p style='color:#8a7960'>No projects yet — start one from your Claude "
+                    "(<span class=mono>kb_write</span>), and it'll show here.</p></div>")
+        cards = "".join(
+            f"<li style='margin:.5rem 0'><a href='/dashboard/p/{_html.escape(str(p['id']))}'>"
+            f"<b>{_html.escape(str(p.get('title') or p['id']))}</b></a>"
+            + (f" — {_html.escape(str(p['description']))}" if p.get("description") else "")
+            + (f" <span style='color:#8a7960;font-size:12px'>· {_html.escape(str(p['last_session']))}</span>"
+               if p.get("last_session") else "")
+            + "</li>"
+            for p in projects
+        )
+        return f"<div class=card><h2>Your projects</h2><ul style='list-style:none;padding:0'>{cards}</ul></div>"
+
+    def _tree_html(self, node: dict) -> str:
+        """Recursive nav list of a project's concepts, linking to /dashboard/f/."""
+        parts = []
+        for f in node.get("files", []):
+            label = f.get("title") or f.get("name")
+            parts.append(
+                f"<li><a href='/dashboard/f/{_html.escape(f['path'])}'>{_html.escape(str(label))}</a>"
+                + (f" <span style='color:#8a7960;font-size:12px'>— {_html.escape(str(f['description']))}</span>"
+                   if f.get("description") else "")
+                + "</li>"
+            )
+        for d in node.get("dirs", []):
+            inner = self._tree_html(d)
+            if inner.strip():
+                parts.append(f"<li><b>{_html.escape(d.get('title') or d['name'])}/</b>{inner}</li>")
+        return f"<ul>{''.join(parts)}</ul>" if parts else ""
+
+    def _render_project(self, project: str, data: dict) -> str:
+        ctx = data.get("context_md") or ""
+        log_entries = data.get("recent_log") or []
+        tree = data.get("index_tree") or {}
+        body = [f"<p><a href='/dashboard'>&larr; home</a></p>"]
+        if ctx:
+            body.append(f"<div class=card>{self._md(ctx, f'{project}/context.md')}</div>")
+        if log_entries:
+            logs = "".join(f"<div class=card>{self._md(e, f'{project}/log.md')}</div>"
+                           for e in log_entries[:3])
+            body.append(f"<h2>Recent log</h2>{logs}")
+        tree_html = self._tree_html(tree)
+        if tree_html.strip():
+            body.append(f"<div class=card><h2>Concepts</h2>{tree_html}</div>")
+        return self._page(str(project), "".join(body))
+
+    def _render_concept(self, path: str, concept: dict) -> str:
+        title = str((concept.get("meta") or {}).get("title") or path.rsplit("/", 1)[-1])
+        # breadcrumb from the path
+        parts = path.split("/")
+        crumbs = ["<a href='/dashboard'>home</a>"]
+        if len(parts) > 1:
+            crumbs.append(f"<a href='/dashboard/p/{_html.escape(parts[0] if parts[0] != 'projects' else parts[1])}'>"
+                          f"{_html.escape(parts[1] if parts[0] == 'projects' and len(parts) > 1 else parts[0])}</a>")
+        body = (
+            f"<p style='font-size:13px;color:#8a7960'>{' / '.join(crumbs)}</p>"
+            f"<div class=card>{self._md(concept.get('content') or '', path)}</div>"
+        )
+        return self._page(title, body)
+
     def _render_extension_block(self, session: dict, handle: str) -> str:
         """The long-lived bearer token the Chrome notifier extension pastes into its options."""
         token = self.auth.issue(
@@ -741,6 +871,8 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
     mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
     mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
+    mcp.custom_route("/dashboard/p/{project}", ["GET"])(dash.browse_project)
+    mcp.custom_route("/dashboard/f/{path:path}", ["GET"])(dash.browse_concept)
     mcp.custom_route("/dashboard/contact/add", ["POST"])(dash.add_contact)
     mcp.custom_route("/dashboard/contact/accept", ["POST"])(dash.accept_contact)
     mcp.custom_route("/dashboard/notifications/read", ["POST"])(dash.read_notifications)
