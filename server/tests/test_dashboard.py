@@ -136,14 +136,27 @@ async def test_create_invite_denied_for_non_owner(dash):
     assert resp.status_code == 403
 
 
-def test_dashboard_renders_admin_only_for_owner(dash):
-    owner_html = dash._render_dashboard({"sub": "github:metalfinger"})
+@pytest.mark.asyncio
+async def test_dashboard_renders_admin_only_for_owner(dash):
+    owner_html = await dash._render_dashboard({"sub": "github:metalfinger"})
     assert "Invite someone" in owner_html and "Members" in owner_html
     # a member sees the connect block but not the admin panel
     inv = dash.registry.tenancy.create_invite("a@example.com")
     dash.registry.tenancy.accept_invite(inv.token, "amiya", "a@example.com", "google", "google:a@example.com")
-    member_html = dash._render_dashboard({"sub": "google:a@example.com"})
+    member_html = await dash._render_dashboard({"sub": "google:a@example.com"})
     assert "Connect your AI" in member_html and "Invite someone" not in member_html
+
+
+@pytest.mark.asyncio
+async def test_home_uses_the_rich_shell(dash):
+    """Regression: the home page must render in the SAME shell as every other page —
+    it used to carry its own minimal 640px stylesheet and looked unlike the rest."""
+    html = await dash._render_dashboard({"sub": "github:metalfinger"})
+    assert "max-width:640px" not in html          # the old standalone shell is gone
+    assert "class=topbar" in html                 # shared topbar
+    assert "/dashboard/people" in html            # shared nav
+    assert "page-head" in html and "section-label" in html
+    assert len(html) > 20000                      # the full explorer stylesheet is present
 
 
 def test_register_dashboard_noop_single_user(settings):

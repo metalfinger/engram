@@ -195,7 +195,7 @@ class Dashboard:
         if session is None:
             return RedirectResponse("/dashboard/login", status_code=302)
         projects = await self._user_projects(session)
-        return HTMLResponse(self._render_dashboard(session, projects=projects))
+        return HTMLResponse(await self._render_dashboard(session, projects=projects))
 
     # -- per-user brain browser (M4: the unified home browses YOUR own brain) ----
 
@@ -674,12 +674,12 @@ class Dashboard:
         try:
             result = await self._create_invite(email, session)
         except TenancyError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
         note = (
             f"Invite emailed to {email}." if result["mail"].get("sent")
             else f"Invite created — email is off, copy this link: {result['join_url']}"
         )
-        return HTMLResponse(self._render_dashboard(session, notice=note))
+        return HTMLResponse(await self._render_dashboard(session, notice=note))
 
     async def create_github_invite(self, request: "Request") -> "Response":
         """Invite by GitHub username — bound to that GitHub identity, no email needed.
@@ -690,7 +690,7 @@ class Dashboard:
         form = await request.form()
         login = re.sub(r"[^a-zA-Z0-9-]", "", str(form.get("login", "")).strip().lstrip("@")).lower()
         if not login:
-            return HTMLResponse(self._render_dashboard(session, error="Enter a GitHub username."), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error="Enter a GitHub username."), status_code=400)
         inviter = self.registry.tenancy.user_by_subject(session.get("sub", ""))
         try:
             invite = self.registry.tenancy.create_invite(
@@ -699,10 +699,10 @@ class Dashboard:
                 bind_subject=f"github:{login}",
             )
         except TenancyError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
         join_url = f"{self.settings.public_url}/join?token={invite.token}"
         note = f"Invite for GitHub @{login} — send them this link: {join_url}"
-        return HTMLResponse(self._render_dashboard(session, notice=note))
+        return HTMLResponse(await self._render_dashboard(session, notice=note))
 
     async def revoke_invite(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -711,9 +711,9 @@ class Dashboard:
         form = await request.form()
         try:
             self.registry.tenancy.revoke_invite(str(form.get("token", "")))
-            return HTMLResponse(self._render_dashboard(session, notice="Invite revoked."))
+            return HTMLResponse(await self._render_dashboard(session, notice="Invite revoked."))
         except TenancyError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
 
     async def logout(self, request: "Request") -> "Response":
         resp = RedirectResponse("/dashboard/login", status_code=302)
@@ -731,14 +731,14 @@ class Dashboard:
         form = await request.form()
         other = self.registry.tenancy.user_by_handle(str(form.get("handle", "")).strip().lstrip("@"))
         if me is None or other is None:
-            return HTMLResponse(self._render_dashboard(session, error="No such user."), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error="No such user."), status_code=400)
         try:
             c = self.registry.social.request_contact(me.id, other.id)
             kind = "contact_accepted" if c.status == "accepted" else "contact_request"
             self.registry.social.create_notification(other.id, kind, f"@{me.handle} wants to connect")
-            return HTMLResponse(self._render_dashboard(session, notice=f"Request sent to @{other.handle}."))
+            return HTMLResponse(await self._render_dashboard(session, notice=f"Request sent to @{other.handle}."))
         except SocialError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
 
     async def accept_contact(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -748,13 +748,13 @@ class Dashboard:
         form = await request.form()
         other = self.registry.tenancy.user_by_handle(str(form.get("handle", "")).strip().lstrip("@"))
         if me is None or other is None:
-            return HTMLResponse(self._render_dashboard(session, error="No such user."), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error="No such user."), status_code=400)
         try:
             self.registry.social.accept_contact(me.id, other.id)
             self.registry.social.create_notification(other.id, "contact_accepted", f"@{me.handle} accepted your request")
-            return HTMLResponse(self._render_dashboard(session, notice=f"You're now connected with @{other.handle}."))
+            return HTMLResponse(await self._render_dashboard(session, notice=f"You're now connected with @{other.handle}."))
         except SocialError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
 
     async def read_notifications(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -763,7 +763,7 @@ class Dashboard:
         me = self._session_user(session)
         if me is not None:
             self.registry.social.mark_notifications_read(me.id)
-        return HTMLResponse(self._render_dashboard(session, notice="Notifications cleared."))
+        return HTMLResponse(await self._render_dashboard(session, notice="Notifications cleared."))
 
     async def save_profile(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -779,9 +779,9 @@ class Dashboard:
                 display_name=str(form.get("display_name", "")),
                 avatar_url=str(form.get("avatar_url", "")),
             )
-            return HTMLResponse(self._render_dashboard(session, notice="Profile saved."))
+            return HTMLResponse(await self._render_dashboard(session, notice="Profile saved."))
         except TenancyError as exc:
-            return HTMLResponse(self._render_dashboard(session, error=str(exc)), status_code=400)
+            return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
 
     # -- extension notification API (bearer-token, for the Chrome notifier) ---
 
@@ -836,24 +836,30 @@ class Dashboard:
     # -- rendering -----------------------------------------------------------
 
     def _page(self, title: str, body: str) -> str:
+        """The PRE-SIGN-IN shell (login / invite / claim-handle / errors).
+
+        Same stylesheet and palette as the signed-in pages so the very first thing an
+        invited person sees already looks like Engram — just centred, with no topbar or
+        sidebar, since there's no session (and so no projects) to navigate yet."""
+        from engram_server.explorer.html import CSS
+
         return (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{_html.escape(title)} — Engram</title>"
-            "<style>"
-            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
-            "max-width:640px;margin:0 auto;padding:2rem 1.25rem;line-height:1.55;"
-            "color:#2a2320;background:#faf6ee}"
-            "h1{font-size:1.5rem}a{color:#c26a3f}input,button{font:inherit;padding:.55rem .7rem;"
-            "border-radius:8px;border:1px solid #d8c9ad}button{background:#c26a3f;color:#fff;border:0;cursor:pointer}"
-            ".card{background:#fff;border:1px solid #e7dcc6;border-radius:12px;padding:1rem 1.15rem;margin:.9rem 0}"
-            ".mono{font-family:ui-monospace,Menlo,Consolas,monospace;background:#f1e9d9;padding:.15rem .35rem;border-radius:5px}"
-            ".notice{background:#e7f3e8;border:1px solid #b7dcbb;color:#2f6a35;padding:.6rem .8rem;border-radius:8px}"
-            ".error{background:#fbe7de;border:1px solid #e6b29a;color:#8a3a18;padding:.6rem .8rem;border-radius:8px}"
-            "@media(prefers-color-scheme:dark){body{background:#171310;color:#e9e0d2}"
-            ".card{background:#211b16;border-color:#3a2f24}.mono{background:#2a2018}}"
-            "</style></head><body>"
-            f"<h1>{_html.escape(title)}</h1>{body}</body></html>"
+            f"<style>{CSS}"
+            # Centred single-column layout for the auth pages only.
+            ".authwrap{max-width:34rem;margin:0 auto;padding:3rem 1.25rem}"
+            ".authwrap .wordmark{display:inline-flex;margin:0 0 1.5rem}"
+            ".authwrap .card{margin:.9rem 0}"
+            ".notice{background:var(--surface-2);border:1px solid var(--line-2);"
+            "color:var(--fg);padding:.6rem .8rem;border-radius:8px}"
+            ".error{background:var(--amber-bg);border:1px solid var(--amber-bd);"
+            "color:var(--amber-tx);padding:.6rem .8rem;border-radius:8px}"
+            "</style></head><body><div class=authwrap>"
+            "<a class=wordmark href='/'><span class=mark>◗</span>Engram</a>"
+            f"<div class='page-head'><div><h1>{_html.escape(title)}</h1></div></div>"
+            f"{body}</div></body></html>"
         )
 
     def _connect_block(self, handle: str) -> str:
@@ -900,23 +906,46 @@ class Dashboard:
             "<button type=submit>Create my brain</button></div></form>",
         )
 
-    def _render_dashboard(self, session: dict, notice: str | None = None, error: str | None = None,
-                          projects: list | None = None) -> str:
+    async def _render_dashboard(self, session: dict, notice: str | None = None,
+                                error: str | None = None, projects: list | None = None) -> str:
+        """The home. Rendered in the SAME rich shell as every other page (topbar,
+        projects sidebar, explorer CSS) — the home used to carry its own minimal
+        stylesheet, which made the first page you land on look unlike the rest."""
         handle = self._account_handle(session) or "?"
+        user = self.registry.tenancy.user_by_handle(handle)
+        if projects is None:
+            projects = await self._user_projects(session)
         banner = (f"<p class=notice>{_html.escape(notice)}</p>" if notice else "") + (
             f"<p class=error>{_html.escape(error)}</p>" if error else ""
         )
-        body = [banner, self._render_profile_block(session, handle)]
-        if projects is not None:
-            body.append(self._render_projects_block(projects))
+        name = (user.display_name if user else None) or f"@{handle}"
+        bio = (user.bio if user else None) or ""
+        hero = (
+            "<div class='page-head'>"
+            f"{self._avatar_img(user, 56)}"
+            f"<div><p class='eyebrow'>Your Engram</p><h1>{_html.escape(str(name))}</h1>"
+            f"<p class='meta'>@{_html.escape(handle)}"
+            + (f" · {_html.escape(bio)}" if bio else "")
+            + "</p></div></div>"
+        )
+        body = [banner, hero]
+        body.append("<p class='section-label'>Projects</p>")
+        body.append(self._render_projects_block(projects))
+        body.append("<p class='section-label'>Activity</p>")
         body.append(self._render_social_block(session))
+        body.append("<p class='section-label'>Your account</p>")
+        body.append(self._render_profile_block(session, handle))
         body.append(self._connect_block(handle))
         body.append(self._render_extension_block(session, handle))
         if self._is_owner(session):
+            body.append("<p class='section-label'>Admin</p>")
             body.append(self._render_admin())
-        body.append("<div class=card><form method=post action='/dashboard/logout'>"
+        body.append("<div class='card'><form method=post action='/dashboard/logout'>"
                     "<button type=submit>Sign out</button></form></div>")
-        return self._page(f"Welcome, @{handle}", "".join(body))
+        return self._brain_shell(
+            f"@{handle}", "".join(body), [("home", "/dashboard")],
+            self._brain_sidebar(projects),
+        )
 
     def _avatar_img(self, user, size: int = 40) -> str:
         """A safe <img> for a user's avatar (escaped https URL), or a letter fallback."""
