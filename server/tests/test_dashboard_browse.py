@@ -54,7 +54,7 @@ async def test_home_lists_own_projects_and_browses_concept(env):
     # home shows alice's project
     home = c.get("/dashboard", cookies={"engram_session": env.cookies["alice"]}, follow_redirects=False)
     assert home.status_code == 200
-    assert "Your projects" in home.text and "/dashboard/p/alt" in home.text
+    assert "Projects" in home.text and "/dashboard/p/alt" in home.text
     # project page renders context + links to the concept
     proj = c.get("/dashboard/p/alt", cookies={"engram_session": env.cookies["alice"]}, follow_redirects=False)
     assert proj.status_code == 200

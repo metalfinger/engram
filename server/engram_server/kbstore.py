@@ -283,6 +283,15 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _NEVER_PUBLIC_SEGMENTS = frozenset({"messages", "threads", "workspace", "inbox", ".git"})
 
 
+def _as_tags(value: Any) -> list[str]:
+    """Frontmatter tags as a clean list (YAML gives a list, or a comma string)."""
+    if isinstance(value, list):
+        return [str(t).strip() for t in value if str(t).strip()]
+    if isinstance(value, str):
+        return [t.strip() for t in value.split(",") if t.strip()]
+    return []
+
+
 def _never_public(rel: str) -> bool:
     """True when a repo-relative path lives in a never-publishable subtree."""
     return any(seg in _NEVER_PUBLIC_SEGMENTS for seg in rel.split("/") if seg)
@@ -802,6 +811,18 @@ class KBStore:
                     "title": title or str(ctx_meta.get("title") or pid),
                     "description": description or str(ctx_meta.get("description") or ""),
                     "status": str(ctx_meta.get("status") or "active"),
+                    # Grouping labels from context.md frontmatter — the brain already
+                    # speaks tags, so organizing projects needs no new grammar and no
+                    # nesting (a project can belong to several groups at once).
+                    "tags": _as_tags(ctx_meta.get("tags")),
+                    # The project's DEFAULT reach (its concepts inherit unless they
+                    # override). Surfaced everywhere so "what's exposed?" is answerable
+                    # at a glance — silent publication is the failure mode that matters.
+                    "visibility": (
+                        str(ctx_meta.get("visibility") or "").strip().lower()
+                        if str(ctx_meta.get("visibility") or "").strip().lower() in VISIBILITY_VALUES
+                        else "private"
+                    ),
                     "last_session": _first_log_date(pdir / "log.md"),
                     "unread_messages": self._count_unread(pdir / "messages"),
                 }
@@ -3165,6 +3186,63 @@ class KBStore:
         sha, pushed = await self._locked_commit(_mutate, f"kb: visibility {want} for {rel}")
         applies = "project (its concepts inherit this default)" if posixpath.basename(rel) == "context.md" else "concept"
         return {"path": rel, "visibility": want, "applies_to": applies, "sha": sha, "pushed": pushed}
+
+    async def kb_tag_project(self, project: str, tags: list[str] | None = None,
+                             status: str = "") -> dict[str, Any]:
+        """Organize a project: set its grouping `tags` and/or `status` on context.md.
+
+        Tags are how projects are grouped (client work, personal, archived…) — a project
+        can carry several, which is why this is tags rather than folders: no nesting, no
+        path churn, and one project can live in more than one group.
+        Returns {project, tags, status, sha, pushed}."""
+        rel = self._project_rel(project)  # validates the project exists
+        ctx_rel = f"{rel}/context.md"
+        abs_path = self.root / ctx_rel
+        clean = [t.strip().lower() for t in (tags or []) if str(t).strip()]
+
+        def _mutate() -> list[str]:
+            doc = split(_read_text_retry(abs_path)) if abs_path.is_file() else None
+            if doc is None:
+                raise KBError(f"{project!r} has no context.md to organize.")
+            meta = normalize_meta(doc.meta)
+            if tags is not None:
+                if clean:
+                    meta["tags"] = clean
+                else:
+                    meta.pop("tags", None)
+            if status:
+                meta["status"] = status.strip().lower()
+            _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+            return [ctx_rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: organize {project}")
+        meta_now = read_meta(abs_path)
+        return {
+            "project": project, "tags": _as_tags(meta_now.get("tags")),
+            "status": str(meta_now.get("status") or "active"), "sha": sha, "pushed": pushed,
+        }
+
+    async def ensure_project(self, project: str, description: str) -> dict[str, Any]:
+        """Create a project's scaffold (context.md) if it doesn't exist yet. Idempotent —
+        an existing project is returned untouched. Returns {project, created}."""
+        pid = (project or "").strip().lower()
+        if not _PROJECT_ID_RE.fullmatch(pid):
+            raise KBError(
+                f"Invalid project id {project!r} — use lowercase letters, digits and hyphens."
+            )
+        if (self.root / "projects" / pid).is_dir():
+            return {"project": pid, "created": False}
+        scaffold = (
+            f"---\ntype: project\ntitle: {_title_case(pid)}\n"
+            f"description: {description or pid}\nstatus: active\n---\n\n"
+            "# About\n\n"
+            f"{description or 'What this project is.'}\n\n"
+            "# Current Phase\n\nJust started.\n\n"
+            "# Open Loops\n\n- [ ] First step\n\n"
+            "# Next Actions\n\n- [ ] Decide what to do first\n"
+        )
+        await self.kb_write(f"projects/{pid}/context.md", scaffold, f"feat: start {pid}")
+        return {"project": pid, "created": True}
 
     async def kb_public(self) -> dict[str, Any]:
         """Audit: every concept currently visible beyond you, with its effective visibility.

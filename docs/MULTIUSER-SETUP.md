@@ -103,7 +103,17 @@ Then walk the whole loop yourself:
   it is NOT multi-tenant yet (per-user explorer is a future milestone). Tenants use
   their Claude + the dashboard, not the explorer.
 
-## Invites: email OR GitHub username
+## Signups are OPEN by default
+Anyone with a GitHub or Google account can create their own Engram at
+`https://engram.metalfinger.xyz/join` — no invite needed. Each signup provisions a private
+brain under `~/.engram/users/<handle>/`, subject to `ENGRAM_TENANT_QUOTA_MB` (200 MB each).
+
+To go back to invite-only, set `ENGRAM_OPEN_SIGNUP=0` — existing accounts and invites keep
+working. **Before opening signups to strangers, make sure `ENGRAM_BACKUP_REMOTE` is set**
+(other people's data now lives on your machine) and think about total disk: N users ×
+the quota.
+
+## Invites: email OR GitHub username (still available when signups are closed)
 - **Email:** dashboard → enter email → the person gets a magic link (or you copy it if
   email is off). They sign in with Google or GitHub to accept.
 - **GitHub username:** dashboard → "Invite GitHub user" → enter their GitHub handle →

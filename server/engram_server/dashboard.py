@@ -41,6 +41,7 @@ from anyio import to_thread
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from engram_server.discovery import DiscoveryError
+from engram_server.kbstore import _as_tags as _tags_of
 from engram_server.errors import KBError
 from engram_server.explorer import social_pages
 from engram_server.provisioning import ensure_user_brain
@@ -100,7 +101,7 @@ class DashboardAuth:
 @dataclass
 class _Pending:
     idp_name: str
-    kind: str  # "login" | "join" | "ext"
+    kind: str  # "login" | "join" | "signup" | "ext"
     invite_token: str | None
     ext_redirect: str | None = None
 
@@ -516,17 +517,27 @@ class Dashboard:
         return HTMLResponse(self._render_login(next_kind="login", invite_token=None))
 
     async def join(self, request: "Request") -> "Response":
+        """Sign up. With ?token=… it redeems an invite; without one it's open signup
+        (when the operator allows it)."""
         token = request.query_params.get("token", "")
+        if not token:
+            if not self.settings.open_signup:
+                return HTMLResponse(
+                    self._page("Signups are closed",
+                               "<div class='card'><p>This Engram isn't accepting new accounts "
+                               "right now. If someone invited you, open their invite link.</p>"
+                               "<p><a href='/dashboard/login'>Already have an account? Sign in</a>"
+                               "</p></div>"),
+                    status_code=403,
+                )
+            return HTMLResponse(self._render_login(next_kind="signup", invite_token=None))
         invite = self.registry.tenancy.get_invite(token)
         if invite is None or not invite.live:
-            return HTMLResponse(
-                self._page(
-                    "Invite unavailable",
-                    "<p>This invite link is invalid, already used, or expired. "
-                    "Ask whoever invited you for a fresh one.</p>",
-                ),
-                status_code=400,
-            )
+            body = ("<div class='card'><p>This invite link is invalid, already used, or "
+                    "expired.</p>" + ("<p><a href='/join'>You can just sign up instead →</a></p>"
+                                      if self.settings.open_signup else
+                                      "<p>Ask whoever invited you for a fresh one.</p>") + "</div>")
+            return HTMLResponse(self._page("Invite unavailable", body), status_code=400)
         return HTMLResponse(self._render_login(next_kind="join", invite_token=token))
 
     @staticmethod
@@ -566,8 +577,12 @@ class Dashboard:
         kind = request.query_params.get("kind", "login")
         invite_token = request.query_params.get("token")
         ext_redirect = request.query_params.get("redirect")
+        if kind not in ("login", "join", "signup", "ext"):
+            return PlainTextResponse("Unknown sign-in flow.", status_code=400)
         if kind == "join" and not invite_token:
             return PlainTextResponse("Missing invite token.", status_code=400)
+        if kind == "signup" and not self.settings.open_signup:
+            return PlainTextResponse("Signups are closed.", status_code=403)
         if kind == "ext" and not self._valid_ext_redirect(ext_redirect or ""):
             return PlainTextResponse("Invalid extension redirect.", status_code=400)
         state = secrets.token_urlsafe(24)
@@ -610,6 +625,25 @@ class Dashboard:
             user = await idp.fetch_user(token, http)
         subject = self._subject_for(idp, user.login)
 
+        if pending.kind == "signup":
+            if not self.settings.open_signup:
+                return HTMLResponse(self._page("Signups are closed",
+                                               "<div class='card'><p>This Engram isn't accepting "
+                                               "new accounts.</p></div>"), status_code=403)
+            if self._account_handle({"sub": subject}) is not None:
+                return self._logged_in_redirect(subject, user.login,
+                                                self._account_handle({"sub": subject}))
+            email = user.login if "@" in user.login else f"{user.login}@{idp.name}.local"
+            resp = HTMLResponse(self._render_claim(user.login, email, signup=True))
+            resp.set_cookie(
+                "engram_onboarding",
+                self.auth.issue(subject, email, None, ttl=900, scope="onboarding"),
+                max_age=900, httponly=True, secure=True, samesite="lax", path="/join",
+            )
+            resp.set_cookie("engram_invite", "", max_age=900, httponly=True, secure=True,
+                            samesite="lax", path="/join")
+            return resp
+
         if pending.kind == "join":
             invite = self.registry.tenancy.get_invite(pending.invite_token or "")
             if invite is None or not invite.live:
@@ -638,8 +672,8 @@ class Dashboard:
             return HTMLResponse(
                 self._page(
                     "No account yet",
-                    "<p>That identity has no Engram account. If you have an invite, "
-                    "open its link to accept it first.</p>",
+                    "<div class='card'><p>That account doesn't have an Engram yet.</p>"
+                    "<p><a href='/join'>Create one →</a></p></div>",
                 ),
                 status_code=403,
             )
@@ -650,16 +684,27 @@ class Dashboard:
 
     async def claim(self, request: "Request") -> "Response":
         onboarding = self.auth.verify(request.cookies.get("engram_onboarding"), expected_scope="onboarding")
-        invite_token = request.cookies.get("engram_invite")
-        if onboarding is None or not invite_token:
-            return PlainTextResponse("Onboarding session expired — reopen your invite link.", status_code=400)
+        invite_token = request.cookies.get("engram_invite") or ""
+        if onboarding is None:
+            return PlainTextResponse("Sign-up session expired — start again at /join.", status_code=400)
         form = await request.form()
         handle = str(form.get("handle", "")).strip()
         idp_name = str(onboarding["sub"]).split(":", 1)[0]
+        is_signup = not invite_token
+        if is_signup and not self.settings.open_signup:
+            return PlainTextResponse("Signups are closed.", status_code=403)
         try:
-            claimed = await self._claim(invite_token, handle, idp_name, onboarding["sub"])
+            if is_signup:
+                user = self.registry.tenancy.create_account(
+                    handle, onboarding["email"], idp_name, onboarding["sub"])
+                await to_thread.run_sync(lambda: ensure_user_brain(self.settings, user.handle))
+                claimed = user.handle
+            else:
+                claimed = await self._claim(invite_token, handle, idp_name, onboarding["sub"])
         except TenancyError as exc:
-            return HTMLResponse(self._render_claim(handle, onboarding["email"], error=str(exc)), status_code=400)
+            return HTMLResponse(
+                self._render_claim(handle, onboarding["email"], error=str(exc), signup=is_signup),
+                status_code=400)
         resp = self._logged_in_redirect(onboarding["sub"], claimed, claimed)
         resp.delete_cookie("engram_onboarding", path="/join")
         resp.delete_cookie("engram_invite", path="/join")
@@ -888,22 +933,49 @@ class Dashboard:
             f"{name.capitalize()}</a></p>"
             for name in self.idps
         )
-        lead = "<p>Sign in to connect the notifier extension.</p>" if next_kind == "ext" else ""
-        return self._page("Sign in", f"{lead}<div class=card>{buttons or '<p>No sign-in method configured.</p>'}</div>")
+        if next_kind == "ext":
+            lead, title = "<p>Sign in to connect the notifier extension.</p>", "Sign in"
+        elif next_kind == "signup":
+            title = "Create your Engram"
+            lead = ("<p>Your AI's long-term memory — a private knowledge base your Claude or "
+                    "ChatGPT reads and writes across every session and device. Free, and yours: "
+                    "it's a git repo you can take with you.</p>")
+        elif next_kind == "join":
+            lead, title = "<p>You've been invited. Sign in to set up your Engram.</p>", "Create your Engram"
+        else:
+            lead, title = "", "Sign in"
+        footer = ""
+        if next_kind == "login" and self.settings.open_signup:
+            footer = "<p class='meta'>New here? <a href='/join'>Create your Engram →</a></p>"
+        elif next_kind == "signup":
+            footer = "<p class='meta'>Already have an account? <a href='/dashboard/login'>Sign in</a></p>"
+        return self._page(
+            title,
+            f"{lead}<div class=card>{buttons or '<p>No sign-in method configured.</p>'}</div>{footer}",
+        )
 
-    def _render_claim(self, suggested: str, email: str, error: str | None = None) -> str:
+    def _render_claim(self, suggested: str, email: str, error: str | None = None,
+                      signup: bool = False) -> str:
         # Suggest a handle from the login/email local-part, sanitized.
         seed = suggested.split("@", 1)[0].lower()
         safe = "".join(c for c in seed if c.isalnum() or c == "-").strip("-")[:32] or "me"
         err = f"<p class=error>{_html.escape(error)}</p>" if error else ""
+        lead = (
+            f"<p>Signed in as <b>{_html.escape(email)}</b>. Pick the handle you'll be known by.</p>"
+            if signup else
+            f"<p>You're accepting an invite for <b>{_html.escape(email)}</b>.</p>"
+        )
         return self._page(
-            "Claim your handle",
-            f"<p>You're accepting an invite for <b>{_html.escape(email)}</b>.</p>{err}"
+            "Choose your handle",
+            f"{lead}{err}"
             "<form method=post action='/join/claim'><div class=card>"
-            "<p>Pick a handle (lowercase letters, digits, hyphens):</p>"
+            "<p>Your handle is how people find and message you — lowercase letters, digits "
+            "and hyphens.</p>"
             f"<p>@ <input name=handle value='{_html.escape(safe)}' "
             "pattern='[a-z0-9-]{2,32}' required></p>"
-            "<button type=submit>Create my brain</button></div></form>",
+            "<button type=submit>Create my Engram</button>"
+            "<p class='meta'>This creates your own private knowledge base. Nothing you write "
+            "is visible to anyone until you publish it.</p></div></form>",
         )
 
     async def _render_dashboard(self, session: dict, notice: str | None = None,
@@ -1042,14 +1114,21 @@ class Dashboard:
         return (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width, initial-scale=1'>"
-            f"<title>{esc(title)} — Engram</title><style>{CSS}</style></head><body>"
+            f"<title>{esc(title)} — Engram</title><style>{CSS}"
+            # Visibility badges: public is loud on purpose, private is quiet but present.
+            ".badge.vis-public{background:var(--accent);color:var(--accent-fg);font-weight:600}"
+            ".badge.vis-contacts{background:var(--accent-soft);color:var(--accent-ink)}"
+            ".badge.vis-private{background:var(--surface-2);color:var(--muted)}"
+            "</style></head><body>"
             "<input type=checkbox id=navcb class=navcb aria-hidden=true>"
             "<header class=topbar><div class=topbar-inner>"
             "<label for=navcb class=burger aria-label='Toggle navigation'>≡</label>"
             "<a class=wordmark href='/dashboard'><span class=mark>◗</span>Engram</a>"
             "<form class=search role=search action='/dashboard/search' method=get>"
             "<input type=search name=q placeholder='Search your brain…' aria-label='Search' autocomplete=off></form>"
-            "<nav class=topnav><a href='/dashboard'>Home</a>"
+            # No "Home" item — the wordmark on the left already goes home (standard
+            # convention); a nav link for it was a third redundant path to one place.
+            "<nav class=topnav>"
             "<a href='/dashboard/people'>People</a><a href='/dashboard/feed'>Feed</a>"
             "<a href='/dashboard/asks'>Questions</a>"
             "<a href='/dashboard/graph'>Graph</a><a href='/dashboard/activity'>Activity</a></nav>"
@@ -1061,33 +1140,108 @@ class Dashboard:
     def _brain_sidebar(self, projects: list, active: str | None = None) -> str:
         from engram_server.explorer.html import esc
 
-        items = ["<a class='nav-link' href='/dashboard'>← Home</a>"]
-        if projects:
+        # No "Home" entry — the wordmark in the topbar is the way home.
+        items: list[str] = []
+        live = [p for p in projects if str(p.get("status") or "active") != "archived"]
+        groups: dict[str, list] = {}
+        for p in live:
+            for tag in (p.get("tags") or ["__untagged__"]):
+                groups.setdefault(tag, []).append(p)
+
+        def _links(bucket: list) -> str:
+            return "".join(
+                f"<a class='{'nav-link active' if str(p['id']) == active else 'nav-link'}' "
+                f"href='/dashboard/p/{esc(str(p['id']))}'>{esc(str(p.get('title') or p['id']))}</a>"
+                for p in bucket
+            )
+
+        for tag in sorted(k for k in groups if k != "__untagged__"):
+            items.append(f"<p class='nav-group'>{esc(tag)}</p>")
+            items.append(_links(groups[tag]))
+        if groups.get("__untagged__"):
             items.append("<p class='nav-group'>Projects</p>")
-            for p in projects:
-                cls = "nav-link active" if str(p["id"]) == active else "nav-link"
-                items.append(
-                    f"<a class='{cls}' href='/dashboard/p/{esc(str(p['id']))}'>"
-                    f"{esc(str(p.get('title') or p['id']))}</a>"
-                )
+            items.append(_links(groups["__untagged__"]))
         return "<nav class='nav-sub'>" + "".join(items) + "</nav>"
 
-    def _render_projects_block(self, projects: list) -> str:
+    @staticmethod
+    def _project_default_visibility(store, path: str) -> str:
+        """The visibility a concept inherits from its project's context.md."""
+        from engram_server.explorer.render import split_frontmatter
+
+        parts = [p for p in path.split("/") if p]
+        root = f"projects/{parts[1]}" if parts[:1] == ["projects"] and len(parts) > 1 else (parts[0] if parts else "")
+        ctx = store.root / root / "context.md"
+        if not ctx.is_file():
+            return "private"
+        try:
+            meta, _b = split_frontmatter(ctx.read_text(encoding="utf-8"))
+        except OSError:
+            return "private"
+        vis = str(meta.get("visibility") or "").strip().lower()
+        return vis if vis in ("public", "contacts", "private") else "private"
+
+    @staticmethod
+    def _vis_badge(visibility: str, *, always: bool = True) -> str:
+        """A badge saying who can see this. Rendered for EVERY state (including private)
+        so exposure is never inferred from the absence of a mark — silently-public work
+        is the failure mode this model exists to prevent."""
         from engram_server.explorer.html import esc
 
-        if not projects:
-            return ("<div class=card><h2>Your projects</h2>"
-                    "<p style='color:#8a7960'>No projects yet — start one from your Claude "
-                    "(<span class=mono>kb_write</span>), and it'll show here.</p></div>")
-        cards = "".join(
+        vis = (visibility or "private").lower()
+        label = {"public": "🌐 public", "contacts": "👥 contacts", "private": "🔒 private"}.get(
+            vis, "🔒 private"
+        )
+        if vis == "private" and not always:
+            return ""
+        return f"<span class='badge vis-{esc(vis)}'>{esc(label)}</span>"
+
+    @staticmethod
+    def _project_card(p: dict) -> str:
+        from engram_server.explorer.html import chip, esc
+
+        tags = "".join(chip(t) for t in (p.get("tags") or []))
+        vis = Dashboard._vis_badge(str(p.get("visibility") or "private"))
+        return (
             f"<a class='card' href='/dashboard/p/{esc(str(p['id']))}'>"
             f"<h3>{esc(str(p.get('title') or p['id']))}</h3>"
             + (f"<p class='desc'>{esc(str(p['description']))}</p>" if p.get("description") else "")
+            + f"<div class='stat-row'>{vis}{tags}</div>"
             + (f"<p class='meta'>{esc(str(p['last_session']))}</p>" if p.get("last_session") else "")
             + "</a>"
-            for p in projects
         )
-        return f"<div class=card><h2>Your projects</h2><div class='cards'>{cards}</div></div>"
+
+    def _render_projects_block(self, projects: list) -> str:
+        """Projects grouped by their context.md `tags` (archived ones tucked away last)."""
+        from engram_server.explorer.html import esc
+
+        if not projects:
+            return ("<div class='card'><p class='empty'>No projects yet — start one from your "
+                    "Claude (say \"start a project for X\"), and it'll show here.</p></div>")
+
+        live = [p for p in projects if str(p.get("status") or "active") != "archived"]
+        archived = [p for p in projects if str(p.get("status") or "active") == "archived"]
+
+        groups: dict[str, list] = {}
+        for p in live:
+            for tag in (p.get("tags") or ["__untagged__"]):
+                groups.setdefault(tag, []).append(p)
+
+        parts: list[str] = []
+        # Tagged groups first (alphabetical), then whatever carries no tag.
+        for tag in sorted(k for k in groups if k != "__untagged__"):
+            parts.append(f"<p class='section-label'>{esc(tag)}</p>")
+            parts.append("<div class='cards'>" + "".join(self._project_card(p) for p in groups[tag]) + "</div>")
+        if groups.get("__untagged__"):
+            if parts:  # only label the remainder when there are real groups above it
+                parts.append("<p class='section-label'>Ungrouped</p>")
+            parts.append("<div class='cards'>"
+                         + "".join(self._project_card(p) for p in groups["__untagged__"]) + "</div>")
+        if archived:
+            parts.append(
+                f"<details><summary class='meta'>Archived ({len(archived)})</summary>"
+                "<div class='cards'>" + "".join(self._project_card(p) for p in archived) + "</div></details>"
+            )
+        return "".join(parts)
 
     def _render_project(self, store, project: str, rel: str, projects: list) -> str:
         from engram_server.explorer.html import esc
@@ -1105,7 +1259,16 @@ class Dashboard:
             except OSError:
                 pass
         title = str(meta.get("title") or project)
-        parts = [f"<div class='page-head'><div><p class='eyebrow'>Project</p><h1>{esc(title)}</h1></div></div>"]
+        vis = str(meta.get("visibility") or "private").lower()
+        parts = [
+            f"<div class='page-head'><div><p class='eyebrow'>Project</p><h1>{esc(title)}</h1></div></div>",
+            f"<div class='stat-row'>{self._vis_badge(vis)}"
+            + "".join(f"<span class='chip'>{esc(t)}</span>" for t in _tags_of(meta.get("tags")))
+            + "</div>",
+        ]
+        if vis == "public":
+            parts.append("<p class='meta'>Everything in this project is visible to other "
+                         "Engram users unless a concept says otherwise.</p>")
         if body_md:
             parts.append(f"<div class='md'>{self._dash_links(render_markdown(body_md, f'{rel}/context.md'))}</div>")
         entries = _log_entries(pdir / "log.md")
@@ -1200,6 +1363,12 @@ class Dashboard:
             crumbs.append((proj, f"/dashboard/p/{proj}"))
         head = (f"<div class='page-head'><div>"
                 f"<p class='eyebrow'>{esc(str(meta.get('type') or 'concept'))}</p><h1>{esc(title)}</h1></div></div>")
+        # Effective reach: this concept's own visibility, else its project's default.
+        own = str(meta.get("visibility") or "").strip().lower()
+        eff = own or self._project_default_visibility(store, path)
+        head += f"<div class='stat-row'>{self._vis_badge(eff)}" + (
+            "<span class='chip'>inherited from project</span>" if not own and eff != "private" else ""
+        ) + "</div>"
         body = head + f"<div class='md'>{self._dash_links(render_markdown(body_md, path))}</div>"
         return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects, active=proj))
 

@@ -248,7 +248,7 @@ async def test_kb_mark_read_rejects_traversal_on_tenant_store(mu, monkeypatch):
 @pytest.mark.asyncio
 async def test_unknown_subject_is_refused(mu, monkeypatch):
     _login(monkeypatch, "google:stranger@example.com")
-    with pytest.raises(KBError, match="invite"):
+    with pytest.raises(KBError, match="No Engram account"):
         await app_module.current_store()
 
 
@@ -270,7 +270,7 @@ async def test_subject_prefix_confusion_never_resolves_to_owner(mu, monkeypatch,
     treated as an unknown (unregistered) identity, never silently granted the
     owner's brain."""
     _login(monkeypatch, spoofed_subject)
-    with pytest.raises(KBError, match="invite"):
+    with pytest.raises(KBError, match="No Engram account"):
         await app_module.current_store()
 
 

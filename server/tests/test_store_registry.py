@@ -48,9 +48,9 @@ async def test_owner_subject_maps_to_owner_in_multiuser(mu_settings):
 
 
 @pytest.mark.asyncio
-async def test_unknown_subject_is_taught_the_invite_flow(mu_settings):
+async def test_unknown_subject_is_taught_the_signup_flow(mu_settings):
     registry = StoreRegistry(mu_settings)
-    with pytest.raises(KBError, match="invite"):
+    with pytest.raises(KBError, match="No Engram account"):
         await registry.store_for_subject("google:stranger@example.com")
 
 

@@ -60,11 +60,18 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace; fo
   display: inline-flex; align-items: center; gap: .5rem;
 }
 .wordmark .dot { color: var(--accent); }
-.topbar a.cta {
+a.cta {
+  display: inline-block;
   border: 1px solid var(--line-2); border-radius: .6rem; padding: .45rem .9rem;
   font-size: .92rem; font-weight: 600; color: var(--fg); white-space: nowrap;
 }
-.topbar a.cta:hover { background: var(--surface-2); text-decoration: none; }
+a.cta:hover { background: var(--surface-2); text-decoration: none; }
+/* The primary call to action: creating an account. */
+a.cta.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  padding: .6rem 1.15rem; font-size: 1rem;
+}
+a.cta.primary:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
 
 .hero { padding: 4.5rem 0 3rem; }
 .hero h1 {
@@ -163,6 +170,7 @@ def homepage_html(settings: Settings) -> str:
     """Render the self-contained public homepage (zero external requests)."""
     mcp_url = settings.public_url.rstrip("/") + "/mcp"
     dashboard_url = settings.public_url.rstrip("/") + "/dashboard"
+    signup_url = settings.public_url.rstrip("/") + "/join"
     mcp_url_esc = _escape(mcp_url)
 
     cards = "".join(
@@ -236,7 +244,7 @@ def homepage_html(settings: Settings) -> str:
 <header class="topbar">
   <div class="wrap topbar-inner">
     <span class="wordmark">Engram<span class="dot">.</span></span>
-    <a class="cta" href="{_escape(dashboard_url)}">Have an invite? Open your dashboard</a>
+    <a class="cta primary" href="{_escape(signup_url)}">Create your Engram</a>
   </div>
 </header>
 
@@ -270,23 +278,31 @@ def homepage_html(settings: Settings) -> str:
   </section>
 
   <section class="wrap" id="private">
-    <h2>Invite-only, private by design</h2>
+    <h2>Free, and private by default</h2>
     <div class="note">
       <p style="margin:0 0 .6rem;">
-        <strong>Accounts are invite-only.</strong> Sign in with GitHub or Google &mdash;
-        there's no separate password to manage or lose.
+        <strong>Anyone can create one.</strong> Sign in with GitHub or Google &mdash; no
+        password to manage or lose, and nothing to pay.
+      </p>
+      <p style="margin:0 0 .6rem;">
+        <strong>Everything starts private.</strong> Nothing you write is visible to anyone
+        until you explicitly publish it &mdash; and you can see exactly what's public at a glance.
       </p>
       <p style="margin:0;">
         <strong>Your brain is yours.</strong> It's a real git repository, so it's portable:
         nothing about your knowledge base is locked to Engram.
       </p>
     </div>
+    <p style="margin:1.4rem 0 0;">
+      <a class="cta primary" href="{_escape(signup_url)}">Create your Engram &rarr;</a>
+      <a class="cta" href="{_escape(dashboard_url)}" style="margin-left:.5rem">Sign in</a>
+    </p>
   </section>
 </main>
 
 <footer class="wrap">
   <span class="wordmark">Engram<span class="dot">.</span></span>
-  <a href="{_escape(dashboard_url)}">Have an invite? Open your dashboard</a>
+  <a href="{_escape(dashboard_url)}">Already have one? Open your dashboard</a>
 </footer>
 </body>
 </html>

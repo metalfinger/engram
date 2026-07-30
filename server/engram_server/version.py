@@ -40,6 +40,7 @@ CURRENT_TOOLS = (
     "kb_shared_with_me", "kb_guest_read", "kb_guest_search", "kb_send",
     "kb_inbox_card", "social_state", "social_conversation",
     "social_send", "social_accept", "social_mark_read",
+    "kb_tag_project", "kb_attach_project",
     "kb_publish", "kb_public", "kb_explore", "kb_read_public",
     "kb_follow", "kb_feed", "kb_ask", "kb_answer", "kb_asks",
     "kb_explore_card", "explore_state", "explore_profile",
@@ -65,6 +66,9 @@ CHANGES = (
     "public work: kb_publish/kb_public — private by default, project default + concept override",
     "discovery: kb_explore / kb_read_public / kb_follow / kb_feed (+ kb_explore_card widget)",
     "ask the author: kb_ask / kb_answer / kb_asks — questions never touch the owner's brain",
+    "signup is OPEN — anyone can create an Engram at /join (no invite needed)",
+    "every session should anchor to a project: kb_attach_project (+ .engram-project pin)",
+    "organize projects with kb_tag_project(tags=[...], status=archived) — tags are the folders",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.

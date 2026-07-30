@@ -1239,6 +1239,55 @@ async def social_mark_read() -> dict[str, Any]:
     return {"ok": True}
 
 
+@mcp.tool()
+async def kb_tag_project(project: str, tags: list[str] | None = None, status: str = "") -> dict[str, Any]:
+    """Organize projects into groups. Call when the user wants to group, categorise, file,
+    archive or "put projects in folders" — tags do that job here.
+
+    `tags`: the project's full group list, e.g. ["client-work", "alt"] (pass [] to clear).
+    `status`: 'active' | 'paused' | 'archived' — archived projects drop out of the way in
+    listings without being deleted. A project can carry several tags at once, which is why
+    this is tags rather than nested folders (no path churn, and no project has to live in
+    exactly one place). kb_projects returns tags so you can group by them.
+
+    Returns {project, tags, status, sha, pushed}.
+    """
+    return await (await current_store()).kb_tag_project(project, tags, status)
+
+
+@mcp.tool()
+async def kb_attach_project(project: str = "", description: str = "") -> dict[str, Any]:
+    """Anchor THIS session to a project — call at session start when no project is pinned.
+
+    Every session should be working on a known project so its work is logged somewhere
+    coherent and it shows up correctly in the workspace. If the repo has no
+    `.engram-project` file, ask the user which project this is (kb_projects lists them),
+    then call this with that id — or with a NEW id plus a one-line `description` to start
+    a project from scratch. Call with no arguments to get the list to choose from.
+
+    After it returns, WRITE the returned `pin_content` to a file named `.engram-project`
+    at the repo root (Claude Code: a one-line file) — that pins this repo to the project
+    for this and every future session, so nobody has to be asked again.
+
+    Returns {project, created, pin_file, pin_content, instruction} or {projects: [...]}.
+    """
+    store = await current_store()
+    if not project:
+        return {
+            "projects": await store.kb_projects(),
+            "instruction": "Ask the user which of these this session is working on (or a "
+                           "new name + description), then call kb_attach_project again.",
+        }
+    result = await store.ensure_project(project, description)
+    return {
+        **result,
+        "pin_file": ".engram-project",
+        "pin_content": result["project"],
+        "instruction": f"Write '{result['project']}' into a file named .engram-project at "
+                       "the repo root so this repo stays attached in future sessions.",
+    }
+
+
 # ------------------------------------------------------------------ public work & discovery (M5)
 #
 # Three tiers of reach: private (default), contacts, public. "Public" here means any
@@ -1900,7 +1949,7 @@ if _AUTH_ENABLED:
                 # MUST precede the generic handlers: names the login, states policy.
                 msg = (
                     f"403 Forbidden: '{exc.login}' has no Engram account yet. "
-                    f"Accept your invite at {settings.public_url}/ first, then reconnect."
+                    f"Create one at {settings.public_url}/join (it's free), then reconnect."
                     if settings.multiuser
                     else f"403 Forbidden: '{exc.login}' is not on the allowlist. "
                     "This server is private — only Hiren's accounts may connect."

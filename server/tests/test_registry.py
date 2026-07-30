@@ -66,6 +66,8 @@ EXPECTED_TOOLS = frozenset(
         "social_mark_read",
         "kb_publish",
         "kb_public",
+        "kb_tag_project",
+        "kb_attach_project",
         "kb_explore",
         "kb_read_public",
         "kb_follow",

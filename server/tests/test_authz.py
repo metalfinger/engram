@@ -62,7 +62,7 @@ async def test_owner_subject_resolves_to_owner(mu_registry, monkeypatch):
 @pytest.mark.asyncio
 async def test_unknown_subject_is_refused(mu_registry, monkeypatch):
     _login(monkeypatch, "google:stranger@example.com")
-    with pytest.raises(KBError, match="invite"):
+    with pytest.raises(KBError, match="No Engram account"):
         await app_module.current_store()
 
 

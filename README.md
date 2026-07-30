@@ -27,8 +27,12 @@ is a git repo you own, portable across model vendors.
   and a live multi-session "office."
 
 **Multi-user (v2, opt-in behind `ENGRAM_MULTIUSER`):**
-- **Accounts + invites** — OAuth only (GitHub/Google, no passwords); invite by email *or*
-  GitHub username; a magic-link onboarding claims a `@handle` and provisions a private brain.
+- **Open signup** — anyone can create their own Engram at `/join`: OAuth only
+  (GitHub/Google, no passwords), pick a `@handle`, get a private brain. Operators can
+  close signups (`ENGRAM_OPEN_SIGNUP=0`) and invite by email *or* GitHub username instead.
+- **Publish what you choose** — everything is private by default; `visibility:
+  private | contacts | public` per concept, with a project-level default. Every surface
+  marks the state (🌐 / 👥 / 🔒) so exposure is never inferred from a missing badge.
 - **A unified home** — every user browses *their own* brain (projects, concepts, graph,
   search, activity) with the same rich UI, plus profile, contacts, and notifications.
 - **Contacts + DMs** — mutual-consent contacts gate DMs; messages delivered through each

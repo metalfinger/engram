@@ -301,6 +301,19 @@ class TenancyStore:
             self._conn.commit()
         return user
 
+    def create_account(self, handle: str, email: str, idp: str, idp_subject: str) -> User:
+        """Open signup: create an account with no invite. Same integrity rules as
+        accept_invite (unique handle/email/subject, reserved + Windows device-name
+        handles refused) — the only difference is that no invite is consumed.
+
+        The operator gates whether this path is reachable at all (settings.open_signup);
+        this method is mechanism, not policy."""
+        canonical = validate_handle(handle)
+        with self._lock:
+            user = self._insert_user(canonical, email, idp, idp_subject)
+            self._conn.commit()
+        return user
+
     # -- invites -------------------------------------------------------------
 
     def _invite(self, row: sqlite3.Row | None) -> Invite | None:

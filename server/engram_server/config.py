@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     # where per-user brains live (users_root/<handle>/brain.git bare + /brain
     # checkout). Empty strings resolve to the ~/.engram defaults below.
     multiuser: bool = False
+    # Anyone with a GitHub/Google account can create their own Engram (the product
+    # intent). Set ENGRAM_OPEN_SIGNUP=0 to go back to invite-only — existing invites
+    # keep working either way. Only meaningful when multiuser is on.
+    open_signup: bool = True
     tenancy_db_path: str = ""  # empty -> Path.home()/".engram"/"engram.db"
     users_root: str = ""  # empty -> Path.home()/".engram"/"users"
 

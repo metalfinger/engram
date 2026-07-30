@@ -117,8 +117,8 @@ class StoreRegistry:
         user = self.tenancy.user_by_subject(subject)
         if user is None:
             raise KBError(
-                f"No Engram account for {subject!r}. Accounts are invite-only — "
-                "ask the operator for an invite, then sign in again once accepted."
+                f"No Engram account for {subject!r} yet. Sign up at /join to create your own "
+                "brain (free), then reconnect this session."
             )
         if user.status != "active":
             raise KBError(
