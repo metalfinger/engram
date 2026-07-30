@@ -1,47 +1,109 @@
-# ENGRAM 🧠
+# Engram 🧠
 
-> The durable trace your AI sessions leave behind. A cross-session knowledge ecosystem:
-> OKF-formatted knowledge base in git + 28 `kb_*` MCP tools + a Claude skill + a live web
-> explorer — so any session on any surface (Claude Code, claude.ai, mobile, ChatGPT) picks
-> up exactly where the last one left off, and sessions can see and talk to each other.
+> **Long-term memory for your AI.** A private, git-backed knowledge base your Claude (or
+> any MCP client) reads and writes across every session and device — so a new chat picks up
+> exactly where the last one left off. Multi-user: invite people, share scoped access to
+> parts of your brain, and let their AI read it directly.
 
-## The pieces
+Engram is **data + coordination, not an AI.** It stores markdown, does git, computes local
+embeddings for search, and coordinates people. All the intelligence runs on *your own*
+Claude/ChatGPT through the MCP tools — nothing is sent to a server-side model. Your memory
+is a git repo you own, portable across model vendors.
 
-1. **`brain`** — a private git repo ([metalfinger/brain](https://github.com/metalfinger/brain)) holding an OKF v0.1 bundle: one markdown file per concept, YAML frontmatter, per-project `context.md` / `log.md` / `messages/`. The only stateful thing in the system. Engine philosophy: **rules over schema** — three anchors per project, every other shape is invented per project and auto-indexed.
-2. **`engram_server`** (`server/`) — FastMCP server (uv-managed, 480+ tests) on port 9210, tunneled as:
-   - `engram.metalfinger.xyz/mcp` — 28 `kb_*` tools + OAuth (GitHub allowlist)
-   - `brain.metalfinger.xyz` — explorer (Cloudflare Access): projects, decisions, artifacts gallery, graph, threads, workspace, **live office**
-   The server owns one git checkout; a single write lock serializes every mutation (pull-rebase → mutate → commit → push). Sessions never touch git.
-3. **`skills/engram/SKILL.md`** — the protocol: lazy loading, write-immediately concepts, session messages, close checklist, **token-thrift rules**, long-poll collaboration. Three synced copies (repo, brain, `~/.claude/skills`); self-updates on other PCs via the `kb_load` server manifest.
-4. **`hooks/`** — auto-presence for Claude Code: hooks spool plain JSON heartbeats (SessionStart / UserPromptSubmit / PostToolUse / Stop / SessionEnd); the server ingests through its own lock. Pin a repo to a project with a one-line `.engram-project` file. See `hooks/README.md`.
+---
 
-## What it does (v1.x, all live)
+## What it does
 
-- **Knowledge of record** — decisions, specs, runbooks, people, written as the work happens; hybrid semantic search (fastembed + Qdrant, RRF fusion); nightly self-healing reconcile + morning briefing.
-- **Artifacts** — documents built from knowledge with provenance manifests, staleness tracking, revocable public share links, HTML served verbatim.
-- **Cross-session collaboration** — threads/rooms (`kb_thread_post` with **server-side long-poll** `wait_for_reply`), presence roster, handoffs, advisory claims + `base_hash` optimistic concurrency. Agents can ask Hiren directly (`@hiren:` + wait) — he replies from the office in the browser.
-- **The Live Office** (`/brain/office`) — a fixed pixel-art office floor hand-baked from LimeZu "Modern Interiors" (full license): 8 workstations, 2 conference rooms, lounge, office cat. Sessions walk in and take a desk with their project "open"; threads meet in the glass rooms; click a meeting to watch live and reply as Hiren; hover/click characters for dossiers (PC, folder, repo, GitHub link, timeline). Graduated presence: active → idle-at-desk (💤) → gone.
-- **Brain Navigator** — MCP App widget (SEP-1865 / MCP Apps) mounting inside claude.ai.
+**Single-user (the core):**
+- **Remember across sessions** — decisions, specs, notes, people, written as work happens
+  (`kb_write`); load a project's full state in any new session (`kb_load`).
+- **Navigate, never ingest** — orient from indexes, fetch one concept at a time
+  (`kb_read`), hybrid semantic + text search (`kb_search`, local fastembed + optional Qdrant).
+- **Pass notes between sessions** — leave a message the next session must act on; keep a
+  shared running todo list; each project's `context.md` tracks open loops automatically.
+- **Artifacts** — documents built from knowledge with provenance + staleness tracking +
+  revocable public share links.
+- **A web explorer** — browse projects, concepts, an interactive concept graph, activity,
+  and a live multi-session "office."
+
+**Multi-user (v2, opt-in behind `ENGRAM_MULTIUSER`):**
+- **Accounts + invites** — OAuth only (GitHub/Google, no passwords); invite by email *or*
+  GitHub username; a magic-link onboarding claims a `@handle` and provisions a private brain.
+- **A unified home** — every user browses *their own* brain (projects, concepts, graph,
+  search, activity) with the same rich UI, plus profile, contacts, and notifications.
+- **Contacts + DMs** — mutual-consent contacts gate DMs; messages delivered through each
+  person's own Claude; notifications via email + a Chrome extension.
+- **Context sharing** — grant a contact scoped, boundary-safe read access to part of your
+  brain (`kb_share_context`); their Claude reads your shelf directly (`kb_guest_read`).
+- **Tenant isolation** — per-user git brains, mandatory search scoping, an adversarial
+  isolation test suite, per-tenant quotas + rate limits, nightly off-site mirrors.
+
+~45 MCP tools; ~870 tests.
+
+## Architecture
+
+- **`brain`** — a git repo holding an [OKF](docs/HANDOFF.md)-style bundle: one markdown file
+  per concept with YAML frontmatter; per-project `context.md` / `log.md` / `messages/` are
+  the only fixed anchors, everything else is invented per project and auto-indexed. The only
+  stateful thing. In multi-user, each user gets their own.
+- **`server/` (`engram_server`)** — a [FastMCP](https://github.com/modelcontextprotocol) server (uv-managed):
+  the `kb_*` tools, an OAuth proxy (GitHub/Google IdP), the web explorer + dashboard, a
+  scheduler (reconcile, briefings, backups), and a per-user store registry. One git checkout
+  per brain, a single write lock per store; sessions never touch git directly.
+- **`skills/engram/SKILL.md`** — the protocol a Claude session follows (lazy loading, write
+  concepts immediately, session messages, token-thrift rules, contacts/DMs/sharing).
+- **`hooks/`** — optional Claude Code auto-presence (heartbeats spooled to the server).
+- **`clients/chrome-extension/`** — MV3 desktop notifier (OAuth sign-in).
+
+## Quick start (self-host)
+
+```bash
+cd server
+uv sync
+cp .env.example .env      # fill in your values (brain repo, OAuth creds, etc.)
+uv run engram-server      # serves 127.0.0.1:9210
+```
+
+Add it to your AI:
+- **Claude Code:** `claude mcp add --transport http engram https://YOUR_HOST/mcp`
+- **claude.ai / ChatGPT:** Settings → Connectors → add `https://YOUR_HOST/mcp`
+
+To go multi-user, see **[docs/MULTIUSER-SETUP.md](docs/MULTIUSER-SETUP.md)**. Off-site backups
+runbook: **[docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md)**.
+
+> The server binds to localhost and is meant to sit behind a tunnel/reverse proxy
+> (e.g. Cloudflare Tunnel) that terminates TLS and provides the public hostname.
 
 ## Repo layout
 
 ```
 engram/
-├── docs/HANDOFF.md          # original build spec (historical)
-├── skills/engram/SKILL.md   # the protocol skill (3 synced copies)
+├── docs/                    # HANDOFF (design), MULTIUSER-SETUP, BACKUP-RESTORE
+├── skills/engram/SKILL.md   # the protocol skill
 ├── hooks/                   # Claude Code auto-presence hooks + install guide
-├── brain-skeleton/          # seed structure (historical)
-└── server/                  # engram_server: tools, oauth, explorer, office, scheduler
-    └── engram_server/explorer/assets/limezu/   # licensed art + baked office floor (+ bake script)
+├── clients/chrome-extension # desktop notification extension (MV3)
+├── brain-skeleton/          # seed structure for a fresh brain
+└── server/engram_server/    # tools, oauth, explorer + dashboard, social, scheduler
 ```
 
-## Operating notes
+## A note on the "office" art
 
-- Restart after server changes: `scripts/start-engram.ps1` (kill PID on 9210 first); while production runs use `uv run --no-sync`.
-- Server-made brain commits author as `helix-bot`; never commit tokens (deploy key + CF config live in `~/.engram/`).
-- The brain documents Engram itself: read `projects/engram/` there (context, decisions, specs) for the full story.
+The live-office floor is composed from **LimeZu "Modern Interiors"** — a paid asset pack.
+Its license permits commercial use **with credit** but **not redistribution**, so the art is
+**not included** in this repository. The office feature will render its procedural fallback
+without it; to get the full pixel-art floor, purchase the pack yourself and drop it into
+`server/engram_server/explorer/assets/limezu/`. **Art: LimeZu.**
 
-## Next
+## Status
 
-- ~~MCP Apps wave 2~~ SHIPPED 2026-07-10: compliance pass + `kb_meetings` (reply to threads from mobile) + `kb_office` (live-office card). Phase 2: LimeZu sprites in the office widget.
-- v2 (gated): social brains — federated knowledge, AI-mediated. See `projects/engram/ideas/2026-07-social-brains.md`.
+The single-user system and the multi-user layer (M0–M3 + a per-user web home) are built and
+tested. Not yet built: a public/follow/feed social layer, persona ("alt") distillation, and
+headless triage (the one feature that would need a server-side LLM). See the design docs for
+the full roadmap.
+
+## License
+
+No code license is set yet — until one is added, default copyright applies (all rights
+reserved). Pick and add a `LICENSE` file (MIT/Apache-2.0 are common for this kind of tool)
+before treating it as reusable open source. The LimeZu art is **not** covered by any code
+license and is not included — see the note above.
