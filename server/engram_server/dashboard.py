@@ -408,9 +408,27 @@ class Dashboard:
                 self.registry.social.create_notification(other.id, "new_follower", f"@{me.handle} followed you")
             else:
                 self.registry.discovery.unfollow(me.id, other.id)
-        back = request.headers.get("referer") or "/dashboard/people"
-        return RedirectResponse(back if back.startswith("/") or "/dashboard" in back else "/dashboard/people",
-                                status_code=302)
+        return RedirectResponse(self._safe_back(request, "/dashboard/people"), status_code=302)
+
+    @staticmethod
+    def _safe_back(request: "Request", fallback: str) -> str:
+        """Where to send the user after a form POST, without becoming an open redirect.
+
+        The Referer is attacker-influenceable (a form on evil.com can send one), so we
+        never redirect to it directly: we require the SAME ORIGIN and then use only its
+        PATH. Substring checks like '/dashboard' in referer are unsafe —
+        https://evil.com/dashboard would pass one — and a bare startswith('/') would
+        still allow the protocol-relative //evil.com."""
+        from urllib.parse import urlsplit
+
+        ref = request.headers.get("referer") or ""
+        if not ref:
+            return fallback
+        parts = urlsplit(ref)
+        same_origin = parts.netloc == urlsplit(str(request.url)).netloc
+        if not same_origin or not parts.path.startswith("/dashboard"):
+            return fallback
+        return parts.path + (f"?{parts.query}" if parts.query else "")
 
     async def ask_action(self, request: "Request") -> "Response":
         session = self._session(request)

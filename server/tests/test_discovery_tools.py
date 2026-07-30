@@ -155,6 +155,18 @@ async def test_question_never_touches_the_owners_brain(mu, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_open_questions_surface_in_kb_load(mu, monkeypatch):
+    """A session should learn at startup that someone is waiting on an answer."""
+    await _alice_publishes(monkeypatch)
+    _login(monkeypatch, "bob@example.com")
+    await app_module.kb_ask("alice", "projects/openwork/pub.md", "Waiting on you?")
+
+    _login(monkeypatch, "alice@example.com")
+    loaded = await app_module.kb_load("openwork", lite=True)
+    assert loaded["social"]["open_questions"] >= 1
+
+
+@pytest.mark.asyncio
 async def test_cannot_ask_about_private_work(mu, monkeypatch):
     await _alice_publishes(monkeypatch)
     _login(monkeypatch, "bob@example.com")

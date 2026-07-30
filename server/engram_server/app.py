@@ -281,6 +281,8 @@ async def kb_load(project: str, lite: bool = False) -> dict[str, Any]:
             result["social"] = {
                 "unread_dms": counts.get("dms", 0),
                 "unread_notifications": counts.get("notifications", 0),
+                # Someone is waiting on an answer about your public work (kb_asks).
+                "open_questions": registry.discovery.ask_counts(user.id).get("open_for_me", 0),
             }
     return result
 

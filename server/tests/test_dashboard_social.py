@@ -73,6 +73,43 @@ def test_mark_notifications_read(env):
     assert env.registry.social.unread_counts(env.users["bob"].id)["notifications"] == 0
 
 
+@pytest.mark.parametrize(
+    "referer",
+    [
+        "https://evil.com/dashboard",        # substring check would have passed this
+        "//evil.com/dashboard",              # protocol-relative
+        "https://evil.com/dashboard/people",
+        "http://testserver.evil.com/dashboard",
+    ],
+)
+def test_follow_never_redirects_off_site(env, referer):
+    """Open-redirect guard: the Referer is attacker-influenceable, so a cross-origin
+    one must never become the redirect target."""
+    r = env.client.post(
+        "/dashboard/follow",
+        cookies={"engram_session": env.alice},
+        data={"handle": "bob", "follow": "1"},
+        headers={"referer": referer},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert "evil.com" not in location
+    assert location.startswith("/dashboard")
+
+
+def test_follow_returns_to_the_same_site_page(env):
+    """The UX the guard must preserve: following from a profile returns to that profile."""
+    r = env.client.post(
+        "/dashboard/follow",
+        cookies={"engram_session": env.alice},
+        data={"handle": "bob", "follow": "1"},
+        headers={"referer": "https://testserver/dashboard/u/bob"},
+        follow_redirects=False,
+    )
+    assert r.headers["location"] == "/dashboard/u/bob"
+
+
 def test_social_panel_requires_session(env):
     r = env.client.post("/dashboard/contact/add", data={"handle": "bob"}, follow_redirects=False)
     assert r.status_code == 302  # bounced to login
