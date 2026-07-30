@@ -20,6 +20,13 @@ TYPE_EXAMPLES = (
 
 _WIKILINK_RE = re.compile(r"\[\[.+?\]\]")
 
+# Who may see a concept. ABSENT MEANS PRIVATE — visibility is never inferred, only
+# declared, because publishing is one-way (public content can be cached/copied by
+# anyone who saw it). 'contacts' = accepted contacts only; 'public' = any signed-in
+# Engram user. A project's context.md sets the default its concepts inherit; a
+# concept's own value always wins. See kbstore.effective_visibility.
+VISIBILITY_VALUES = ("private", "contacts", "public")
+
 
 @dataclass
 class Doc:
@@ -156,6 +163,18 @@ def validate_concept(
         meta_changed = True
     elif not _timestamp_parseable(ts):
         warnings.append(f"timestamp {ts!r} is not parseable ISO 8601; kept verbatim.")
+
+    vis = meta.get("visibility")
+    if vis is not None:
+        normalized_vis = str(vis).strip().lower()
+        if normalized_vis not in VISIBILITY_VALUES:
+            raise FrontmatterError(
+                f"visibility {vis!r} is not valid — use one of: {', '.join(VISIBILITY_VALUES)}. "
+                "Omit the field entirely to keep the concept private (the default)."
+            )
+        if normalized_vis != vis:
+            meta["visibility"] = normalized_vis
+            meta_changed = True
 
     if ctype == "message":
         if not meta.get("status"):

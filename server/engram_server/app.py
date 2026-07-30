@@ -29,6 +29,12 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from engram_server.config import Settings, get_settings
 from engram_server.doctor import run_doctor
 from engram_server.errors import GitError, KBError
+from engram_server.explore_widget import (
+    explore_app_tool_meta,
+    explore_tool_meta,
+    register_explore_widget,
+)
+from engram_server.frontmatter import split as fm_split
 from engram_server.explorer import register as register_explorer
 from engram_server.kbstore import KBStore, _scan_secrets
 from engram_server.meetings_widget import (
@@ -1231,6 +1237,358 @@ async def social_mark_read() -> dict[str, Any]:
     return {"ok": True}
 
 
+# ------------------------------------------------------------------ public work & discovery (M5)
+#
+# Three tiers of reach: private (default), contacts, public. "Public" here means any
+# SIGNED-IN Engram user — never the open web. Publishing is one-way, so it is always an
+# explicit per-item act (kb_publish), secret-scanned, and auditable (kb_public).
+# Questions from other people are QUARANTINED in the neutral DB (registry.discovery) —
+# a stranger's text never auto-commits into anyone's git brain.
+
+
+async def _profile_of_handle(handle: str, viewer_id: int | None) -> dict[str, Any]:
+    """Public profile card for a user: identity + follow stats (no brain contents)."""
+    user = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if user is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    counts = registry.discovery.follow_counts(user.id)
+    return {
+        "handle": user.handle,
+        "display_name": user.display_name,
+        "avatar_url": user.avatar_url,
+        "bio": user.bio,
+        "followers": counts.get("followers", 0),
+        "following": counts.get("following", 0),
+        "is_following": bool(viewer_id and registry.discovery.is_following(viewer_id, user.id)),
+    }
+
+
+async def _public_work_of(handle: str) -> list[dict[str, Any]]:
+    """Everything a user has marked public, from THEIR store (never their private work)."""
+    store = await registry.store_for_handle(handle.lstrip("@"))
+    listing = await store.kb_public()
+    return listing.get("public", [])
+
+
+@mcp.tool()
+async def kb_publish(path: str, visibility: str = "public") -> dict[str, Any]:
+    """Publish (or unpublish) part of YOUR brain. Use when the user says to make something
+    public/private, share their work, or put a project on their profile.
+
+    `visibility`: 'public' (any signed-in Engram user can read + discover it), 'contacts'
+    (only accepted contacts), or 'private' (the default — unpublishes). Pass a project's
+    context.md to set the DEFAULT for that whole project; individual concepts override it.
+    Publishing is one-way in practice — anyone who could read it may have copied it — so
+    confirm with the user before publishing anything sensitive. The body is secret-scanned
+    and publishing is REFUSED if it looks like it contains credentials. Session mail,
+    threads, workspace and inbox can never be published, even inside a public project.
+
+    Returns {path, visibility, applies_to, sha, pushed}.
+    """
+    return await (await current_store()).kb_publish(path, visibility)
+
+
+@mcp.tool()
+async def kb_public() -> dict[str, Any]:
+    """Audit what you've made visible to other people — call when the user asks "what's
+    public?", before publishing more, or to check nothing leaked.
+
+    Returns {public: [...], contacts: [...]} of {path, title, description, type, project}.
+    """
+    return await (await current_store()).kb_public()
+
+
+@mcp.tool()
+async def kb_explore(handle: str = "", query: str = "") -> dict[str, Any]:
+    """Discover people on Engram and their public work. Call when the user wants to find
+    someone, browse what others have published, or look at a person's profile.
+
+    No arguments: lists people with public work (the directory). With `handle`: that
+    person's profile + everything they've published. With `query`: searches across public
+    work (optionally narrowed to one handle). Read a specific item with kb_read_public.
+
+    Returns {people: [...]} or {profile, public_work: [...]} or {results: [...]}.
+    """
+    me = current_user()
+    viewer_id = me.id if me else None
+    if handle and not query:
+        return {"profile": await _profile_of_handle(handle, viewer_id), "public_work": await _public_work_of(handle)}
+    if query:
+        handles = [handle.lstrip("@")] if handle else [u.handle for u in registry.tenancy.list_users()]
+        needle = query.lower()
+        hits: list[dict[str, Any]] = []
+        for h in handles:
+            try:
+                for item in await _public_work_of(h):
+                    hay = f"{item.get('title','')} {item.get('description','')} {item.get('path','')}".lower()
+                    if needle in hay:
+                        hits.append({**item, "handle": h})
+            except KBError:
+                continue
+        return {"results": hits[:50]}
+    people = []
+    for u in registry.tenancy.list_users():
+        if u.status != "active":
+            continue
+        try:
+            work = await _public_work_of(u.handle)
+        except KBError:
+            work = []
+        if not work and not (me and u.id == me.id):
+            continue  # only surface people who've actually published something
+        counts = registry.discovery.follow_counts(u.id)
+        people.append({
+            "handle": u.handle, "display_name": u.display_name, "avatar_url": u.avatar_url,
+            "bio": u.bio, "followers": counts.get("followers", 0),
+            "public_projects": len({i.get("project") for i in work if i.get("project")}),
+            "public_items": len(work),
+            "is_following": bool(viewer_id and registry.discovery.is_following(viewer_id, u.id)),
+        })
+    return {"people": people}
+
+
+@mcp.tool()
+async def kb_read_public(handle: str, path: str) -> dict[str, Any]:
+    """Read ONE concept from another user's PUBLIC work — no permission needed, that's what
+    public means. Use when the user wants to see/discuss something they found via kb_explore
+    ("open @amiya's search decision", "what does @bob say about X?"). You can then reason
+    about it, summarize it, or answer the user's question from it.
+
+    Refuses anything not actually published. To ask the AUTHOR a question about it, use
+    kb_ask. For private work someone shared with you specifically, use kb_guest_read.
+
+    Returns {handle, path, title, type, project, content}.
+    """
+    owner = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if owner is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    store = await registry.store_for_handle(owner.handle)
+    if await store.effective_visibility(path) != "public":
+        raise KBError(
+            f"'{path}' is not public. Only work @{owner.handle} has published can be read this "
+            "way — ask them for access with kb_request_context, or ask a question with kb_ask."
+        )
+    concept = await store.kb_read(path, depth=0)  # depth 0: never expand into unpublished neighbours
+    meta = concept.get("meta") or {}
+    return {
+        "handle": owner.handle, "path": concept["path"],
+        "title": str(meta.get("title") or ""), "type": str(meta.get("type") or ""),
+        "project": str(meta.get("project") or ""), "content": concept.get("content") or "",
+    }
+
+
+@mcp.tool()
+async def kb_follow(handle: str, unfollow: bool = False) -> dict[str, Any]:
+    """Follow (or unfollow) another Engram user, so their newly published work shows up in
+    your kb_feed. One-directional — no approval needed, unlike contacts (which gate DMs).
+
+    Returns {handle, following: bool}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Following requires multi-user mode.")
+    other = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if other is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    if unfollow:
+        registry.discovery.unfollow(me.id, other.id)
+        return {"handle": other.handle, "following": False}
+    registry.discovery.follow(me.id, other.id)
+    _push_notification(other.id, "new_follower", f"@{me.handle} followed you")
+    return {"handle": other.handle, "following": True}
+
+
+@mcp.tool()
+async def kb_feed(limit: int = 20) -> dict[str, Any]:
+    """What the people you follow have published recently. Call at session start or when
+    the user asks what's new / what others are working on.
+
+    Returns {items: [{handle, title, description, path, project, updated}]}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"items": [], "note": "single-user mode"}
+    umap = {u.id: u for u in registry.tenancy.list_users()}
+    items: list[dict[str, Any]] = []
+    for uid in registry.discovery.following(me.id):
+        u = umap.get(uid)
+        if u is None:
+            continue
+        try:
+            for item in await _public_work_of(u.handle):
+                items.append({**item, "handle": u.handle, "display_name": u.display_name,
+                              "avatar_url": u.avatar_url})
+        except KBError:
+            continue
+    items.sort(key=lambda i: str(i.get("updated") or ""), reverse=True)
+    return {"items": items[: max(1, min(limit, 100))]}
+
+
+@mcp.tool()
+async def kb_ask(handle: str, path: str, question: str) -> dict[str, Any]:
+    """Ask the author a question about a specific piece of their public work. Use when the
+    user has read something (kb_read_public) and wants to ask the person about it — the
+    question lands in THEIR inbox to answer, and you'll see the answer in kb_asks.
+
+    They don't need to be a contact — asking about public work is open. Their brain is not
+    modified: the question is held separately until they choose to act on it.
+
+    Returns {ask_id, to, path}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Asking requires multi-user mode.")
+    owner = registry.tenancy.user_by_handle(handle.lstrip("@"))
+    if owner is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}.")
+    store = await registry.store_for_handle(owner.handle)
+    if await store.effective_visibility(path) != "public":
+        raise KBError(f"'{path}' is not public — you can only ask about published work.")
+    findings = _scan_secrets(question)
+    if findings:
+        raise KBError("Refusing to send: your question looks like it contains a credential.")
+    ask = registry.discovery.create_ask(me.id, owner.id, path, question)
+    preview = question if len(question) <= 80 else question[:77] + "..."
+    _push_notification(owner.id, "question", f"@{me.handle} asked about {path}: {preview}", ref=str(ask.id))
+    return {"ask_id": ask.id, "to": owner.handle, "path": path}
+
+
+@mcp.tool()
+async def kb_answer(ask_id: int, answer: str) -> dict[str, Any]:
+    """Answer a question someone asked about your public work (see kb_asks). The asker is
+    notified. Only you can answer questions addressed to you.
+
+    Returns {ask_id, to, status}.
+    """
+    me = _require_user()
+    if me is None:
+        raise KBError("Answering requires multi-user mode.")
+    findings = _scan_secrets(answer)
+    if findings:
+        raise KBError("Refusing to send: your answer looks like it contains a credential.")
+    ask = registry.discovery.answer_ask(int(ask_id), me.id, answer)
+    umap = {u.id: u for u in registry.tenancy.list_users()}
+    asker = umap.get(ask.asker_id)
+    if asker is not None:
+        preview = answer if len(answer) <= 80 else answer[:77] + "..."
+        _push_notification(asker.id, "answer", f"@{me.handle} answered your question: {preview}",
+                           ref=str(ask.id))
+    return {"ask_id": ask.id, "to": (asker.handle if asker else str(ask.asker_id)), "status": ask.status}
+
+
+@mcp.tool()
+async def kb_asks() -> dict[str, Any]:
+    """Questions about your public work that await an answer, plus questions you asked
+    others (with their answers). Call when the user asks about questions/answers, or at
+    session start if kb_load flagged open ones.
+
+    Returns {to_answer: [...], i_asked: [...]} of {id, from/to, path, question, answer, status, created}.
+    """
+    me = _require_user()
+    if me is None:
+        return {"to_answer": [], "i_asked": [], "note": "single-user mode"}
+    umap = {u.id: u for u in registry.tenancy.list_users()}
+
+    def _h(uid: int) -> str:
+        u = umap.get(uid)
+        return u.handle if u else str(uid)
+
+    return {
+        "to_answer": [
+            {"id": a.id, "from": _h(a.asker_id), "path": a.path, "question": a.question,
+             "status": a.status, "created": a.created}
+            for a in registry.discovery.list_asks_for(me.id, open_only=True)
+        ],
+        "i_asked": [
+            {"id": a.id, "to": _h(a.owner_id), "path": a.path, "question": a.question,
+             "answer": a.answer, "status": a.status, "created": a.created}
+            for a in registry.discovery.list_asks_by(me.id)
+        ],
+    }
+
+
+# ---------------------------------------------------- explore widget (app-only data plane)
+
+_explore_meta = explore_tool_meta(settings.widget)
+_explore_app_meta = explore_app_tool_meta(settings.widget)
+
+
+@mcp.tool(meta=_explore_meta)
+async def kb_explore_card() -> dict[str, Any]:
+    """Open the Explore card — discover people, browse their public work, follow them, and
+    ask questions, all inside the chat. Call when the user wants to explore/browse Engram,
+    find people, or see what others published. After it mounts, say one short line.
+
+    Returns a COMPACT summary {people, following, feed_items} — the card pulls its own data.
+    """
+    me = _require_user()
+    if me is None:
+        return {"people": 0, "following": 0, "feed_items": 0, "note": "single-user mode"}
+    directory = await kb_explore()
+    feed = await kb_feed(limit=20)
+    return {
+        "people": len(directory.get("people", [])),
+        "following": len(registry.discovery.following(me.id)),
+        "feed_items": len(feed.get("items", [])),
+    }
+
+
+@mcp.tool(meta=_explore_app_meta)
+async def explore_state() -> dict[str, Any]:
+    """App-only data plane for the Explore widget (invisible to the model). Never call
+    directly — use kb_explore_card."""
+    me = _require_user()
+    if me is None:
+        return {"me": None, "people": [], "feed": []}
+    directory = await kb_explore()
+    feed = await kb_feed(limit=20)
+    return {
+        "me": {"handle": me.handle, "display_name": me.display_name, "avatar_url": me.avatar_url},
+        "people": directory.get("people", []),
+        "feed": feed.get("items", []),
+    }
+
+
+@mcp.tool(meta=_explore_app_meta)
+async def explore_profile(handle: str) -> dict[str, Any]:
+    """App-only: one person's profile + their public work. Widget use only."""
+    me = current_user()
+    return {
+        "profile": await _profile_of_handle(handle, me.id if me else None),
+        "public_work": await _public_work_of(handle),
+    }
+
+
+@mcp.tool(meta=_explore_app_meta)
+async def explore_concept(handle: str, path: str) -> dict[str, Any]:
+    """App-only: read a public concept as PLAIN text for the widget (no HTML). Widget use only."""
+    data = await kb_read_public(handle, path)
+    body = data.get("content") or ""
+    doc = fm_split(body)  # strip frontmatter — the card shows prose, not YAML
+    return {
+        "handle": data["handle"], "path": data["path"], "title": data["title"],
+        "type": data["type"], "project": data["project"],
+        "text": (doc.body if doc is not None else body),
+    }
+
+
+@mcp.tool(meta=_explore_app_meta)
+async def explore_follow(handle: str, follow: bool = True) -> dict[str, Any]:
+    """App-only: follow/unfollow from the widget."""
+    res = await kb_follow(handle, unfollow=not follow)
+    return {"handle": res["handle"], "is_following": res["following"]}
+
+
+@mcp.tool(meta=_explore_app_meta)
+async def explore_ask(handle: str, path: str, question: str) -> dict[str, Any]:
+    """App-only: ask a question about someone's public work from the widget."""
+    try:
+        res = await kb_ask(handle, path, question)
+        return {"ok": True, "ask_id": res["ask_id"]}
+    except KBError as exc:
+        return {"error": str(exc)}
+
+
 # ------------------------------------------------------------------ context sharing (M3)
 #
 # The core Engram feature: grant another user SCOPED read access to part of YOUR
@@ -1583,6 +1941,7 @@ register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
 register_office_widget(mcp, settings, store, resolver=current_store)
 register_social_widget(mcp, settings.widget)
+register_explore_widget(mcp, settings.widget)
 
 # Multi-user dashboard/onboarding (M1.4). The dashboard offers every configured IdP
 # for browser sign-in (GitHub for devs, Google for everyone else) — independent of

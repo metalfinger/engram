@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-07-20.v2-multiuser"
+SERVER_VERSION = "2026-07-21.v2-discovery"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -40,6 +40,10 @@ CURRENT_TOOLS = (
     "kb_shared_with_me", "kb_guest_read", "kb_guest_search", "kb_send",
     "kb_inbox_card", "social_state", "social_conversation",
     "social_send", "social_accept", "social_mark_read",
+    "kb_publish", "kb_public", "kb_explore", "kb_read_public",
+    "kb_follow", "kb_feed", "kb_ask", "kb_answer", "kb_asks",
+    "kb_explore_card", "explore_state", "explore_profile",
+    "explore_concept", "explore_follow", "explore_ask",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so
@@ -58,6 +62,9 @@ CHANGES = (
     "kb_send: copy a concept into a contact's inbox with provenance",
     "kb_inbox_card: Messages widget (DMs/contacts/notifications) in claude.ai",
     "notifications: kb_notifications + Chrome extension (clients/chrome-extension)",
+    "public work: kb_publish/kb_public — private by default, project default + concept override",
+    "discovery: kb_explore / kb_read_public / kb_follow / kb_feed (+ kb_explore_card widget)",
+    "ask the author: kb_ask / kb_answer / kb_asks — questions never touch the owner's brain",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.

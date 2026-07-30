@@ -64,6 +64,21 @@ EXPECTED_TOOLS = frozenset(
         "social_send",
         "social_accept",
         "social_mark_read",
+        "kb_publish",
+        "kb_public",
+        "kb_explore",
+        "kb_read_public",
+        "kb_follow",
+        "kb_feed",
+        "kb_ask",
+        "kb_answer",
+        "kb_asks",
+        "kb_explore_card",
+        "explore_state",
+        "explore_profile",
+        "explore_concept",
+        "explore_follow",
+        "explore_ask",
     }
 )
 

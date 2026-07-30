@@ -40,7 +40,9 @@ import jwt
 from anyio import to_thread
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
+from engram_server.discovery import DiscoveryError
 from engram_server.errors import KBError
+from engram_server.explorer import social_pages
 from engram_server.provisioning import ensure_user_brain
 from engram_server.social import SocialError
 from engram_server.tenancy import TenancyError
@@ -248,6 +250,205 @@ class Dashboard:
                 self._brain_sidebar(await self._user_projects(session))), status_code=404)
         projects = await self._user_projects(session)
         return HTMLResponse(self._render_concept(store, path, concept, projects))
+
+    # -- social/discovery web pages (M5) -------------------------------------
+
+    async def _public_work_for(self, handle: str) -> list:
+        try:
+            store = await self.registry.store_for_handle(handle)
+            return (await store.kb_public()).get("public", [])
+        except (KBError, Exception):  # noqa: BLE001 — a browse convenience
+            return []
+
+    def _profile_for(self, handle: str, viewer_id: int | None) -> dict | None:
+        user = self.registry.tenancy.user_by_handle(handle.lstrip("@"))
+        if user is None:
+            return None
+        counts = self.registry.discovery.follow_counts(user.id)
+        return {
+            "handle": user.handle, "display_name": user.display_name,
+            "avatar_url": user.avatar_url, "bio": user.bio,
+            "followers": counts.get("followers", 0), "following": counts.get("following", 0),
+            "is_following": bool(viewer_id and self.registry.discovery.is_following(viewer_id, user.id)),
+        }
+
+    async def _social_shell(self, session: dict, title: str, body: str, crumbs) -> str:
+        projects = await self._user_projects(session)
+        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects))
+
+    async def people_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        people = []
+        for u in self.registry.tenancy.list_users():
+            if u.status != "active":
+                continue
+            work = await self._public_work_for(u.handle)
+            if not work and not (me and u.id == me.id):
+                continue
+            counts = self.registry.discovery.follow_counts(u.id)
+            people.append({
+                "handle": u.handle, "display_name": u.display_name, "avatar_url": u.avatar_url,
+                "bio": u.bio, "followers": counts.get("followers", 0),
+                "public_projects": len({i.get("project") for i in work if i.get("project")}),
+                "is_following": bool(me and self.registry.discovery.is_following(me.id, u.id)),
+            })
+        body = social_pages.people_body(people, me.handle if me else "")
+        return HTMLResponse(await self._social_shell(session, "People", body,
+                                                     [("home", "/dashboard"), ("people", "/dashboard/people")]))
+
+    async def profile_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        handle = str(request.path_params.get("handle", ""))
+        profile = self._profile_for(handle, me.id if me else None)
+        if profile is None:
+            return HTMLResponse(await self._social_shell(session, "Not found",
+                "<p class='empty'>No such person.</p>", [("home", "/dashboard")]), status_code=404)
+        work = await self._public_work_for(profile["handle"])
+        body = social_pages.profile_body(profile, work, me.handle if me else "")
+        return HTMLResponse(await self._social_shell(
+            session, f"@{profile['handle']}", body,
+            [("home", "/dashboard"), ("people", "/dashboard/people"), (profile["handle"], f"/dashboard/u/{profile['handle']}")]))
+
+    async def public_concept_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        handle = str(request.path_params.get("handle", ""))
+        path = str(request.path_params.get("path", ""))
+        owner = self.registry.tenancy.user_by_handle(handle.lstrip("@"))
+        if owner is None:
+            return HTMLResponse(await self._social_shell(session, "Not found",
+                "<p class='empty'>No such person.</p>", [("home", "/dashboard")]), status_code=404)
+        try:
+            store = await self.registry.store_for_handle(owner.handle)
+            if await store.effective_visibility(path) != "public":
+                raise KBError("not public")
+            concept = await store.kb_read(path, depth=0)
+        except KBError:
+            return HTMLResponse(await self._social_shell(session, "Not available",
+                "<p class='empty'>That isn't published.</p>",
+                [("home", "/dashboard"), (owner.handle, f"/dashboard/u/{owner.handle}")]), status_code=404)
+        from engram_server.explorer.render import render_markdown_public, split_frontmatter
+
+        meta, body_md = split_frontmatter(concept.get("content") or "")
+        title = str(meta.get("title") or path.rsplit("/", 1)[-1])
+        body = social_pages.public_concept_body(
+            owner.handle, path, title, meta, render_markdown_public(body_md), me.handle if me else "")
+        return HTMLResponse(await self._social_shell(
+            session, title, body,
+            [("home", "/dashboard"), (owner.handle, f"/dashboard/u/{owner.handle}"), (title, "#")]))
+
+    async def feed_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        items = []
+        if me is not None:
+            umap = {u.id: u for u in self.registry.tenancy.list_users()}
+            for uid in self.registry.discovery.following(me.id):
+                u = umap.get(uid)
+                if u is None:
+                    continue
+                for item in await self._public_work_for(u.handle):
+                    items.append({**item, "handle": u.handle, "display_name": u.display_name,
+                                  "avatar_url": u.avatar_url})
+            items.sort(key=lambda i: str(i.get("updated") or ""), reverse=True)
+        body = social_pages.feed_body(items[:50])
+        return HTMLResponse(await self._social_shell(session, "Feed", body,
+                                                     [("home", "/dashboard"), ("feed", "/dashboard/feed")]))
+
+    async def asks_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        to_answer, i_asked = [], []
+        if me is not None:
+            umap = {u.id: u for u in self.registry.tenancy.list_users()}
+
+            def _h(uid):
+                u = umap.get(uid)
+                return u.handle if u else str(uid)
+
+            to_answer = [
+                {"id": a.id, "from_handle": _h(a.asker_id), "to_handle": me.handle, "path": a.path,
+                 "question": a.question, "answer": a.answer, "status": a.status,
+                 "created": a.created, "answered_at": a.answered_at}
+                for a in self.registry.discovery.list_asks_for(me.id, open_only=False)
+            ]
+            i_asked = [
+                {"id": a.id, "from_handle": me.handle, "to_handle": _h(a.owner_id), "path": a.path,
+                 "question": a.question, "answer": a.answer, "status": a.status,
+                 "created": a.created, "answered_at": a.answered_at}
+                for a in self.registry.discovery.list_asks_by(me.id)
+            ]
+        body = social_pages.asks_body(to_answer, i_asked, me.handle if me else "")
+        return HTMLResponse(await self._social_shell(session, "Questions", body,
+                                                     [("home", "/dashboard"), ("questions", "/dashboard/asks")]))
+
+    async def follow_action(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        handle = str(form.get("handle", "")).strip().lstrip("@")
+        other = self.registry.tenancy.user_by_handle(handle)
+        if me is not None and other is not None and other.id != me.id:
+            if str(form.get("follow", "1")) == "1":
+                self.registry.discovery.follow(me.id, other.id)
+                self.registry.social.create_notification(other.id, "new_follower", f"@{me.handle} followed you")
+            else:
+                self.registry.discovery.unfollow(me.id, other.id)
+        back = request.headers.get("referer") or "/dashboard/people"
+        return RedirectResponse(back if back.startswith("/") or "/dashboard" in back else "/dashboard/people",
+                                status_code=302)
+
+    async def ask_action(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        handle = str(form.get("handle", "")).strip().lstrip("@")
+        path = str(form.get("path", "")).strip()
+        question = str(form.get("question", "")).strip()
+        owner = self.registry.tenancy.user_by_handle(handle)
+        if me is None or owner is None:
+            return RedirectResponse("/dashboard/people", status_code=302)
+        try:
+            store = await self.registry.store_for_handle(owner.handle)
+            if await store.effective_visibility(path) != "public":
+                raise KBError("not public")
+            ask = self.registry.discovery.create_ask(me.id, owner.id, path, question)
+            self.registry.social.create_notification(
+                owner.id, "question", f"@{me.handle} asked about {path}", str(ask.id))
+        except (KBError, DiscoveryError):
+            pass
+        return RedirectResponse(f"/dashboard/u/{owner.handle}/f/{path}", status_code=302)
+
+    async def answer_action(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        try:
+            ask = self.registry.discovery.answer_ask(
+                int(form.get("ask_id", 0)), me.id, str(form.get("answer", "")))
+            self.registry.social.create_notification(
+                ask.asker_id, "answer", f"@{me.handle} answered your question", str(ask.id))
+        except (DiscoveryError, ValueError, TypeError, AttributeError):
+            pass
+        return RedirectResponse("/dashboard/asks", status_code=302)
 
     async def browse_search(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -802,6 +1003,8 @@ class Dashboard:
             "<form class=search role=search action='/dashboard/search' method=get>"
             "<input type=search name=q placeholder='Search your brain…' aria-label='Search' autocomplete=off></form>"
             "<nav class=topnav><a href='/dashboard'>Home</a>"
+            "<a href='/dashboard/people'>People</a><a href='/dashboard/feed'>Feed</a>"
+            "<a href='/dashboard/asks'>Questions</a>"
             "<a href='/dashboard/graph'>Graph</a><a href='/dashboard/activity'>Activity</a></nav>"
             "</div></header><div class=layout>"
             f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
@@ -1024,6 +1227,14 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
     mcp.custom_route("/dashboard/p/{project}", ["GET"])(dash.browse_project)
     mcp.custom_route("/dashboard/f/{path:path}", ["GET"])(dash.browse_concept)
+    mcp.custom_route("/dashboard/people", ["GET"])(dash.people_view)
+    mcp.custom_route("/dashboard/feed", ["GET"])(dash.feed_view)
+    mcp.custom_route("/dashboard/asks", ["GET"])(dash.asks_view)
+    mcp.custom_route("/dashboard/u/{handle}", ["GET"])(dash.profile_view)
+    mcp.custom_route("/dashboard/u/{handle}/f/{path:path}", ["GET"])(dash.public_concept_view)
+    mcp.custom_route("/dashboard/follow", ["POST"])(dash.follow_action)
+    mcp.custom_route("/dashboard/ask", ["POST"])(dash.ask_action)
+    mcp.custom_route("/dashboard/asks/answer", ["POST"])(dash.answer_action)
     mcp.custom_route("/dashboard/search", ["GET"])(dash.browse_search)
     mcp.custom_route("/dashboard/activity", ["GET"])(dash.browse_activity)
     mcp.custom_route("/dashboard/graph", ["GET"])(dash.browse_graph)

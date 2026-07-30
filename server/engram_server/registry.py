@@ -26,6 +26,7 @@ from anyio import to_thread
 from .config import Settings
 from .errors import KBError
 from .capabilities import CapabilityStore
+from .discovery import DiscoveryStore
 from .kbstore import KBStore
 from .provisioning import ensure_user_brain, user_settings
 from .social import SocialStore
@@ -49,6 +50,7 @@ class StoreRegistry:
         self._tenancy: TenancyStore | None = None
         self._social: SocialStore | None = None
         self._capabilities: CapabilityStore | None = None
+        self._discovery: DiscoveryStore | None = None
         self._owner_subjects = frozenset(
             s.strip() for s in settings.owner_subjects.split(",") if s.strip()
         )
@@ -76,6 +78,14 @@ class StoreRegistry:
             _ = self.tenancy
             self._capabilities = CapabilityStore(tenancy_db_path(self._settings))
         return self._capabilities
+
+    @property
+    def discovery(self) -> DiscoveryStore:
+        """Follows + quarantined asks over the SAME engram.db (M5)."""
+        if self._discovery is None:
+            _ = self.tenancy
+            self._discovery = DiscoveryStore(tenancy_db_path(self._settings))
+        return self._discovery
 
     def tenancy_handle_map(self) -> dict[int, str]:
         """{user_id: handle} for rendering social ids as @handles in tool output."""

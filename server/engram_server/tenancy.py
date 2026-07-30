@@ -100,6 +100,7 @@ class User:
     created: str
     display_name: str | None = None
     avatar_url: str | None = None
+    bio: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,8 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT NOT NULL DEFAULT 'active',
     created TEXT NOT NULL,
     display_name TEXT,
-    avatar_url TEXT
+    avatar_url TEXT,
+    bio TEXT
 );
 CREATE TABLE IF NOT EXISTS invites (
     token TEXT PRIMARY KEY,
@@ -163,7 +165,7 @@ class TenancyStore:
             self._conn.executescript(_SCHEMA)
             # Migrate DBs created before the profile columns existed.
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(users)")}
-            for col in ("display_name", "avatar_url"):
+            for col in ("display_name", "avatar_url", "bio"):
                 if col not in cols:
                     self._conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
             icols = {r[1] for r in self._conn.execute("PRAGMA table_info(invites)")}
@@ -185,11 +187,12 @@ class TenancyStore:
             idp=row["idp"], idp_subject=row["idp_subject"],
             status=row["status"], created=row["created"],
             display_name=row["display_name"], avatar_url=row["avatar_url"],
+            bio=row["bio"],
         )
 
     def set_profile(self, handle: str, *, display_name: str | None = None,
-                    avatar_url: str | None = None) -> User:
-        """Update a user's display name / avatar URL. Only provided fields change.
+                    avatar_url: str | None = None, bio: str | None = None) -> User:
+        """Update a user's display name / avatar URL / bio. Only provided fields change.
         avatar_url must be an https URL (rendered as an <img src> / link) — the caller
         (dashboard) validates + escapes; here we enforce the https scheme as a backstop."""
         sets, params = [], []
@@ -202,6 +205,9 @@ class TenancyStore:
                 raise TenancyError("Avatar URL must be an https:// link.")
             sets.append("avatar_url = ?")
             params.append(url or None)
+        if bio is not None:
+            sets.append("bio = ?")
+            params.append(bio.strip()[:280] or None)
         if not sets:
             raise TenancyError("Nothing to update.")
         params.append(handle.strip().lower())

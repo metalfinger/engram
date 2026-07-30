@@ -24,7 +24,15 @@ from anyio import to_thread
 
 from .config import Settings
 from .errors import GitError, KBError
-from .frontmatter import Doc, normalize_meta, read_meta, serialize, split, validate_concept
+from .frontmatter import (
+    VISIBILITY_VALUES,
+    Doc,
+    normalize_meta,
+    read_meta,
+    serialize,
+    split,
+    validate_concept,
+)
 from .gitops import GitRepo
 from .importers import parse_export
 from .indexer import ensure_indexed
@@ -267,6 +275,17 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"(?i)\b(?:api[_-]?key|secret|password)\b\s*[:=]\s*['\"][^'\"]{8,}"),
     ),
 )
+
+
+# Subtrees that are NEVER visible beyond their owner, even inside a project marked
+# public: session mail and coordination surfaces carry whatever a session happened to
+# say, so they can't inherit a project-level publish decision.
+_NEVER_PUBLIC_SEGMENTS = frozenset({"messages", "threads", "workspace", "inbox", ".git"})
+
+
+def _never_public(rel: str) -> bool:
+    """True when a repo-relative path lives in a never-publishable subtree."""
+    return any(seg in _NEVER_PUBLIC_SEGMENTS for seg in rel.split("/") if seg)
 
 
 def _scan_secrets(body: str) -> list[tuple[str, int]]:
@@ -3062,6 +3081,120 @@ class KBStore:
                 "shared. Save it as an artifact (frontmatter type: artifact) first."
             )
         return meta, doc
+
+    # ------------------------------------------------------------------ visibility (M5)
+    #
+    # Who may see a concept. The rule, in priority order:
+    #   1. the concept's own `visibility:` frontmatter, if declared
+    #   2. else its project's context.md `visibility:` (the project default)
+    #   3. else PRIVATE
+    # Publishing is one-way — public content can be copied by anyone who saw it — so
+    # visibility is only ever DECLARED, never inferred, and the default is always private.
+
+    async def effective_visibility(self, path: str) -> str:
+        """Resolve a concept's visibility: 'private' | 'contacts' | 'public'."""
+        await self._refresh()
+        _abs, rel = self._resolve(path)
+        return await to_thread.run_sync(self._visibility_sync, rel)
+
+    def _visibility_sync(self, rel: str) -> str:
+        if _never_public(rel):
+            return "private"
+        abs_path = self.root / rel
+        if abs_path.is_file():
+            own = str(read_meta(abs_path).get("visibility") or "").strip().lower()
+            if own in VISIBILITY_VALUES:
+                return own
+        # Inherit the project's default (the project root is the first 1-2 segments).
+        proot = self._project_root_rel(rel)
+        if proot:
+            ctx = self.root / proot / "context.md"
+            if ctx.is_file():
+                default = str(read_meta(ctx).get("visibility") or "").strip().lower()
+                if default in VISIBILITY_VALUES:
+                    return default
+        return "private"
+
+    def _project_root_rel(self, rel: str) -> str:
+        """'projects/alt/decisions/x.md' -> 'projects/alt'; 'metalfinger/x.md' -> 'metalfinger'."""
+        parts = [p for p in rel.split("/") if p]
+        if not parts:
+            return ""
+        if parts[0] == "projects" and len(parts) > 1:
+            return f"projects/{parts[1]}"
+        return parts[0]
+
+    async def kb_publish(self, path: str, visibility: str = "public") -> dict[str, Any]:
+        """Set a concept's (or a project's, via its context.md) visibility.
+
+        Publishing to 'public' secret-scans the body first and REFUSES if anything looks
+        like a credential — public content is unrecallable. Returns
+        {path, visibility, applies_to, sha, pushed}."""
+        want = str(visibility or "").strip().lower()
+        if want not in VISIBILITY_VALUES:
+            raise KBError(
+                f"visibility must be one of: {', '.join(VISIBILITY_VALUES)} (got {visibility!r})."
+            )
+        abs_path, rel = self._resolve(path)
+        if _never_public(rel) and want != "private":
+            raise KBError(
+                f"'{rel}' can never be published — session mail, threads, workspace and inbox "
+                "are private by nature, even inside a public project."
+            )
+        if not abs_path.is_file():
+            raise KBError(f"No such concept: '{rel}'.")
+
+        def _mutate() -> list[str]:
+            doc = split(_read_text_retry(abs_path))
+            if doc is None:
+                raise KBError(f"'{rel}' has no frontmatter — cannot set visibility.")
+            meta = normalize_meta(doc.meta)
+            if want == "public":
+                findings = _scan_secrets(doc.body)
+                if findings:
+                    raise KBError(_secret_refusal("concept", findings, "a different visibility"))
+            if str(meta.get("visibility") or "").strip().lower() == want:
+                return []  # already there — no_change
+            if want == "private":
+                meta.pop("visibility", None)  # absent == private; keep frontmatter clean
+            else:
+                meta["visibility"] = want
+            _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+            return [rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: visibility {want} for {rel}")
+        applies = "project (its concepts inherit this default)" if posixpath.basename(rel) == "context.md" else "concept"
+        return {"path": rel, "visibility": want, "applies_to": applies, "sha": sha, "pushed": pushed}
+
+    async def kb_public(self) -> dict[str, Any]:
+        """Audit: every concept currently visible beyond you, with its effective visibility.
+        Returns {public: [...], contacts: [...]} of {path, title, description, type, project}."""
+        await self._refresh()
+        return await to_thread.run_sync(self._public_sync)
+
+    def _public_sync(self) -> dict[str, Any]:
+        out: dict[str, list[dict[str, Any]]] = {"public": [], "contacts": []}
+        for abs_path in sorted(self.root.rglob("*.md")):
+            rel = abs_path.relative_to(self.root).as_posix()
+            if rel.startswith(".") or _never_public(rel):
+                continue
+            if posixpath.basename(rel) in ("index.md", "log.md"):
+                continue
+            vis = self._visibility_sync(rel)
+            if vis not in ("public", "contacts"):
+                continue
+            meta = read_meta(abs_path)
+            out[vis].append(
+                {
+                    "path": rel,
+                    "title": str(meta.get("title") or posixpath.basename(rel)[:-3]),
+                    "description": str(meta.get("description") or ""),
+                    "type": str(meta.get("type") or ""),
+                    "project": self._project_root_rel(rel).removeprefix("projects/"),
+                    "updated": str(meta.get("timestamp") or ""),
+                }
+            )
+        return out
 
     def _regen_messages_index(self, proot_rel: str) -> None:
         """Regenerate <project>/messages/index.md canonically (server-owned, no frontmatter)."""
