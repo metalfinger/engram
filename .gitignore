@@ -4,3 +4,6 @@ __pycache__/
 .env
 node_modules/
 .mcp.json
+
+# LimeZu "Modern Interiors" paid art — NOT redistributable, kept on disk but never committed
+server/engram_server/explorer/assets/limezu/
