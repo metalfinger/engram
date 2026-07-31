@@ -209,6 +209,30 @@ h1 { font-size:1.35rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .15
 .badge, .chip { display:inline-flex; align-items:center; gap:.3rem; font-size:.68rem; font-weight:600; padding:.1rem .5rem; border-radius:999px; white-space:nowrap; line-height:1.5; }
 .badge { background:var(--surface-2); color:var(--muted); }
 .badge.unread { background:var(--accent); color:var(--accent-fg); }
+/* Visibility: public is loud on purpose, private quiet but always present. */
+.badge.vis-public { background:var(--accent); color:var(--accent-fg); }
+.badge.vis-contacts { background:var(--accent-soft); color:var(--accent-ink); }
+.badge.vis-private { background:var(--surface-2); color:var(--muted); }
+/* Folder grouping on Home — mirrors the real projects/<folder>/ layout on disk. */
+.folder-label { margin:1.1rem 0 .1rem; }
+/* Filing control: sits on the card, never inside its click target. */
+.card-wrap { position:relative; display:flex; }
+.card-wrap > .card { flex:1; }
+.file-btn { position:absolute; top:.4rem; right:.4rem; border:0; background:transparent;
+            cursor:pointer; font-size:.85rem; opacity:.45; padding:.15rem .25rem; border-radius:6px; }
+.file-btn:hover { opacity:1; background:var(--surface-2); }
+.filer { position:absolute; top:2rem; right:.4rem; z-index:20; width:15rem; padding:.6rem;
+         background:var(--surface); border:1px solid var(--accent-line); border-radius:10px;
+         box-shadow:0 6px 20px rgba(0,0,0,.18); display:flex; flex-direction:column; gap:.4rem; }
+.filer-t { margin:0; font-size:.78rem; color:var(--muted); }
+.filer-sel, .filer-new { font:inherit; font-size:.8rem; padding:.3rem .4rem; border-radius:7px;
+                         border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+.filer-row { display:flex; gap:.4rem; }
+.filer-go, .filer-cancel { font:inherit; font-size:.78rem; padding:.3rem .6rem; border-radius:7px; cursor:pointer; }
+.filer-go { background:var(--accent); color:var(--accent-fg); border:0; }
+.filer-cancel { background:transparent; color:var(--muted); border:1px solid var(--line); }
+.archived { margin:1rem 0 .2rem; }
+.archived summary { cursor:pointer; color:var(--muted); font-size:.78rem; }
 .chip { background:var(--inset); color:var(--muted); border:1px solid var(--line); }
 .chip.tag::before { content:"#"; color:var(--faint); }
 .chip.proj { color:var(--accent-ink); border-color:var(--accent-line); background:var(--accent-soft); }
@@ -684,24 +708,105 @@ function setActiveTab(){ const map={reader:"browse"}; const cur=map[state.view]|
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===cur)); }
 function show(html){ view.innerHTML=html; setActiveTab(); updateTabBadges(); scheduleHeight(); }
 
+/* ---- filing a project into a folder -------------------------------------
+   Two deliberate steps (📁 -> choose -> Move) because a move rewrites links
+   across the bundle and commits. Inline UI only: a native prompt()/confirm()
+   would block the widget bridge and wedge the card. */
+function closeFiler(){ const n=$("filer"); if(n) n.remove(); }
+
+function openFiler(pid){
+  closeFiler();
+  const ps=state.projects||[];
+  const me=ps.find(p=>p.id===pid) || {};
+  const folders=Array.from(new Set(ps.map(p=>p.folder).filter(Boolean))).sort();
+  const opts=['<option value="">— top level (no folder) —</option>']
+    .concat(folders.map(f=>'<option value="'+esc(f)+'"'+(f===(me.folder||"")?' selected':'')+'>'+esc(f)+'</option>'))
+    .join("");
+  // Find the button by scanning rather than a CSS selector — project ids are
+  // [a-z0-9-] so this is safe either way, but it avoids any selector-escaping doubt.
+  let host=null;
+  document.querySelectorAll("[data-file]").forEach(b=>{ if(b.getAttribute("data-file")===pid) host=b; });
+  if(!host) return;
+  const box=document.createElement("div");
+  box.id="filer"; box.className="filer";
+  box.innerHTML='<p class="filer-t">Put <b>'+esc(me.title||pid)+'</b> in a folder</p>'
+    +'<select id="filer-sel" class="filer-sel">'+opts+'</select>'
+    +'<input id="filer-new" class="filer-new" type="text" placeholder="…or a new folder name" autocomplete="off">'
+    +'<div class="filer-row"><button class="filer-go" data-file-go="'+esc(pid)+'">Move</button>'
+    +'<button class="filer-cancel" data-file-cancel="1">Cancel</button></div>';
+  host.parentNode.appendChild(box);
+  const ni=$("filer-new");
+  if(ni) ni.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); doFileProject(pid); } };
+}
+
+async function doFileProject(pid){
+  const sel=$("filer-sel"), ni=$("filer-new");
+  const folder=((ni&&ni.value.trim()) || (sel?sel.value:"") || "").trim();
+  closeFiler();
+  try{
+    const r=await callTool("kb_move_project",{project:pid, folder:folder});
+    if(r && r.error){ showToast("Could not move: "+r.error); return; }
+    showToast(folder ? ("Moved to 📁 "+folder) : "Moved to the top level");
+    await loadHome();
+  }catch(err){ showToast("Could not move that project."); }
+}
+
 function renderHome(){
   state.view="home"; persist(); setActiveTab();
   const ps=state.projects||[];
-  let cards = ps.length ? ps.map(p=>{
+  // Visibility is shown for EVERY state (including private) so exposure is never
+  // inferred from a missing badge — same rule as the web home.
+  function visBadge(v){
+    const s=(v||"private");
+    const label = s==="public" ? "🌐 public" : (s==="contacts" ? "👥 contacts" : "🔒 private");
+    return '<span class="badge vis-'+esc(s)+'">'+esc(label)+'</span>';
+  }
+  function projCard(p){
     const unread=(p.unread_messages|0);
-    return '<button class="card" data-proj="'+esc(p.id)+'">'
+    // The card body opens the project; filing is a SEPARATE explicit control so a
+    // stray tap can never reorganize the bundle (a move rewrites links + commits).
+    return '<div class="card-wrap">'
+      +'<button class="card" data-proj="'+esc(p.id)+'">'
       +'<div class="card-head"><span class="dot '+statusDot(p.status)+'"></span><h3>'+esc(p.title||p.id)+'</h3></div>'
       +(p.description?'<p>'+esc(p.description)+'</p>':'')
       +'<div class="card-foot">'
+        +visBadge(p.visibility)
         +(unread>0?'<span class="badge unread">'+unread+' unread</span>':'')
         +(p.last_session?'<span class="when">'+esc(relTime(p.last_session))+'</span>':'')
-      +'</div></button>';
-  }).join("") : '<div class="empty">No projects found.</div>';
+      +'</div></button>'
+      +'<button class="file-btn" data-file="'+esc(p.id)+'" title="Put in a folder" aria-label="Put '+esc(p.id)+' in a folder">📁</button>'
+      +'</div>';
+  }
+  // Group by the real folder each project lives in ("" = top level), mirroring the
+  // directory layout on disk.
+  let body;
+  if(!ps.length){ body='<div class="empty">No projects found.</div>'; }
+  else{
+    const live=ps.filter(p=>(p.status||"active")!=="archived");
+    const folders={};
+    live.forEach(p=>{ const f=p.folder||""; (folders[f]=folders[f]||[]).push(p); });
+    const named=Object.keys(folders).filter(f=>f).sort();
+    const chunks=[];
+    named.forEach(f=>{
+      chunks.push('<p class="eyebrow folder-label">📁 '+esc(f)+'</p>'
+                  +'<div class="cards">'+folders[f].map(projCard).join("")+'</div>');
+    });
+    if(folders[""]){
+      if(named.length) chunks.push('<p class="eyebrow folder-label">Not in a folder</p>');
+      chunks.push('<div class="cards">'+folders[""].map(projCard).join("")+'</div>');
+    }
+    const archived=ps.filter(p=>(p.status||"active")==="archived");
+    if(archived.length){
+      chunks.push('<details class="archived"><summary>Archived ('+archived.length+')</summary>'
+                  +'<div class="cards">'+archived.map(projCard).join("")+'</div></details>');
+    }
+    body=chunks.join("");
+  }
   show('<div class="qcap"><input id="qc-input" class="qc-in" type="text" placeholder="Quick capture — remember anything…" autocomplete="off" aria-label="Quick capture to inbox">'
         +'<button class="qc-go" id="qc-go">Capture</button></div>'
       +'<p class="eyebrow">Knowledge Base</p><h1>brain</h1>'
       +'<p class="lede">Pick a project to browse its context, concepts, and log.</p>'
-      +'<div class="cards">'+cards+'</div>');
+      +body);
   const qi=$("qc-input"), qg=$("qc-go");
   if(qg) qg.onclick=quickCapture;
   if(qi) qi.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); quickCapture(); } };
@@ -1091,6 +1196,9 @@ document.addEventListener("click",(e)=>{
   const bk=e.target.closest("[data-bk-path]"); if(bk){ e.preventDefault(); toggleBasket(bk.getAttribute("data-bk-path"), bk.getAttribute("data-bk-title")); return; }
   const op=e.target.closest("[data-open-path]"); if(op){ e.preventDefault(); openFile(op.getAttribute("data-open-path")); return; }
   const ml=e.target.closest("a.mdlink"); if(ml){ e.preventDefault(); const t=resolveRel(dirOf(state.readPath||""), ml.getAttribute("data-rel")); if(t) openFile(t); return; }
+  const fb=e.target.closest("[data-file]"); if(fb){ e.preventDefault(); e.stopPropagation(); openFiler(fb.getAttribute("data-file")); return; }
+  const fc=e.target.closest("[data-file-cancel]"); if(fc){ e.preventDefault(); closeFiler(); return; }
+  const fg=e.target.closest("[data-file-go]"); if(fg){ e.preventDefault(); doFileProject(fg.getAttribute("data-file-go")); return; }
   const pc=e.target.closest("[data-proj]"); if(pc){ openProject(pc.getAttribute("data-proj")); return; }
   const nav=e.target.closest("[data-nav]"); if(nav){ goTab(nav.getAttribute("data-nav")); return; }
   const rt=e.target.closest("[data-retry]"); if(rt){ const w=rt.getAttribute("data-retry");
