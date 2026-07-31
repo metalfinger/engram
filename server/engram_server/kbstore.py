@@ -16,7 +16,7 @@ import re
 import secrets
 import time
 from datetime import date, datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import anyio
@@ -49,6 +49,8 @@ log = logging.getLogger("engram.kbstore")
 _PROJECT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MD_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+# Same shape, named group — used by the project-move re-linker.
+_MOVE_LINK_RE = re.compile(r"\]\((?P<target>[^)\s]+)\)")
 # A relative .md link — the kind depth=1 navigation can follow (not http/mailto).
 _REL_MD_LINK = re.compile(r"\]\((?!https?://|mailto:)[^)\s#]*\.md(?:#[^)\s]*)?\)")
 _BULLET_RE = re.compile(
@@ -665,22 +667,63 @@ class KBStore:
         return abs_path, rel
 
     def _project_rel(self, project: str) -> str:
-        """'metalfinger' -> 'metalfinger'; anything else -> 'projects/<id>' (validated)."""
+        """Resolve a project ID to its path, wherever it sits.
+
+        Projects live either at ``projects/<id>`` or inside ONE folder level,
+        ``projects/<folder>/<id>`` — folders are real directories so the bundle is
+        browsable in git/Finder. The ID stays flat and unique across the brain, so
+        kb_load('alt'), `.engram-project` pins and the office never have to know
+        which folder a project currently lives in."""
         pid = (project or "").strip()
         if pid == "metalfinger":
             rel = "metalfinger"
-        elif _PROJECT_ID_RE.fullmatch(pid):
-            rel = f"projects/{pid}"
-        else:
+            if (self.root / rel).is_dir():
+                return rel
+            raise KBError(f"Unknown project {project!r}. Call kb_projects to list projects.")
+        if not _PROJECT_ID_RE.fullmatch(pid):
             raise KBError(
                 f"Invalid project id {project!r} — ids are lowercase letters/digits/hyphens. "
                 "Call kb_projects to list valid projects."
             )
-        if not (self.root / rel).is_dir():
+        found = self._find_project_dir(pid)
+        if found is None:
             raise KBError(
                 f"Unknown project {project!r}. Call kb_projects to list available projects."
             )
-        return rel
+        return found
+
+    @staticmethod
+    def _is_folder_dir(path: Path) -> bool:
+        """A directory under projects/ is a FOLDER when it groups projects rather than
+        being one: it has no context.md of its own but contains a directory that does.
+        context.md is the OKF project anchor, so it's the honest marker."""
+        if (path / "context.md").is_file():
+            return False
+        try:
+            return any(
+                c.is_dir() and not c.name.startswith(".") and (c / "context.md").is_file()
+                for c in path.iterdir()
+            )
+        except OSError:
+            return False
+
+    def _find_project_dir(self, pid: str) -> str | None:
+        """'projects/<pid>' or 'projects/<folder>/<pid>' — whichever exists."""
+        pdir = self.root / "projects"
+        direct = pdir / pid
+        if direct.is_dir() and not self._is_folder_dir(direct):
+            return f"projects/{pid}"
+        if pdir.is_dir():
+            for child in sorted(pdir.iterdir()):
+                if child.is_dir() and not child.name.startswith(".") and (child / pid).is_dir():
+                    return f"projects/{child.name}/{pid}"
+        return None
+
+    def _project_folder(self, pid: str) -> str:
+        """The folder a project sits in ('' when it's at the top level)."""
+        rel = self._find_project_dir(pid) or ""
+        parts = rel.split("/")
+        return parts[1] if len(parts) == 3 else ""
 
     async def kb_rename_project(self, old_id: str, new_id: str) -> dict[str, Any]:
         """Rename projects/<old_id> to projects/<new_id>, rewriting links bundle-wide.
@@ -800,7 +843,7 @@ class KBStore:
         root_entries = _index_entries(self.root / "index.md")
         out: list[dict[str, Any]] = []
         for pid in self._project_ids():
-            rel = "metalfinger" if pid == "metalfinger" else f"projects/{pid}"
+            rel = "metalfinger" if pid == "metalfinger" else (self._find_project_dir(pid) or f"projects/{pid}")
             pdir = self.root / rel
             entries = root_entries if pid == "metalfinger" else proj_entries
             title, description = entries.get(pid, ("", ""))
@@ -814,6 +857,8 @@ class KBStore:
                     # Grouping labels from context.md frontmatter — the brain already
                     # speaks tags, so organizing projects needs no new grammar and no
                     # nesting (a project can belong to several groups at once).
+                    # The real directory this project lives in ('' = top level).
+                    "folder": (rel.split("/")[1] if rel.count("/") == 2 else ""),
                     "tags": _as_tags(ctx_meta.get("tags")),
                     # The project's DEFAULT reach (its concepts inherit unless they
                     # override). Surfaced everywhere so "what's exposed?" is answerable
@@ -830,12 +875,21 @@ class KBStore:
         return out
 
     def _project_ids(self) -> list[str]:
+        """Every project id, whether it sits at the top level or inside a folder."""
         pdir = self.root / "projects"
-        ids = (
-            sorted(d.name for d in pdir.iterdir() if d.is_dir() and not d.name.startswith("."))
-            if pdir.is_dir()
-            else []
-        )
+        ids: list[str] = []
+        if pdir.is_dir():
+            for d in sorted(pdir.iterdir()):
+                if not d.is_dir() or d.name.startswith("."):
+                    continue
+                if self._is_folder_dir(d):
+                    ids.extend(
+                        sorted(c.name for c in d.iterdir()
+                               if c.is_dir() and not c.name.startswith("."))
+                    )
+                else:
+                    ids.append(d.name)
+            ids = sorted(set(ids))
         # The 'metalfinger' personal top-level tree is the operator's; only surface it
         # as a pseudo-project when it actually exists. A fresh tenant brain has no such
         # dir, so this stops a phantom empty 'metalfinger' project appearing for them.
@@ -3186,6 +3240,138 @@ class KBStore:
         sha, pushed = await self._locked_commit(_mutate, f"kb: visibility {want} for {rel}")
         applies = "project (its concepts inherit this default)" if posixpath.basename(rel) == "context.md" else "concept"
         return {"path": rel, "visibility": want, "applies_to": applies, "sha": sha, "pushed": pushed}
+
+    async def kb_move_project(self, project: str, folder: str = "") -> dict[str, Any]:
+        """Move a project into a real folder directory (or back to the top level).
+
+        `projects/<id>` <-> `projects/<folder>/<id>`. Folders are actual directories, so
+        the bundle stays browsable in git and any file manager, and a project lives in
+        exactly one place. The project ID does NOT change, so kb_load, `.engram-project`
+        pins and the office keep working untouched.
+
+        Every markdown link in the bundle is RE-EXPRESSED, not string-replaced: each
+        relative target is resolved against its file's old location and rewritten relative
+        to the new one. That's what keeps `../../library/...`-style links (which escape the
+        project and therefore change depth) correct.
+
+        Returns {project, folder, from, to, links_rewritten, sha, pushed}."""
+        pid = (project or "").strip()
+        dest_folder = (folder or "").strip().lower()
+        if pid == "metalfinger":
+            raise KBError("metalfinger is a fixed top-level tree and cannot be moved.")
+        if dest_folder and not _PROJECT_ID_RE.fullmatch(dest_folder):
+            raise KBError("Folder names are lowercase letters/digits/hyphens, e.g. 'alt-inc'.")
+        old_rel = self._project_rel(pid)  # validates it exists
+        new_rel = f"projects/{dest_folder}/{pid}" if dest_folder else f"projects/{pid}"
+        if old_rel == new_rel:
+            return {"project": pid, "folder": dest_folder, "from": old_rel, "to": new_rel,
+                    "links_rewritten": 0, "sha": await to_thread.run_sync(self.repo.head_sha),
+                    "pushed": True}
+        if dest_folder == pid:
+            raise KBError("A folder can't have the same name as the project inside it.")
+        state = {"links": 0}
+
+        def _mutate() -> list[str]:
+            old_dir = self.root / old_rel
+            new_dir = self.root / new_rel
+            if new_dir.exists():
+                raise KBError(f"{new_rel} already exists.")
+            # Refuse to bury a project under something that is itself a project.
+            if dest_folder:
+                holder = self.root / "projects" / dest_folder
+                if holder.is_dir() and (holder / "context.md").is_file():
+                    raise KBError(
+                        f"'{dest_folder}' is a project, not a folder — projects can't nest "
+                        "inside other projects."
+                    )
+                holder.mkdir(parents=True, exist_ok=True)
+            old_dir.rename(new_dir)
+            state["links"] = self._relink_after_move(old_rel, new_rel)
+            self._ensure_folder_indexes()
+            return ["projects", old_rel, new_rel]
+
+        sha, pushed = await self._locked_commit(
+            _mutate, f"kb: move {pid} -> {dest_folder or 'top level'}"
+        )
+        return {"project": pid, "folder": dest_folder, "from": old_rel, "to": new_rel,
+                "links_rewritten": state["links"], "sha": sha, "pushed": pushed}
+
+    def _relink_after_move(self, old_rel: str, new_rel: str) -> int:
+        """Rewrite every relative markdown link so it still points at the same concept.
+
+        Resolve each target against the file's OLD directory, map it through the move,
+        then re-express it relative to the file's NEW directory. Depth-correct by
+        construction, which regex substitution is not."""
+        rewritten = 0
+        old_p, new_p = PurePosixPath(old_rel), PurePosixPath(new_rel)
+
+        def _moved(path: PurePosixPath) -> PurePosixPath:
+            """Map a bundle path through the move (identity outside the moved tree)."""
+            if path == old_p or old_p in path.parents:
+                return new_p / path.relative_to(old_p)
+            return path
+
+        for f in self.root.rglob("*.md"):
+            if ".git" in f.parts:
+                continue
+            new_file_rel = PurePosixPath(f.relative_to(self.root).as_posix())
+            # Where this file USED to live (it moved too if it's inside the tree).
+            old_file_rel = new_file_rel
+            if new_p == new_file_rel or new_p in new_file_rel.parents:
+                old_file_rel = old_p / new_file_rel.relative_to(new_p)
+            text = _read_text_retry(f)
+            changed = False
+
+            def _sub(m: "re.Match[str]") -> str:
+                nonlocal changed, rewritten
+                target = m.group("target")
+                if not target or target.startswith(("http://", "https://", "mailto:", "#", "/")):
+                    return m.group(0)
+                frag = ""
+                if "#" in target:
+                    target, frag = target.split("#", 1)
+                    frag = "#" + frag
+                if not target:
+                    return m.group(0)
+                try:
+                    resolved = PurePosixPath(
+                        posixpath.normpath(posixpath.join(str(old_file_rel.parent), target))
+                    )
+                except ValueError:
+                    return m.group(0)
+                if str(resolved).startswith(".."):
+                    return m.group(0)  # already escapes the bundle; leave it alone
+                new_target_abs = _moved(resolved)
+                new_target = posixpath.relpath(str(new_target_abs), str(new_file_rel.parent))
+                if new_target != target:
+                    changed = True
+                    rewritten += 1
+                return f"]({new_target}{frag})"
+
+            text2 = _MOVE_LINK_RE.sub(_sub, text)
+            if changed and text2 != text:
+                _write_text(f, text2)
+        return rewritten
+
+    def _ensure_folder_indexes(self) -> None:
+        """Give every folder directory an index.md listing the projects inside it, and
+        keep projects/index.md pointing at folders as well as loose projects."""
+        pdir = self.root / "projects"
+        if not pdir.is_dir():
+            return
+        for d in sorted(pdir.iterdir()):
+            if not d.is_dir() or d.name.startswith(".") or not self._is_folder_dir(d):
+                continue
+            bullets = []
+            for c in sorted(d.iterdir()):
+                if not c.is_dir() or c.name.startswith("."):
+                    continue
+                meta = read_meta(c / "context.md")
+                title = str(meta.get("title") or _title_case(c.name))
+                desc = str(meta.get("description") or "")
+                bullets.append(f"* [{title}]({c.name}/context.md) - {desc}")
+            listing = "\n".join(bullets) if bullets else "Nothing here yet."
+            _write_text(d / "index.md", f"# {_title_case(d.name)}\n\n{listing}\n")
 
     async def kb_tag_project(self, project: str, tags: list[str] | None = None,
                              status: str = "") -> dict[str, Any]:

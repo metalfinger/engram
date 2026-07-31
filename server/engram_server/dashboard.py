@@ -1143,10 +1143,9 @@ class Dashboard:
         # No "Home" entry — the wordmark in the topbar is the way home.
         items: list[str] = []
         live = [p for p in projects if str(p.get("status") or "active") != "archived"]
-        groups: dict[str, list] = {}
+        folders: dict[str, list] = {}
         for p in live:
-            for tag in (p.get("tags") or ["__untagged__"]):
-                groups.setdefault(tag, []).append(p)
+            folders.setdefault(str(p.get("folder") or ""), []).append(p)
 
         def _links(bucket: list) -> str:
             return "".join(
@@ -1155,12 +1154,12 @@ class Dashboard:
                 for p in bucket
             )
 
-        for tag in sorted(k for k in groups if k != "__untagged__"):
-            items.append(f"<p class='nav-group'>{esc(tag)}</p>")
-            items.append(_links(groups[tag]))
-        if groups.get("__untagged__"):
+        for name in sorted(k for k in folders if k):
+            items.append(f"<p class='nav-group'>📁 {esc(name)}</p>")
+            items.append(_links(folders[name]))
+        if folders.get(""):
             items.append("<p class='nav-group'>Projects</p>")
-            items.append(_links(groups["__untagged__"]))
+            items.append(_links(folders[""]))
         return "<nav class='nav-sub'>" + "".join(items) + "</nav>"
 
     @staticmethod
@@ -1221,21 +1220,20 @@ class Dashboard:
         live = [p for p in projects if str(p.get("status") or "active") != "archived"]
         archived = [p for p in projects if str(p.get("status") or "active") == "archived"]
 
-        groups: dict[str, list] = {}
+        # Group by the real folder each project lives in; "" = top level.
+        folders: dict[str, list] = {}
         for p in live:
-            for tag in (p.get("tags") or ["__untagged__"]):
-                groups.setdefault(tag, []).append(p)
+            folders.setdefault(str(p.get("folder") or ""), []).append(p)
 
         parts: list[str] = []
-        # Tagged groups first (alphabetical), then whatever carries no tag.
-        for tag in sorted(k for k in groups if k != "__untagged__"):
-            parts.append(f"<p class='section-label'>{esc(tag)}</p>")
-            parts.append("<div class='cards'>" + "".join(self._project_card(p) for p in groups[tag]) + "</div>")
-        if groups.get("__untagged__"):
-            if parts:  # only label the remainder when there are real groups above it
-                parts.append("<p class='section-label'>Ungrouped</p>")
+        for name in sorted(k for k in folders if k):
+            parts.append(f"<p class='section-label'>📁 {esc(name)}</p>")
+            parts.append("<div class='cards'>" + "".join(self._project_card(p) for p in folders[name]) + "</div>")
+        if folders.get(""):
+            if parts:  # only label the loose ones when folders exist above them
+                parts.append("<p class='section-label'>Not in a folder</p>")
             parts.append("<div class='cards'>"
-                         + "".join(self._project_card(p) for p in groups["__untagged__"]) + "</div>")
+                         + "".join(self._project_card(p) for p in folders[""]) + "</div>")
         if archived:
             parts.append(
                 f"<details><summary class='meta'>Archived ({len(archived)})</summary>"

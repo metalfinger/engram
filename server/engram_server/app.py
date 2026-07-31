@@ -1240,15 +1240,30 @@ async def social_mark_read() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def kb_tag_project(project: str, tags: list[str] | None = None, status: str = "") -> dict[str, Any]:
-    """Organize projects into groups. Call when the user wants to group, categorise, file,
-    archive or "put projects in folders" — tags do that job here.
+async def kb_move_project(project: str, folder: str = "") -> dict[str, Any]:
+    """Put a project in a folder — real directories, one project in exactly one place.
 
-    `tags`: the project's full group list, e.g. ["client-work", "alt"] (pass [] to clear).
-    `status`: 'active' | 'paused' | 'archived' — archived projects drop out of the way in
-    listings without being deleted. A project can carry several tags at once, which is why
-    this is tags rather than nested folders (no path churn, and no project has to live in
-    exactly one place). kb_projects returns tags so you can group by them.
+    Call when the user wants to file, group or organize projects ("put the client work in
+    an alt-inc folder", "move pixelpuri to personal"). `folder` is a folder name like
+    'personal' or 'alt-inc'; pass "" to move it back to the top level. Folders are actual
+    directories on disk, so the brain stays browsable in git and any file manager.
+
+    The project's ID doesn't change, so nothing that refers to it breaks — kb_load, the
+    `.engram-project` pin and the office all keep working. Links across the bundle are
+    re-expressed automatically so they stay correct at the new depth.
+
+    Returns {project, folder, from, to, links_rewritten, sha, pushed}.
+    """
+    return await (await current_store()).kb_move_project(project, folder)
+
+
+@mcp.tool()
+async def kb_project_status(project: str, status: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    """Set a project's `status` (and optional free-form `tags`).
+
+    `status`: 'active' | 'paused' | 'archived' — archiving tucks a finished project out of
+    the way in listings without deleting anything. Use kb_move_project to file it in a
+    folder; tags here are just optional labels, not the organizing structure.
 
     Returns {project, tags, status, sha, pushed}.
     """
