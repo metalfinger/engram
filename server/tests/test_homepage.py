@@ -45,9 +45,12 @@ def test_mentions_invite() -> None:
     assert "invite" in html.lower()
 
 
-def test_links_to_dashboard() -> None:
+def test_links_to_dashboard_on_the_human_hostname() -> None:
+    # One door (v3): humans get the explorer hostname; public_url stays the
+    # machine/connector origin.
     html = homepage_html(SETTINGS)
-    assert "https://engram.metalfinger.xyz/dashboard" in html
+    expected = SETTINGS.explorer_url.rstrip("/") + "/dashboard"
+    assert expected in html
 
 
 def test_claude_code_install_command_present() -> None:
@@ -83,11 +86,27 @@ def test_different_public_url_reflected() -> None:
     assert "https://engram.metalfinger.xyz" not in html
 
 
-def test_varies_public_url_used_in_dashboard_link() -> None:
-    settings = Settings(public_url="https://example.test/")  # trailing slash
+def test_dashboard_link_tracks_explorer_url() -> None:
+    settings = Settings(
+        public_url="https://mcp.example.test",
+        explorer_url="https://human.example.test/",  # trailing slash normalized
+    )
     html = homepage_html(settings)
-    assert "https://example.test/dashboard" in html
-    assert "https://example.test//dashboard" not in html
+    assert "https://human.example.test/dashboard" in html
+    assert "https://human.example.test//dashboard" not in html
+    # the connector URL still uses the machine origin
+    assert "https://mcp.example.test/mcp" in html
+
+
+def test_team_default_visibility_changes_the_copy() -> None:
+    solo = homepage_html(Settings(public_url="https://x.test"))
+    assert "Everything starts private" in solo
+    team = homepage_html(
+        Settings(public_url="https://x.test", default_visibility="public")
+    )
+    assert "team server" in team
+    assert "Everything starts private" not in team
+    assert "never the open web" in team
 
 
 # ------------------------------------------------------------ registration

@@ -169,7 +169,10 @@ def _client_block(title: str, glyph: str, steps: list[str], code: str | None) ->
 def homepage_html(settings: Settings) -> str:
     """Render the self-contained public homepage (zero external requests)."""
     mcp_url = settings.public_url.rstrip("/") + "/mcp"
-    dashboard_url = settings.public_url.rstrip("/") + "/dashboard"
+    # One door (v3): the HUMAN surface lives on the explorer hostname; public_url
+    # stays the machine/connector origin.
+    human_base = (settings.explorer_url or settings.public_url).rstrip("/")
+    dashboard_url = human_base + "/dashboard"
     signup_url = settings.public_url.rstrip("/") + "/join"
     mcp_url_esc = _escape(mcp_url)
 
@@ -188,16 +191,32 @@ def homepage_html(settings: Settings) -> str:
                 "come back whenever a session needs them — this device or the next one.",
             ),
             _card(
-                "&#9993;",
-                "Leave a note for your future self",
-                "Wrap up a session with a message for whichever session opens next, on "
-                "whichever machine — it's waiting when that session starts.",
+                "&#128269;",
+                "Someone already solved it",
+                "Before your AI sinks an afternoon into a problem, one search across the "
+                "team's shared work finds the teammate who hit it months ago — with their "
+                "actual decision, not a half-remembered Slack thread.",
             ),
             _card(
-                "&#129309;",
-                "Share it with your team",
-                "Invite a teammate and their AI can read from — and write into — the same "
-                "knowledge base, so their sessions answer from what your team already knows.",
+                "&#128682;",
+                "Rooms: your AIs talk to each other",
+                "Open a live room with teammates — your Claudes converse in real time AND "
+                "search each other's granted work mid-conversation. When it closes, the "
+                "conclusion is offered back into your brain, so the room is never lost.",
+            ),
+            _card(
+                "&#128101;",
+                "See your team working",
+                "Ambient presence — who's in which project right now, like seeing what a "
+                "friend is listening to. Project names only, never content, and one click "
+                "makes you invisible.",
+            ),
+            _card(
+                "&#128276;",
+                "Reach a human when it matters",
+                "Ask the author of any shared decision a question from inside your AI "
+                "session — it lands in their browser extension and phone, and their answer "
+                "flows back into yours.",
             ),
         ]
     )
@@ -218,6 +237,13 @@ def homepage_html(settings: Settings) -> str:
         "Requires a ChatGPT plan that supports custom MCP connectors.",
     ]
 
+    extension_steps = [
+        "Get the extension folder from your admin (<code>clients/chrome-extension</code>).",
+        "Open <strong>chrome://extensions</strong>, enable Developer mode, <strong>Load unpacked</strong>.",
+        "Click the Engram icon and sign in &mdash; same GitHub/Google account, one click. "
+        "You'll get room invites, DMs, and questions as native notifications.",
+    ]
+
     clients = "".join(
         [
             _client_block("claude.ai / Claude mobile", "&#127760;", claude_ai_steps, None),
@@ -228,8 +254,32 @@ def homepage_html(settings: Settings) -> str:
                 f"$ claude mcp add --transport http engram {mcp_url}",
             ),
             _client_block("ChatGPT", "&#128172;", chatgpt_steps, None),
+            _client_block("Chrome notifier (optional)", "&#128276;", extension_steps, None),
         ]
     )
+
+    team_default = str(settings.default_visibility or "").strip().lower() == "public"
+    if team_default:
+        visibility_copy = (
+            "<p style='margin:0 0 .6rem;'>"
+            "<strong>This is a team server: new work is shared with the team by default.</strong> "
+            "Everyone here agreed to that — and <em>you stay in control</em>: mark any project or "
+            "concept <code>private</code> at any time, nothing already written is ever exposed "
+            "retroactively, and imported history always lands private."
+            "</p>"
+            "<p style='margin:0 0 .6rem;'>"
+            "<strong>“Shared” means your signed-in team</strong> &mdash; never the open web, never "
+            "search engines. Session messages, inboxes, and room transcripts can never be "
+            "published at all. Ask your AI <code>what's public?</code> anytime for the exact list."
+            "</p>"
+        )
+    else:
+        visibility_copy = (
+            "<p style='margin:0 0 .6rem;'>"
+            "<strong>Everything starts private.</strong> Nothing you write is visible to anyone "
+            "until you explicitly publish it &mdash; and you can see exactly what's public at a glance."
+            "</p>"
+        )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -264,7 +314,8 @@ def homepage_html(settings: Settings) -> str:
 
   <section class="wrap" id="what">
     <h2>What you can do</h2>
-    <p class="section-lede">One brain, read and written by every AI session you open.</p>
+    <p class="section-lede">One brain per person, read and written by every AI session you
+    open &mdash; and a team layer that makes each other's solved problems searchable.</p>
     <div class="cards">{cards}</div>
   </section>
 
@@ -278,16 +329,14 @@ def homepage_html(settings: Settings) -> str:
   </section>
 
   <section class="wrap" id="private">
-    <h2>Free, and private by default</h2>
+    <h2>Who sees what</h2>
     <div class="note">
       <p style="margin:0 0 .6rem;">
         <strong>Anyone can create one.</strong> Sign in with GitHub or Google &mdash; no
-        password to manage or lose, and nothing to pay.
+        password to manage or lose, and nothing to pay. One account works everywhere:
+        the AI connector, this site, and the Chrome notifier.
       </p>
-      <p style="margin:0 0 .6rem;">
-        <strong>Everything starts private.</strong> Nothing you write is visible to anyone
-        until you explicitly publish it &mdash; and you can see exactly what's public at a glance.
-      </p>
+      {visibility_copy}
       <p style="margin:0;">
         <strong>Your brain is yours.</strong> It's a real git repository, so it's portable:
         nothing about your knowledge base is locked to Engram.
