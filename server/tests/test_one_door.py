@@ -139,3 +139,36 @@ def test_session_cookie_stays_host_only_across_unrelated_domains(settings):
         "explorer_url": "https://b.other.net",
     }))
     assert d._cookie_domain() is None
+
+
+def test_oauth_state_cookie_spans_both_hostnames(settings):
+    """The flow STARTS on brain.*, the callback LANDS on engram.* — a host-only
+    state cookie never arrives and every brain.*-initiated sign-in dies with
+    'could not be verified'. (Field bug, 2026-08-01.)"""
+    from engram_server.dashboard import Dashboard
+    from engram_server.registry import StoreRegistry
+
+    class FakeIdP:
+        name = "google"
+        def authorize_url(self, r, s): return f"https://idp.example/auth?state={s}"
+
+    s = settings.model_copy(update={
+        "multiuser": True,
+        "dashboard_session_secret": SECRET,
+        "public_url": "https://engram.metalfinger.xyz",
+        "explorer_url": "https://brain.metalfinger.xyz",
+    })
+    from mcp.server.fastmcp import FastMCP
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from engram_server.dashboard import register_dashboard
+
+    mcp = FastMCP("od")
+    register_dashboard(mcp, s, StoreRegistry(s), {"google": FakeIdP()})
+    client = TestClient(Starlette(routes=mcp._custom_starlette_routes),
+                        base_url="https://brain.metalfinger.xyz")
+    r = client.get("/dashboard/auth/google", follow_redirects=False)
+    assert r.status_code == 302
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "engram_oauth_state" in set_cookie
+    assert "Domain=.metalfinger.xyz" in set_cookie or "domain=.metalfinger.xyz" in set_cookie

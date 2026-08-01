@@ -657,9 +657,14 @@ class Dashboard:
         resp = RedirectResponse(idp.authorize_url(self.callback_url, state), status_code=302)
         # Bind this flow to THIS browser (OAuth login-CSRF / session-fixation defense):
         # the callback only proceeds if this cookie comes back matching the state param.
+        # PARENT-DOMAIN scope is load-bearing (one door): the flow STARTS on the human
+        # hostname (brain.*) but GitHub's registered callback lands on the machine
+        # hostname (engram.*) — a host-only cookie never arrives and every sign-in
+        # from brain.* dies with "could not be verified".
         resp.set_cookie(
             OAUTH_STATE_COOKIE, state,
             max_age=900, httponly=True, secure=True, samesite="lax", path="/",
+            domain=self._cookie_domain(),
         )
         return resp
 
@@ -670,7 +675,8 @@ class Dashboard:
             request.query_params.get("code", ""),
             request.cookies.get(OAUTH_STATE_COOKIE),
         )
-        resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+        resp.delete_cookie(OAUTH_STATE_COOKIE, path="/", domain=self._cookie_domain())
+        resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")  # legacy host-only leftovers
         return resp
 
     async def _callback(self, state: str, code: str, cookie_state: str | None) -> "Response":
@@ -967,7 +973,12 @@ class Dashboard:
         return None
 
     def _logged_in_redirect(self, subject: str, email_or_login: str, handle: str) -> "Response":
-        resp = RedirectResponse("/dashboard", status_code=302)
+        # Send humans HOME — the callback lands on the machine hostname (engram.*),
+        # but the human surface is the explorer hostname. An absolute redirect (the
+        # parent-domain cookie travels with it) means you always end up on brain.*
+        # after sign-in instead of stranded on the connector host.
+        human_base = (self.settings.explorer_url or self.settings.public_url).rstrip("/")
+        resp = RedirectResponse(f"{human_base}/dashboard", status_code=302)
         resp.set_cookie(
             SESSION_COOKIE,
             self.auth.issue(subject, email_or_login, handle),
