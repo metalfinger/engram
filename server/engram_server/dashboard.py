@@ -28,6 +28,7 @@ constructing Starlette requests.
 
 from __future__ import annotations
 
+import asyncio
 import html as _html
 import re
 import secrets
@@ -42,10 +43,12 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 
 from engram_server.discovery import DiscoveryError
 from engram_server.kbstore import _as_tags as _tags_of
+from engram_server.kbstore import _scan_secrets
 from engram_server.errors import KBError
 from engram_server.explorer import social_pages
 from engram_server.provisioning import ensure_user_brain
 from engram_server.social import SocialError
+from engram_server.teamwork import TeamworkError
 from engram_server.tenancy import TenancyError
 
 if TYPE_CHECKING:
@@ -133,6 +136,9 @@ class Dashboard:
             s.strip() for s in settings.owner_subjects.split(",") if s.strip()
         )
         self._pending: dict[str, _Pending] = {}
+        # Fire-and-forget notification-push tasks (mirrors app.py's _social_bg) — a
+        # bare reference set so asyncio doesn't garbage-collect a task mid-flight.
+        self._bg: set = set()
 
     # -- identity helpers ----------------------------------------------------
 
@@ -185,6 +191,28 @@ class Dashboard:
             inviter_name=inviter.get("handle") or self.settings.owner_handle,
         )
         return {"invite": invite, "join_url": join_url, "mail": sent}
+
+    def _push_notification(self, user_id: int, kind: str, body: str, ref: str | None = None) -> None:
+        """Persist a notification and fan it out (email/telegram) best-effort, off the
+        caller's critical path. Duplicates app.py's ``_push_notification`` idiom
+        (dashboard.py may not import app.py) — fanout never raises; a failed push
+        never fails the request."""
+        self.registry.social.create_notification(user_id, kind, body, ref)
+        user = next((u for u in self.registry.tenancy.list_users() if u.id == user_id), None)
+        if user is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        from engram_server import notify as _notify
+
+        recipient = _notify.Recipient(handle=user.handle, email=user.email, telegram_chat_id=None, prefs={})
+        task = loop.create_task(
+            _notify.fanout(self.settings, recipient, {"kind": kind, "body": body, "ref": ref})
+        )
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
 
     # -- route handlers ------------------------------------------------------
 
@@ -273,9 +301,33 @@ class Dashboard:
             "is_following": bool(viewer_id and self.registry.discovery.is_following(viewer_id, user.id)),
         }
 
-    async def _social_shell(self, session: dict, title: str, body: str, crumbs) -> str:
+    async def _social_shell(self, session: dict, title: str, body: str, crumbs, active_tab: str = "") -> str:
         projects = await self._user_projects(session)
-        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects))
+        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects), active_tab=active_tab)
+
+    def _render_working_strip(self) -> str:
+        """The "Working now" strip: who's active, in what project, how fresh.
+        Shared by /dashboard/people and /dashboard/office (both team-facing views)."""
+        from engram_server.explorer.html import esc
+
+        umap = {u.id: u for u in self.registry.tenancy.list_users()}
+        rows = self.registry.presence.roster()
+        if not rows:
+            return ""
+        cards = []
+        for row in rows:
+            u = umap.get(row["user_id"])
+            if u is None:
+                continue
+            dot = "🟢" if row["minutes_ago"] <= 15 else ("🟠" if row["minutes_ago"] <= 120 else "⚪")
+            cards.append(
+                "<div class='card' style='display:flex;align-items:center;gap:.6rem'>"
+                f"{self._avatar_for(u.handle, u.display_name or '', u.avatar_url or '', 32)}"
+                f"<div><p class='meta'>{dot} <a href='/dashboard/u/{esc(u.handle)}'>@{esc(u.handle)}</a>"
+                + (f" in {esc(row['project'])}" if row.get("project") else "")
+                + f"<br><span style='font-size:11px'>{esc(row.get('tool') or '')}</span></p></div></div>"
+            )
+        return "<p class='section-label'>Working now</p><div class='cards'>" + "".join(cards) + "</div>"
 
     async def people_view(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -296,11 +348,14 @@ class Dashboard:
                 "public_projects": len({i.get("project") for i in work if i.get("project")}),
                 "is_following": bool(me and self.registry.discovery.is_following(me.id, u.id)),
             })
-        body = social_pages.people_body(people, me.handle if me else "")
+        body = self._render_working_strip() + social_pages.people_body(people, me.handle if me else "")
         return HTMLResponse(await self._social_shell(session, "People", body,
-                                                     [("home", "/dashboard"), ("people", "/dashboard/people")]))
+                                                     [("home", "/dashboard"), ("people", "/dashboard/people")],
+                                                     active_tab="people"))
 
     async def profile_view(self, request: "Request") -> "Response":
+        from engram_server.explorer.html import esc
+
         session = self._session(request)
         if session is None:
             return RedirectResponse("/dashboard/login", status_code=302)
@@ -311,10 +366,18 @@ class Dashboard:
             return HTMLResponse(await self._social_shell(session, "Not found",
                 "<p class='empty'>No such person.</p>", [("home", "/dashboard")]), status_code=404)
         work = await self._public_work_for(profile["handle"])
-        body = social_pages.profile_body(profile, work, me.handle if me else "")
+        room_btn = ""
+        if me is not None and profile["handle"] != me.handle:
+            room_btn = (
+                "<form method='post' action='/dashboard/rooms/open-with'>"
+                f"<input type='hidden' name='handle' value='{esc(profile['handle'])}'>"
+                f"<button type='submit'>Open a room with @{esc(profile['handle'])}</button></form>"
+            )
+        body = social_pages.profile_body(profile, work, me.handle if me else "") + room_btn
         return HTMLResponse(await self._social_shell(
             session, f"@{profile['handle']}", body,
-            [("home", "/dashboard"), ("people", "/dashboard/people"), (profile["handle"], f"/dashboard/u/{profile['handle']}")]))
+            [("home", "/dashboard"), ("people", "/dashboard/people"), (profile["handle"], f"/dashboard/u/{profile['handle']}")],
+            active_tab="people"))
 
     async def public_concept_view(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -818,14 +881,29 @@ class Dashboard:
         if handle is None:
             return PlainTextResponse("No account.", status_code=403)
         form = await request.form()
+        avatar_url = str(form.get("avatar_url", "")).strip()
+        if avatar_url and (
+            len(avatar_url) > 100_000
+            or not (avatar_url.startswith("data:image/") or avatar_url.startswith("https://"))
+        ):
+            return HTMLResponse(
+                await self._render_dashboard(
+                    session, error="Avatar must be an https:// link or an uploaded image, under 100KB."
+                ),
+                status_code=400,
+            )
         try:
             self.registry.tenancy.set_profile(
                 handle,
                 display_name=str(form.get("display_name", "")),
-                avatar_url=str(form.get("avatar_url", "")),
+                avatar_url=avatar_url,
+                bio=str(form.get("bio", "")),
             )
             return HTMLResponse(await self._render_dashboard(session, notice="Profile saved."))
         except TenancyError as exc:
+            # Covers tenancy's own https://-only backstop — e.g. a data:image/ avatar,
+            # which our client-side canvas can produce, until that store-level rule
+            # is relaxed to admit data URIs too.
             return HTMLResponse(await self._render_dashboard(session, error=str(exc)), status_code=400)
 
     # -- extension notification API (bearer-token, for the Chrome notifier) ---
@@ -855,7 +933,7 @@ class Dashboard:
         counts = social.unread_counts(user.id)
         return JSONResponse({
             "ok": True,
-            "unread": [{"id": n.id, "kind": n.kind, "body": n.body, "at": n.created} for n in notes],
+            "unread": [{"id": n.id, "kind": n.kind, "body": n.body, "at": n.created, "ref": n.ref} for n in notes],
             "counts": counts,
         })
 
@@ -1016,37 +1094,87 @@ class Dashboard:
                     "<button type=submit>Sign out</button></form></div>")
         return self._brain_shell(
             f"@{handle}", "".join(body), [("home", "/dashboard")],
-            self._brain_sidebar(projects),
+            self._brain_sidebar(projects), active_tab="home",
         )
 
     def _avatar_img(self, user, size: int = 40) -> str:
-        """A safe <img> for a user's avatar (escaped https URL), or a letter fallback."""
-        if user is not None and user.avatar_url:
+        """A safe <img> for a user's avatar, or a deterministic-color initials fallback.
+        Thin wrapper over ``_avatar_for`` for call sites that already hold a User row."""
+        if user is None:
+            return self._avatar_for("", "", "", size)
+        return self._avatar_for(user.handle, user.display_name or "", user.avatar_url or "", size)
+
+    # Deterministic per-handle color so the same person always gets the same
+    # initials-circle color across people/profile/rooms/office — a stable visual
+    # identity even before someone sets a real avatar.
+    _AVATAR_COLORS = (
+        "#b5622b", "#2f6f4e", "#3a5a9c", "#8a4b8a",
+        "#a3762b", "#3f7a8a", "#a34b4b", "#5a6b3a",
+    )
+
+    @classmethod
+    def _color_for_handle(cls, handle: str) -> str:
+        h = sum(ord(c) for c in handle) if handle else 0
+        return cls._AVATAR_COLORS[h % len(cls._AVATAR_COLORS)]
+
+    def _avatar_for(self, handle: str, display_name: str = "", avatar_url: str = "", size: int = 40) -> str:
+        """A safe <img> for an https:// or data:image/ avatar, or an initials-circle
+        fallback colored deterministically from the handle."""
+        if avatar_url:
             return (
-                f"<img src='{_html.escape(user.avatar_url, quote=True)}' "
+                f"<img src='{_html.escape(avatar_url, quote=True)}' "
                 f"width={size} height={size} alt='' "
-                f"style='border-radius:50%;object-fit:cover;vertical-align:middle'>"
+                "style='border-radius:50%;object-fit:cover;vertical-align:middle'>"
             )
-        letter = (user.handle[0].upper() if user else "?")
+        letter = _html.escape(((display_name or handle or "?").strip()[:1] or "?").upper())
+        color = self._color_for_handle(handle)
         return (
             f"<span style='display:inline-flex;width:{size}px;height:{size}px;border-radius:50%;"
-            "background:#c26a3f;color:#fff;align-items:center;justify-content:center;"
-            f"font-weight:600;vertical-align:middle'>{_html.escape(letter)}</span>"
+            f"background:{color};color:#fff;align-items:center;justify-content:center;"
+            f"font-weight:600;vertical-align:middle'>{letter}</span>"
         )
 
     def _render_profile_block(self, session: dict, handle: str) -> str:
         user = self.registry.tenancy.user_by_handle(handle)
         name = (user.display_name if user else "") or ""
         avatar = (user.avatar_url if user else "") or ""
+        bio = (user.bio if user else "") or ""
         return (
             "<div class=card><h2>Your profile</h2>"
             f"<p>{self._avatar_img(user)} <span class=mono>@{_html.escape(handle)}</span></p>"
-            "<form method=post action='/dashboard/profile'>"
+            "<form method=post action='/dashboard/profile' id=engram-profile-form>"
             "<p>Display name<br><input name=display_name maxlength=60 "
             f"value='{_html.escape(name)}' placeholder='e.g. Amiyanshu'></p>"
-            "<p>Avatar image URL (https)<br><input name=avatar_url style='width:100%' "
+            "<p>Bio<br><textarea name=bio maxlength=280 placeholder='A line about you'>"
+            f"{_html.escape(bio)}</textarea></p>"
+            "<p>Avatar<br><input type=file id=engram-avatar-file accept='image/*'> "
+            "<span style='font-size:12px;color:var(--muted)'>or paste an https:// image URL below</span><br>"
+            "<input name=avatar_url id=engram-avatar-url style='width:100%' "
             f"value='{_html.escape(avatar)}' placeholder='https://…/me.png'></p>"
-            "<button type=submit>Save profile</button></form></div>"
+            "<button type=submit>Save profile</button></form>"
+            # Client-side downscale: a chosen file becomes a 96x96 JPEG data-URL in the
+            # same field a pasted https:// URL would use — the server treats both the
+            # same way (see save_profile's avatar_url validation).
+            "<script>(function(){"
+            "var f=document.getElementById('engram-avatar-file');"
+            "if(!f)return;"
+            "f.addEventListener('change',function(e){"
+            "var file=e.target.files&&e.target.files[0];if(!file)return;"
+            "var reader=new FileReader();"
+            "reader.onload=function(ev){"
+            "var img=new Image();"
+            "img.onload=function(){"
+            "var c=document.createElement('canvas');c.width=96;c.height=96;"
+            "var ctx=c.getContext('2d');"
+            "var s=Math.min(img.width,img.height);"
+            "var sx=(img.width-s)/2,sy=(img.height-s)/2;"
+            "ctx.drawImage(img,sx,sy,s,s,0,0,96,96);"
+            "document.getElementById('engram-avatar-url').value=c.toDataURL('image/jpeg',0.85);"
+            "};img.src=ev.target.result;};"
+            "reader.readAsDataURL(file);"
+            "});"
+            "})();</script>"
+            "</div>"
         )
 
     def _render_social_block(self, session: dict) -> str:
@@ -1104,13 +1232,41 @@ class Dashboard:
         """Repoint explorer-built internal links (/brain/f/, /brain/p/) at this home."""
         return html.replace('="/brain/f/', '="/dashboard/f/').replace('="/brain/p/', '="/dashboard/p/')
 
-    def _brain_shell(self, title: str, body: str, crumbs, sidebar_html: str) -> str:
+    # The five-tab product IA (v3). Keys are what callers pass as ``active_tab``.
+    _NAV_TABS = (
+        ("home", "/dashboard", "Home"),
+        ("browse", "/dashboard/search", "Browse"),
+        ("people", "/dashboard/people", "People"),
+        ("rooms", "/dashboard/rooms", "Rooms"),
+        ("office", "/dashboard/office", "Office"),
+    )
+    # Deep routes that predate the five-tab IA — still fully functional, just no
+    # longer primary nav real estate. Kept reachable as a quiet secondary row.
+    _NAV_MORE = (
+        ("/dashboard/feed", "Feed"),
+        ("/dashboard/asks", "Questions"),
+        ("/dashboard/graph", "Graph"),
+        ("/dashboard/activity", "Activity"),
+        ("/dashboard/artifacts", "Artifacts"),
+        ("/dashboard/setup", "Setup"),
+    )
+
+    def _brain_shell(self, title: str, body: str, crumbs, sidebar_html: str, active_tab: str = "") -> str:
         from engram_server.explorer.html import CSS, esc
 
         crumb_html = ""
         if crumbs:
             links = [f'<a href="{esc(h)}">{esc(l)}</a>' for l, h in crumbs]
             crumb_html = '<nav class="crumbs">' + '<span class="sep">/</span>'.join(links) + "</nav>"
+        primary = "".join(
+            f"<a href='{href}'" + (" style='color:var(--accent-ink);font-weight:700'" if key == active_tab else "")
+            + f">{esc(label)}</a>"
+            for key, href, label in self._NAV_TABS
+        )
+        secondary = "".join(
+            f"<a href='{href}' style='font-size:.8rem;opacity:.65'>{esc(label)}</a>"
+            for href, label in self._NAV_MORE
+        )
         return (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width, initial-scale=1'>"
@@ -1126,12 +1282,10 @@ class Dashboard:
             "<a class=wordmark href='/dashboard'><span class=mark>◗</span>Engram</a>"
             "<form class=search role=search action='/dashboard/search' method=get>"
             "<input type=search name=q placeholder='Search your brain…' aria-label='Search' autocomplete=off></form>"
-            # No "Home" item — the wordmark on the left already goes home (standard
-            # convention); a nav link for it was a third redundant path to one place.
-            "<nav class=topnav>"
-            "<a href='/dashboard/people'>People</a><a href='/dashboard/feed'>Feed</a>"
-            "<a href='/dashboard/asks'>Questions</a>"
-            "<a href='/dashboard/graph'>Graph</a><a href='/dashboard/activity'>Activity</a></nav>"
+            # The five-tab IA is the product surface; older deep links (Feed, Questions,
+            # Graph, Activity, ...) still work — they're a quiet second row, not gone.
+            f"<nav class=topnav>{primary}"
+            f"<span style='opacity:.3'>|</span>{secondary}</nav>"
             "</div></header><div class=layout>"
             f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
             f"<main>{crumb_html}{body}</main></div></body></html>"
@@ -1280,7 +1434,8 @@ class Dashboard:
         except Exception:  # noqa: BLE001 — section rendering is best-effort
             pass
         crumbs = [("home", "/dashboard"), (project, f"/dashboard/p/{project}")]
-        return self._brain_shell(title, "\n".join(parts), crumbs, self._brain_sidebar(projects, active=project))
+        return self._brain_shell(title, "\n".join(parts), crumbs, self._brain_sidebar(projects, active=project),
+                                 active_tab="home")
 
     @staticmethod
     def _graph_dashify(html: str) -> str:
@@ -1315,7 +1470,7 @@ class Dashboard:
                 )
             parts.append(f"<div class='cards'>{''.join(cards)}</div>")
         crumbs = [("home", "/dashboard"), ("search", "/dashboard/search")]
-        return self._brain_shell("Search", "".join(parts), crumbs, self._brain_sidebar(projects))
+        return self._brain_shell("Search", "".join(parts), crumbs, self._brain_sidebar(projects), active_tab="browse")
 
     async def _render_activity(self, store, projects: list) -> str:
         from anyio import to_thread as _tt
@@ -1368,7 +1523,7 @@ class Dashboard:
             "<span class='chip'>inherited from project</span>" if not own and eff != "private" else ""
         ) + "</div>"
         body = head + f"<div class='md'>{self._dash_links(render_markdown(body_md, path))}</div>"
-        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects, active=proj))
+        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects, active=proj), active_tab="home")
 
     def _render_extension_block(self, session: dict, handle: str) -> str:
         """The long-lived bearer token the Chrome notifier extension pastes into its options."""
@@ -1420,6 +1575,547 @@ class Dashboard:
             "<h3>Pending invites</h3><ul>" + inv_rows + "</ul></div>"
         )
 
+    # -- rooms (v3 Wave 6 — the live-room web surface) -----------------------
+
+    def _budget_meter(self, used: int, budget: int) -> str:
+        pct = min(100, int(100 * used / budget)) if budget else 0
+        color = "var(--red)" if pct >= 90 else ("var(--amber)" if pct >= 70 else "var(--accent)")
+        return (
+            f"<div class='meta' style='font-size:12px'>{used}/{budget} messages</div>"
+            "<div style='background:var(--surface-2);border-radius:6px;overflow:hidden;height:6px;margin:.2rem 0 .6rem'>"
+            f"<div style='width:{pct}%;height:100%;background:{color}'></div></div>"
+        )
+
+    def _render_room_card(self, row: dict, handles: dict[int, str]) -> str:
+        from engram_server.explorer.html import badge, esc
+
+        members_html = "".join(
+            self._avatar_for(handles.get(uid, str(uid)), size=22) for uid in row["member_ids"][:6]
+        )
+        status = badge("open", "active") if row["status"] == "open" else badge("closed", "done")
+        unread = f"<span class='badge unread'>{row['unread']}</span>" if row.get("unread") else ""
+        return (
+            f"<a class='card' href='/dashboard/rooms/{esc(row['name'])}'>"
+            f"<h3>{esc(row['name'])} {unread}</h3>"
+            f"<p class='desc'>{esc(row['goal'])}</p>"
+            f"<div class='stat-row'>{status}<span class='chip'>{members_html}</span></div>"
+            + self._budget_meter(row.get("messages_used", 0), row["turn_budget"])
+            + "</a>"
+        )
+
+    def _render_rooms_list(self, rows: list[dict], handles: dict[int, str], notice: str = "", error: str = "") -> str:
+        from engram_server.explorer.html import esc
+
+        banner = (f"<p class=notice>{esc(notice)}</p>" if notice else "") + (
+            f"<p class=error>{esc(error)}</p>" if error else ""
+        )
+        parts = [banner, "<div class='page-head'><div><p class='eyebrow'>Live rooms</p><h1>Rooms</h1></div></div>"]
+        if not rows:
+            parts.append("<p class='empty'>No rooms yet — open one below, or ask someone to invite you.</p>")
+        else:
+            parts.append("<div class='cards'>" + "".join(self._render_room_card(r, handles) for r in rows) + "</div>")
+        parts.append(
+            "<p class='section-label'>New room</p>"
+            "<div class='card'><form method=post action='/dashboard/rooms'>"
+            "<p>Name<br><input name=name pattern='[a-z0-9][a-z0-9-]{2,63}' required "
+            "placeholder='design-review'></p>"
+            "<p>Goal<br><input name=goal required style='width:100%' "
+            "placeholder='What should this room accomplish?'></p>"
+            "<p>Exit condition (optional)<br><input name=exit_condition style='width:100%' "
+            "placeholder='e.g. agreement on the API shape'></p>"
+            "<p>Invite (comma-separated handles)<br><input name=invite style='width:100%' "
+            "placeholder='alice, bob'></p>"
+            "<button type=submit>Open room</button></form></div>"
+        )
+        return "".join(parts)
+
+    async def rooms_list(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        if me is None:
+            return HTMLResponse(await self._social_shell(session, "Rooms",
+                "<p class='empty'>No account.</p>", [("home", "/dashboard"), ("rooms", "/dashboard/rooms")],
+                active_tab="rooms"))
+        handles = self.registry.tenancy_handle_map()
+        rows = self.registry.rooms.list_rooms_for(me.id, include_closed=True)
+        body = self._render_rooms_list(
+            rows, handles,
+            notice=str(request.query_params.get("notice", "")),
+            error=str(request.query_params.get("error", "")),
+        )
+        return HTMLResponse(await self._social_shell(session, "Rooms", body,
+            [("home", "/dashboard"), ("rooms", "/dashboard/rooms")], active_tab="rooms"))
+
+    async def create_room(self, request: "Request") -> "Response":
+        from urllib.parse import quote
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        if me is None:
+            return RedirectResponse("/dashboard/rooms", status_code=302)
+        form = await request.form()
+        name = str(form.get("name", "")).strip()
+        goal = str(form.get("goal", "")).strip()
+        exit_condition = str(form.get("exit_condition", "")).strip()
+        invite_handles = str(form.get("invite", "")).strip()
+        try:
+            room = self.registry.rooms.open_room(me.id, name, goal, exit_condition=exit_condition)
+        except TeamworkError as exc:
+            return RedirectResponse(f"/dashboard/rooms?error={quote(str(exc))}", status_code=302)
+        for h in (x.strip().lstrip("@") for x in invite_handles.split(",")):
+            if not h:
+                continue
+            other = self.registry.tenancy.user_by_handle(h)
+            if other is None or other.id == me.id:
+                continue
+            if self.registry.rooms.invite(room.id, me.id, other.id):
+                self._push_notification(
+                    other.id, "room_invite",
+                    f"@{me.handle} invited you to room '{room.name}': {room.goal[:120]}",
+                    ref=room.name,
+                )
+        return RedirectResponse(f"/dashboard/rooms/{room.name}", status_code=302)
+
+    async def open_room_with(self, request: "Request") -> "Response":
+        """The profile page's "Open a room with @x" button — a direct 1:1 room,
+        named deterministically-but-uniquely so two people can start one anytime."""
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        form = await request.form()
+        handle = str(form.get("handle", "")).strip().lstrip("@")
+        other = self.registry.tenancy.user_by_handle(handle)
+        if me is None or other is None or other.id == me.id:
+            return RedirectResponse(self._safe_back(request, "/dashboard/people"), status_code=302)
+        name = f"{me.handle}-{other.handle}-{secrets.token_hex(2)}"
+        try:
+            room = self.registry.rooms.open_room(
+                me.id, name, f"Direct room between @{me.handle} and @{other.handle}"
+            )
+            self.registry.rooms.invite(room.id, me.id, other.id)
+        except TeamworkError:
+            return RedirectResponse(self._safe_back(request, f"/dashboard/u/{other.handle}"), status_code=302)
+        self._push_notification(
+            other.id, "room_invite", f"@{me.handle} invited you to room '{room.name}': {room.goal}",
+            ref=room.name,
+        )
+        return RedirectResponse(f"/dashboard/rooms/{room.name}", status_code=302)
+
+    def _render_room_bubbles(self, turns: list, handles: dict[int, str], me) -> str:
+        from engram_server.explorer.format import humanize_time
+        from engram_server.explorer.html import esc
+        from engram_server.explorer.render import render_markdown_public
+
+        order: dict[int, int] = {}
+        parts: list[str] = []
+        for t in turns:
+            if t.kind == "system":
+                parts.append(f"<p class='meta' style='text-align:center'>{esc(t.body)}</p>")
+                continue
+            if t.kind == "guest_read":
+                parts.append(f"<p class='meta' style='font-size:12px;font-style:italic'>{esc(t.body)}</p>")
+                continue
+            idx = order.setdefault(t.user_id, len(order))
+            side = "right" if (me is not None and t.user_id == me.id) else "left"
+            color = idx % 4
+            handle = handles.get(t.user_id, str(t.user_id))
+            rel, exact = humanize_time(t.created)
+            body_html = render_markdown_public(t.body)
+            parts.append(
+                f"<div class='bubble {side} c{color}'>"
+                f"<div class='bhead'>{self._avatar_for(handle, size=18)} "
+                f"<span class='bsender'>@{esc(handle)}</span>"
+                f"<span class='btime' title='{esc(exact)}'>{esc(rel)}</span></div>"
+                f"<div class='bbody md'>{body_html}</div></div>"
+            )
+        return "".join(parts)
+
+    def _render_room_transcript(
+        self, room, turns: list, members: list[dict], grants: list[dict],
+        handles: dict[int, str], me, notice: str = "", error: str = "",
+    ) -> str:
+        from engram_server.explorer.html import badge, esc
+
+        banner = (f"<p class=notice>{esc(notice)}</p>" if notice else "") + (
+            f"<p class=error>{esc(error)}</p>" if error else ""
+        )
+        status = badge("open", "active") if room.status == "open" else badge("closed", "done")
+        head = (
+            "<div class='page-head'><div><p class='eyebrow'>Room</p>"
+            f"<h1>{esc(room.name)}</h1><p class='desc'>{esc(room.goal)}</p>"
+            + (f"<p class='meta'>Exit condition: {esc(room.exit_condition)}</p>" if room.exit_condition else "")
+            + "</div></div>"
+        )
+        stat_row = f"<div class='stat-row'>{status}</div>" + self._budget_meter(
+            sum(1 for t in turns if t.kind == "message") or 0, room.turn_budget
+        )
+        member_chips = "".join(
+            f"<span class='chip'>{self._avatar_for(handles.get(m['user_id'], str(m['user_id'])), size=18)} "
+            f"@{esc(handles.get(m['user_id'], str(m['user_id'])))}</span>"
+            for m in members
+        )
+        grant_items = "".join(
+            f"<li>@{esc(handles.get(g['grantor_id'], str(g['grantor_id'])))} shared "
+            f"<code>{esc(g['path_prefix'])}</code></li>"
+            for g in grants
+        ) or "<li class='empty'>No context shared in this room.</li>"
+        bubbles = self._render_room_bubbles(turns, handles, me)
+        outcome_html = (
+            f"<p class='meta'><b>Outcome:</b> {esc(room.outcome) if room.outcome else '(none given)'}</p>"
+            if room.status == "closed" else ""
+        )
+        controls = ""
+        if room.status == "open":
+            controls = (
+                f"<form method='post' action='/dashboard/rooms/{esc(room.name)}/post'>"
+                "<textarea name='body' required placeholder='Message this room…'></textarea>"
+                "<button type=submit>Send</button></form>"
+                f"<form method='post' action='/dashboard/rooms/{esc(room.name)}/close' "
+                "style='margin-top:.5rem'>"
+                "<input name='outcome' placeholder='Outcome (optional)' style='width:60%'> "
+                "<button type=submit>Close room</button></form>"
+            )
+        last_id = turns[-1].id if turns else 0
+        poller = (
+            "<script>(function(){"
+            f"var since={last_id};var name={room.name!r};"
+            "var box=document.getElementById('room-transcript');"
+            "function esc(s){var d=document.createElement('div');d.innerText=s;return d.innerHTML;}"
+            "function poll(){"
+            "if(document.visibilityState!=='visible')return;"
+            "fetch('/dashboard/api/rooms/'+name+'.json?since='+since)"
+            ".then(function(r){return r.json();}).then(function(d){"
+            "if(!d.turns)return;"
+            "d.turns.forEach(function(t){"
+            "since=t.id;"
+            "var div=document.createElement('div');"
+            "div.className='bubble left c0';"
+            "div.innerHTML='<div class=\"bhead\"><span class=\"bsender\">@'+esc(t.author)+'</span></div>'"
+            "+'<div class=\"bbody\">'+esc(t.body)+'</div>';"
+            "box.appendChild(div);"
+            "});"
+            "}).catch(function(){});"
+            "}"
+            "setInterval(poll,5000);"
+            "})();</script>"
+        )
+        return (
+            banner + head + stat_row
+            + f"<p class='section-label'>Members</p><div class='stat-row'>{member_chips}</div>"
+            + f"<p class='section-label'>Shared context</p><ul>{grant_items}</ul>"
+            + f"<p class='section-label'>Conversation</p>"
+            + f"<div id='room-transcript' class='thread-transcript'>{bubbles}</div>"
+            + outcome_html + controls + poller
+        )
+
+    async def room_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        name = str(request.path_params.get("name", ""))
+        room = self.registry.rooms.room_by_name(name)
+        if room is None or me is None:
+            return HTMLResponse(await self._social_shell(session, "Not found",
+                "<p class='empty'>No such room.</p>", [("home", "/dashboard"), ("rooms", "/dashboard/rooms")],
+                active_tab="rooms"), status_code=404)
+        try:
+            # limit above the max hard_cap (500 messages) plus headroom for system turns
+            # (open/close/etc.) so the initial load always shows the whole conversation.
+            turns = self.registry.rooms.read_turns(room.id, me.id, since_id=0, limit=1000)
+        except TeamworkError:
+            return HTMLResponse(await self._social_shell(session, "Not a member",
+                "<p class='empty'>You're not a member of this room.</p>",
+                [("home", "/dashboard"), ("rooms", "/dashboard/rooms")], active_tab="rooms"), status_code=403)
+        handles = self.registry.tenancy_handle_map()
+        members = self.registry.rooms.members(room.id)
+        grants = self.registry.rooms.grants_for(room.id)
+        body = self._render_room_transcript(
+            room, turns, members, grants, handles, me,
+            notice=str(request.query_params.get("notice", "")),
+            error=str(request.query_params.get("error", "")),
+        )
+        return HTMLResponse(await self._social_shell(
+            session, f"Room: {room.name}", body,
+            [("home", "/dashboard"), ("rooms", "/dashboard/rooms"), (room.name, f"/dashboard/rooms/{room.name}")],
+            active_tab="rooms"))
+
+    async def post_room_turn(self, request: "Request") -> "Response":
+        from urllib.parse import quote
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        name = str(request.path_params.get("name", ""))
+        room = self.registry.rooms.room_by_name(name)
+        if room is None or me is None:
+            return RedirectResponse("/dashboard/rooms", status_code=302)
+        form = await request.form()
+        body = str(form.get("body", "")).strip()
+        findings = _scan_secrets(body)
+        if findings:
+            kinds = sorted({k for k, _ in findings})
+            msg = f"Refusing to post: this looks like it contains a secret ({', '.join(kinds)})."
+            return RedirectResponse(f"/dashboard/rooms/{quote(room.name)}?error={quote(msg)}", status_code=302)
+        try:
+            self.registry.rooms.post_turn(room.id, me.id, body, session=f"dashboard:{me.handle}")
+        except TeamworkError as exc:
+            return RedirectResponse(f"/dashboard/rooms/{quote(room.name)}?error={quote(str(exc))}", status_code=302)
+        try:
+            from engram_server.teamwork import room_notify
+
+            await room_notify(room.id)
+        except Exception:  # noqa: BLE001 — also covers ImportError if not shipped yet
+            pass
+        return RedirectResponse(f"/dashboard/rooms/{quote(room.name)}", status_code=302)
+
+    async def close_room_route(self, request: "Request") -> "Response":
+        from urllib.parse import quote
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        name = str(request.path_params.get("name", ""))
+        room = self.registry.rooms.room_by_name(name)
+        if room is None or me is None:
+            return RedirectResponse("/dashboard/rooms", status_code=302)
+        form = await request.form()
+        outcome = str(form.get("outcome", "")).strip()
+        try:
+            self.registry.rooms.close_room(room.id, me.id, outcome)
+        except TeamworkError as exc:
+            return RedirectResponse(f"/dashboard/rooms/{quote(room.name)}?error={quote(str(exc))}", status_code=302)
+        return RedirectResponse(f"/dashboard/rooms/{quote(room.name)}", status_code=302)
+
+    async def api_room_json(self, request: "Request") -> "Response":
+        from starlette.responses import JSONResponse
+
+        session = self._session(request)
+        me = self._session_user(session) if session is not None else None
+        if me is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        name = str(request.path_params.get("name", ""))
+        room = self.registry.rooms.room_by_name(name)
+        if room is None:
+            return JSONResponse({"ok": False, "error": "no such room"}, status_code=404)
+        try:
+            since = int(request.query_params.get("since", 0) or 0)
+        except ValueError:
+            since = 0
+        try:
+            turns = self.registry.rooms.read_turns(room.id, me.id, since_id=since, limit=200)
+        except TeamworkError:
+            return JSONResponse({"ok": False, "error": "not a member"}, status_code=403)
+        handles = self.registry.tenancy_handle_map()
+        out = [
+            {"id": t.id, "author": handles.get(t.user_id, str(t.user_id)), "kind": t.kind,
+             "body": t.body, "created": t.created}
+            for t in turns
+        ]
+        cursor = out[-1]["id"] if out else since
+        return JSONResponse({"ok": True, "turns": out, "cursor": cursor, "status": room.status})
+
+    # -- team API + presence (v3 Wave 6) --------------------------------------
+
+    async def api_team(self, request: "Request") -> "Response":
+        from starlette.responses import JSONResponse
+
+        session = self._session(request)
+        me = self._session_user(session) if session is not None else None
+        if me is None:
+            me = self._bearer_user(request)
+        if me is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        umap = {u.id: u for u in self.registry.tenancy.list_users()}
+        team = []
+        for row in self.registry.presence.roster():
+            u = umap.get(row["user_id"])
+            if u is None:
+                continue
+            team.append({
+                "handle": u.handle, "display_name": u.display_name or "", "avatar_url": u.avatar_url or "",
+                "project": row["project"], "tool": row["tool"], "minutes_ago": row["minutes_ago"],
+            })
+        self_row = self.registry.presence.self_row(me.id)
+        return JSONResponse({
+            "ok": True, "team": team,
+            "me": {"handle": me.handle, "invisible": bool(self_row and self_row["invisible"])},
+        })
+
+    async def api_set_presence(self, request: "Request") -> "Response":
+        from starlette.responses import JSONResponse
+
+        session = self._session(request)
+        me = self._session_user(session) if session is not None else None
+        if me is None:
+            me = self._bearer_user(request)
+        if me is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001 — malformed body just means "no change requested"
+            data = {}
+        invisible = bool(data.get("invisible"))
+        self.registry.presence.set_invisible(me.id, invisible)
+        return JSONResponse({"ok": True, "invisible": invisible})
+
+    async def office_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        handles = self.registry.tenancy_handle_map()
+        rooms_html = "<p class='empty'>No open rooms.</p>"
+        if me is not None:
+            rows = self.registry.rooms.list_rooms_for(me.id)
+            if rows:
+                rooms_html = "<div class='cards'>" + "".join(
+                    self._render_room_card(r, handles) for r in rows) + "</div>"
+        owner_link = (
+            "<p class='meta'><a href='/brain/office'>Open the full pixel office →</a></p>"
+            if self._is_owner(session) else ""
+        )
+        body = (
+            "<div class='page-head'><div><p class='eyebrow'>Team</p><h1>Office</h1></div></div>"
+            + (self._render_working_strip() or "<p class='empty'>No one online right now.</p>")
+            + "<p class='section-label'>Open rooms</p>" + rooms_html
+            + owner_link
+        )
+        return HTMLResponse(await self._social_shell(session, "Office", body,
+            [("home", "/dashboard"), ("office", "/dashboard/office")], active_tab="office"))
+
+    # -- artifacts + setup (parity pages) -------------------------------------
+
+    def _render_artifacts(self, artifacts: list) -> str:
+        from engram_server.explorer.html import badge, esc
+
+        parts = ["<div class='page-head'><div><p class='eyebrow'>Your work</p><h1>Artifacts</h1></div></div>"]
+        if not artifacts:
+            parts.append("<p class='empty'>No artifacts yet — build one from your Claude with build_artifact.</p>")
+            return "".join(parts)
+        cards = []
+        for a in artifacts:
+            stale = a.get("stale")
+            chip_html = (
+                badge("stale", "priority-high") if stale is True
+                else badge("current", "active") if stale is False else ""
+            )
+            path = str(a.get("path") or "")
+            cards.append(
+                f"<a class='card' href='/dashboard/f/{esc(path)}'><h3>{esc(a.get('title') or path)}</h3>"
+                + (f"<p class='desc'>{esc(a['description'])}</p>" if a.get("description") else "")
+                + f"<div class='stat-row'>{chip_html}</div></a>"
+            )
+        parts.append(f"<div class='cards'>{''.join(cards)}</div>")
+        return "".join(parts)
+
+    async def artifacts_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        if store is None:
+            return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
+        artifacts = await store.kb_artifacts()
+        body = self._render_artifacts(artifacts)
+        return HTMLResponse(await self._social_shell(
+            session, "Artifacts", body, [("home", "/dashboard"), ("artifacts", "/dashboard/artifacts")]))
+
+    async def setup_view(self, request: "Request") -> "Response":
+        from engram_server.explorer.html import esc
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        url = f"{self.settings.public_url}/mcp"
+        body = (
+            "<div class='page-head'><div><p class='eyebrow'>Connect</p><h1>Set up your Engram</h1></div></div>"
+            "<div class=card><h2>claude.ai / mobile</h2>"
+            f"<p>Settings → Connectors → Add custom connector → <span class=mono>{esc(url)}</span> → sign in.</p></div>"
+            "<div class=card><h2>Claude Code</h2>"
+            f"<p><span class=mono>claude mcp add --transport http engram {esc(url)}</span></p></div>"
+            "<div class=card><h2>ChatGPT</h2>"
+            f"<p>Settings → Connectors → add <span class=mono>{esc(url)}</span> "
+            "(needs a plan with custom MCP connectors).</p></div>"
+            "<div class=card><h2>Chrome extension</h2>"
+            "<p>chrome://extensions → Load unpacked → pick <span class=mono>clients/chrome-extension</span> → "
+            "sign in with the same account you use here.</p></div>"
+            "<div class=card><h2>Bring your history</h2>"
+            "<p>Already have ChatGPT or Claude history? <span class=mono>kb_import</span> can backfill it from "
+            "an export — anything it imports lands PRIVATE, never shared automatically.</p></div>"
+            "<div class=card><h2>Team presence</h2>"
+            "<p>Other signed-in Engram users can see that you're online and what project you're in "
+            "(see <a href='/dashboard/office'>Office</a>) — turn that off anytime with the invisible "
+            "toggle there.</p></div>"
+        )
+        return HTMLResponse(await self._social_shell(
+            session, "Setup", body, [("home", "/dashboard"), ("setup", "/dashboard/setup")]))
+
+    # -- ops (owner-only) ------------------------------------------------------
+
+    async def ops_view(self, request: "Request") -> "Response":
+        from engram_server.explorer.html import esc
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        if not self._is_owner(session):
+            return PlainTextResponse("Owner only.", status_code=403)
+        users = self.registry.tenancy.list_users()
+        active_24h = self.registry.presence.roster(active_minutes=24 * 60)
+        seen_rooms: dict[int, dict] = {}
+        for u in users:
+            for row in self.registry.rooms.list_rooms_for(u.id, include_closed=True):
+                seen_rooms[row["id"]] = row
+        open_rooms = sum(1 for r in seen_rooms.values() if r["status"] == "open")
+        closed_rooms = sum(1 for r in seen_rooms.values() if r["status"] == "closed")
+        asks_open = asks_answered = 0
+        unread_notifs = 0
+        for u in users:
+            for a in self.registry.discovery.list_asks_for(u.id, open_only=False):
+                if a.status == "open":
+                    asks_open += 1
+                else:
+                    asks_answered += 1
+            unread_notifs += self.registry.social.unread_counts(u.id)["notifications"]
+        active_users = sum(1 for u in users if u.status == "active")
+        counts_html = (
+            "<table><tbody>"
+            f"<tr><td>Users (total/active)</td><td>{len(users)}/{active_users}</td></tr>"
+            f"<tr><td>Presence-active (24h)</td><td>{len(active_24h)}</td></tr>"
+            f"<tr><td>Rooms (open/closed)</td><td>{open_rooms}/{closed_rooms}</td></tr>"
+            f"<tr><td>Asks (open/answered)</td><td>{asks_open}/{asks_answered}</td></tr>"
+            f"<tr><td>Unread notifications</td><td>{unread_notifs}</td></tr>"
+            "</tbody></table>"
+        )
+        rows_html = ""
+        for u in users:
+            sr = self.registry.presence.self_row(u.id)
+            last_seen = sr["updated"] if sr else "never"
+            invisible = "yes" if (sr and sr["invisible"]) else "no"
+            rows_html += (
+                f"<tr><td>@{esc(u.handle)}</td><td>{esc(u.created)}</td>"
+                f"<td>{esc(last_seen)}</td><td>{invisible}</td></tr>"
+            )
+        users_html = (
+            "<table><thead><tr><th>Handle</th><th>Created</th><th>Last presence</th>"
+            "<th>Invisible?</th></tr></thead><tbody>" + rows_html + "</tbody></table>"
+        )
+        body = (
+            "<div class='page-head'><div><p class='eyebrow'>Operator</p><h1>Ops</h1></div></div>"
+            "<div class=card><h2>Counts</h2>" + counts_html + "</div>"
+            "<div class=card><h2>Users</h2>" + users_html + "</div>"
+        )
+        return HTMLResponse(await self._social_shell(
+            session, "Ops", body, [("home", "/dashboard"), ("ops", "/dashboard/ops")]))
+
 
 def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idps: dict) -> Dashboard | None:
     """Wire the dashboard + onboarding routes. No-op (returns None) unless multiuser
@@ -1458,4 +2154,17 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
+    mcp.custom_route("/dashboard/rooms", ["GET"])(dash.rooms_list)
+    mcp.custom_route("/dashboard/rooms", ["POST"])(dash.create_room)
+    mcp.custom_route("/dashboard/rooms/open-with", ["POST"])(dash.open_room_with)
+    mcp.custom_route("/dashboard/rooms/{name}", ["GET"])(dash.room_view)
+    mcp.custom_route("/dashboard/rooms/{name}/post", ["POST"])(dash.post_room_turn)
+    mcp.custom_route("/dashboard/rooms/{name}/close", ["POST"])(dash.close_room_route)
+    mcp.custom_route("/dashboard/api/rooms/{name}.json", ["GET"])(dash.api_room_json)
+    mcp.custom_route("/dashboard/api/team", ["GET"])(dash.api_team)
+    mcp.custom_route("/dashboard/api/presence", ["POST"])(dash.api_set_presence)
+    mcp.custom_route("/dashboard/office", ["GET"])(dash.office_view)
+    mcp.custom_route("/dashboard/artifacts", ["GET"])(dash.artifacts_view)
+    mcp.custom_route("/dashboard/setup", ["GET"])(dash.setup_view)
+    mcp.custom_route("/dashboard/ops", ["GET"])(dash.ops_view)
     return dash

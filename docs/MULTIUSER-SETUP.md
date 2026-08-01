@@ -131,3 +131,27 @@ the quota.
   user-controlled text (avatar URLs are https-only).
 - Dashboard tokens are scope-separated (session / notify / onboarding) so none can be
   replayed as another; OAuth state is browser-bound (login-CSRF defense).
+
+## v3 (2026-08-01): team memory + rooms + one door
+
+New env knobs:
+- `ENGRAM_DEFAULT_VISIBILITY=public|contacts|private` — what an UNMARKED concept
+  resolves to (code default `private`). Set `public` only for a consenting team;
+  it is never retroactive, `kb_import`ed history is always private, and
+  messages/threads/workspace/inbox can never be published regardless.
+- `ENGRAM_BRIEFING_AT` now defaults OFF (the daily push briefing is retired —
+  briefings are pull-only via the `daily_briefing` prompt). Set `HH:MM` only to
+  resurrect the legacy artifact job.
+
+One door: the human surface is `<explorer_url>/dashboard` (same Engram account
+as the MCP connector and the Chrome extension). `/brain/*` authenticates with the
+dashboard session cookie (owner-only) — Cloudflare Access is no longer required
+once a `ENGRAM_DASHBOARD_SESSION_SECRET` is set. **Deletion order matters**: only
+remove the CF Access application AFTER confirming `/brain` redirects anonymous
+visitors to `/dashboard/login` through the tunnel.
+
+Rooms + presence live in the same `engram.db` (tables: rooms, room_members,
+room_turns, room_reads, room_grants, team_presence). Nothing to migrate — tables
+create themselves on first use. Presence is derived from tool calls (project-level
+only); users hide with `kb_team(invisible=True)` or the extension/dashboard toggle.
+Announce it to the team — on by default, but never a surprise.

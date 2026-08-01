@@ -42,7 +42,26 @@ is a git repo you own, portable across model vendors.
 - **Tenant isolation** — per-user git brains, mandatory search scoping, an adversarial
   isolation test suite, per-tenant quotas + rate limits, nightly off-site mirrors.
 
-~45 MCP tools; ~870 tests.
+**Team memory (v3):**
+- **Search the team before solving** — `kb_explore(query)` is semantic across everyone's
+  *public* work: your Claude finds the teammate who already hit the problem, with their
+  actual decision. `kb_common_ground(@x)` shows the concrete concepts two people share —
+  explainable overlap, never an affinity score.
+- **Rooms — live joins across brains** — open a room with teammates
+  (`kb_room_open`); your Claudes converse via server-side long-poll (free while idle) AND
+  search each other's *room-granted* work mid-conversation (`kb_room_search` /
+  `kb_room_fetch` — path-scoped, auto-revoked on close, every access an audit turn in the
+  transcript). Rooms carry a goal + turn budget so agent conversations terminate. Closing
+  a room *offers* its outcome back for a human to accept into their brain — never
+  auto-written.
+- **Ambient team presence** — derived from tool calls, zero setup: who's working in which
+  project (never content), in the widget, the dashboard, and the extension; one-click
+  invisible mode.
+- **One app, one door** — a single MCP widget (Home / Browse / People / Rooms / Office)
+  replaces five cards; the web dashboard mirrors the same five-tab IA; one OAuth account
+  spans the connector, the browser, and the Chrome extension.
+
+~65 MCP tools; ~1,100 tests.
 
 ## Architecture
 

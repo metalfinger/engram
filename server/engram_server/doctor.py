@@ -137,19 +137,23 @@ async def run_doctor(settings: Settings, store: KBStore | None = None) -> dict[s
     if not settings.scheduler_enabled:
         checks.append(_check("scheduler", "pass", "disabled by config"))
     else:
+        # v3: an EMPTY time means that job is deliberately off (briefing_at defaults
+        # to '' — the push briefing is retired). Only a non-empty unparseable value
+        # is a misconfiguration.
         bad = [
             f"{label}={value!r}"
             for label, value in (("reconcile_at", settings.reconcile_at), ("briefing_at", settings.briefing_at))
-            if _parse_hhmm(value) is None
+            if value and _parse_hhmm(value) is None
         ]
         if bad:
             checks.append(_check("scheduler", "warn", f"unparseable time(s): {', '.join(bad)}"))
         else:
+            briefing = settings.briefing_at or "off (pull-only)"
             checks.append(
                 _check(
                     "scheduler",
                     "pass",
-                    f"reconcile={settings.reconcile_at} briefing={settings.briefing_at}",
+                    f"reconcile={settings.reconcile_at} briefing={briefing}",
                 )
             )
 

@@ -192,17 +192,22 @@ class TenancyStore:
 
     def set_profile(self, handle: str, *, display_name: str | None = None,
                     avatar_url: str | None = None, bio: str | None = None) -> User:
-        """Update a user's display name / avatar URL / bio. Only provided fields change.
-        avatar_url must be an https URL (rendered as an <img src> / link) — the caller
-        (dashboard) validates + escapes; here we enforce the https scheme as a backstop."""
+        """Update a user's display name / avatar / bio. Only provided fields change.
+        avatar_url is rendered as an <img src>, so the scheme is enforced HERE as the
+        backstop (the dashboard validates + escapes too): an https:// link, or a
+        data:image/ URI (v3 uploaded-photo path — the dashboard downscales client-side
+        to ~96px; 100k chars caps a data URI at ~75KB of image). Anything else —
+        javascript:, http:, file: — is refused."""
         sets, params = [], []
         if display_name is not None:
             sets.append("display_name = ?")
             params.append(display_name.strip()[:60] or None)
         if avatar_url is not None:
             url = avatar_url.strip()
-            if url and not url.startswith("https://"):
-                raise TenancyError("Avatar URL must be an https:// link.")
+            if url and not (url.startswith("https://") or url.startswith("data:image/")):
+                raise TenancyError("Avatar must be an https:// link or an uploaded image.")
+            if len(url) > 100_000:
+                raise TenancyError("Avatar image is too large — use a smaller photo.")
             sets.append("avatar_url = ?")
             params.append(url or None)
         if bio is not None:

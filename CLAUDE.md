@@ -68,12 +68,47 @@ agent-to-agent Q&A). Vision + the multi-user build plan live in the brain:
 ## MCP Apps wave 2 (shipped 2026-07-10)
 Spec-compliance pass (ext-apps 2026-01-26; explicit visibility + teardown ack + shape-pin tests) + `kb_meetings` (live thread transcripts + reply-as-Hiren from any claude.ai chat incl. mobile; app-only data tools = zero context cost) + `kb_office` (glanceable office card, floor art via resources/read). Spec: `projects/engram/specs/mcp-apps-wave-2.md` in the brain. 565 tests, 30 model-visible tools (+4 app-only).
 
+## v3 team memory + unified app — BUILT (2026-08-01)
+PRD (APPROVED, the steering doc): `projects/personal/engram/specs/v3-team-memory-and-unified-app.md`
+in the brain. Core frame: **two timescales, one substrate** — async (search/read/ask about
+past work) + sync (**rooms** = live joins across brains) feeding each other via precipitate.
+Shipped:
+- **One Door**: explorer guard = dashboard session cookie (owner-only /brain/*; teammates →
+  /dashboard); CF Access verifier kept only as secret-less fallback. Human surface =
+  `brain.metalfinger.xyz/dashboard`; `engram.` stays the connector origin. CF Access edge
+  app deletion is the LAST deploy step (order matters — it's what protects /brain/* until
+  the guard is live).
+- **Rooms** (`teamwork.py` + 12 `kb_room_*`/`kb_team` tools): neutral-DB rooms with goal +
+  turn_budget + hard_cap (anti-money-fire), room-scoped path grants (auto-revoke on close,
+  every guest access an audit turn), server-side long-poll bus (`room_notify`/`room_wait` —
+  shared by MCP tools and the dashboard reply form), close-with-precipitate (OFFERED, never
+  auto-written). Invites ride the existing notification fanout.
+- **Presence from tool calls**: `_touch_presence` in `current_store()` (60s throttle);
+  project attribution from kb_load/kb_attach_project; invisible mode; `team[]` in
+  office.json; roster in widget People tab + extension + `/dashboard/office`.
+- **The save**: `visibility` stamped into Qdrant payloads (missing = never public);
+  `kb_explore(query)` = semantic cross-user over public work (self excluded);
+  `kb_common_ground` = explainable work-overlap pairs. SKILL.md carries the REFLEX
+  (search team before solving; offer publish on decision).
+- **Unified app**: `app_widget.py` (`ui://engram/app`, 88k chars) — Home/Browse/People/
+  Rooms/Office; ALL launchers re-pointed with view hints; old widget resources still
+  served for stale chats; app-only plane rooms_state/room_transcript/room_reply/team_state.
+- **Dashboard v3**: five-tab web IA, rooms pages (reply as signed-in user), /dashboard/api/
+  team + /api/presence, /dashboard/office|artifacts|setup|ops, avatar upload (data:image
+  ≤100k; tenancy backstop blocks hostile schemes).
+- **Extension 2.0**: OAuth via chrome.identity (token pasting REMOVED), team roster +
+  invisible toggle, room-invite deep links.
+- **Policy**: `ENGRAM_DEFAULT_VISIBILITY` (env; team test runs public BY CONSENT — never
+  retroactive, imports always private, _never_public segments immutable). Scheduled
+  morning briefing RETIRED (`briefing_at` default '') — briefing is pull-only.
+- Homepage rewritten as the teammate front door (visibility copy tracks the policy knob).
+
 ## What's next
-1. v1.2 remainder — skill polish from real-session friction (kb_inbox already shipped).
-2. Fresh claude.ai MOBILE session run-through (last acceptance nicety).
-3. Recipes v2 — real `kb_recipes` tool; scheduled recipe rebuilds when headless LLM runs exist.
-4. Netlify OKF visualizer — largely superseded by `/brain/graph`; decide keep-or-drop.
-5. Code repo: `github.com/metalfinger/engram` (private).
+1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
+2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.
+3. Full `/brain/*` deletion once dashboard reaches 100% parity (office canvas, workspace, system).
+4. Wave 7 co-writing (shared projects) — needs its own decision first.
+5. Code repo: `github.com/metalfinger/engram` (public).
 
 ## Roadmap after v1.x (Hiren, 2026-07-04)
 Build rich MCP Apps (SEP-1865 widgets) for Engram like the Survey MCP's in `D:\Projects\LLM-Communication` (avatar/gallery/runner widgets are the reference pattern). Phase step 1: a study pass over the Survey implementation (widget.py + *_widget.py + tool `meta=` wiring, plus its hard-won rails in tool descriptions) to extract the reusable pattern and lessons. Then run a dedicated brainstorm on which widgets earn their keep (candidates to seed it: project switchboard card, message inbox card, session-close checklist card, brain graph view). Don't start this before v1 acceptance + v1.1 search are done.
