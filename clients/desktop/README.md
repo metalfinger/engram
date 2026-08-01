@@ -87,11 +87,28 @@ round-trip.
 
 `team[]` entries carry `avatar_url`, which can be an `https://` URL or
 an already-inlined `data:` URI. Rust resolves these — never the webview:
-`data:` values pass straight through; `https://` values are fetched with
-a 5s timeout and a 300KB/`image/*`-only cap, then cached by URL (so a
-shared avatar is fetched once) and handed to the popup as a `data:` URI.
-No avatar (or a failed fetch) falls back to a deterministic initials
-circle, colored by a hash of the handle, drawn entirely in JS.
+`data:image/...` values pass straight through (any other `data:` type is
+rejected); `https://` values are fetched with a 5s timeout and a
+300KB/`image/*`-only cap, then cached by URL (so a shared avatar is
+fetched once) and handed to the popup as a `data:` URI. No avatar (or a
+failed fetch) falls back to a deterministic initials circle, colored by
+a hash of the handle, drawn entirely in JS.
+
+**SSRF hardening.** `avatar_url` is *other users'* data — it comes from
+the team roster, so a malicious teammate could point theirs at an
+internal address and every teammate's tray would fetch it from inside
+their own network. `avatar.rs` guards against that: only `https://` is
+accepted (no `http://`); the hostname is resolved first, and the fetch
+is refused outright if *any* resolved address is loopback, private
+(10/8, 172.16/12, 192.168/16), link-local, unique-local, CGNAT, or a
+couple of other non-public ranges; the actual request is then pinned via
+`ClientBuilder::resolve_to_addrs` to exactly the address set just
+validated (a plain client would let the real connection re-resolve DNS
+independently, which is the classic rebinding bypass — the whole
+validate-then-fetch check is worthless if the check and the connection
+aren't guaranteed to hit the same address); and redirects are disabled
+(`redirect::Policy::none()`), so a 3xx is just treated as "no avatar"
+rather than followed somewhere unvetted.
 
 ## Config file
 

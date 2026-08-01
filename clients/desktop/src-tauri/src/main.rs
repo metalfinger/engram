@@ -100,16 +100,12 @@ async fn poll_once(app: &AppHandle) {
         let rt = state.runtime.lock().unwrap();
         rt.team.iter().filter_map(|m| m.avatar_url.clone()).collect()
     };
-    if !avatar_urls.is_empty() {
-        // SSRF hardening: avatar URLs are other users' data — never follow
-        // redirects (avatar.rs also enforces https + public-address-only).
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        for url in avatar_urls {
-            avatar::resolve(&http, &state.avatar_cache, &url).await;
-        }
+    // SSRF hardening (see avatar.rs's module doc): each url gets its own
+    // client, built only after the hostname resolves to addresses that
+    // pass the public-address check, and pinned to exactly those
+    // addresses — no redirects, no second/independent DNS lookup.
+    for url in avatar_urls {
+        avatar::resolve(&state.avatar_cache, &url).await;
     }
 
     let snapshot = state.runtime.lock().unwrap().clone();

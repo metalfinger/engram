@@ -1,6 +1,6 @@
 [package]
 name = "engram-tray"
-version = "0.2.0"
+version = "0.2.1"
 description = "Engram Tray — ambient desktop presence for the Engram team-memory server"
 authors = ["Hiren Kangad"]
 edition = "2021"
