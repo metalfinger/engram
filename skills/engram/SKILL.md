@@ -146,11 +146,51 @@ These tools exist only when Engram runs multi-user (other people have accounts).
   - `kb_shared_with_me()` lists what others have shared with you and until when.
   - `kb_guest_read("@owner", path)` reads one shared concept; `kb_guest_search("@owner", query)` searches within the shared paths. Both are STRICTLY scoped to the granted path prefixes — a grant on `projects/alt` never exposes `projects/alt-secret`, a sibling, or a linked-but-unshared neighbour. If a read is refused, the user needs a broader grant (`kb_request_context`).
 - **Send a one-off.** `kb_send("@contact", path)` copies ONE concept from your brain into a contact's inbox with `adopted_from` provenance — a one-time copy, not a live grant. Requires being contacts; their Claude finds it in `inbox/imports/` next session.
-- **Publish work + discover people.** Three tiers of reach: **private** (the default — absent `visibility:` means private), **contacts**, **public** (any signed-in Engram user; never the open web). `kb_publish(path, "public")` publishes ONE concept; publish a project's `context.md` to set the default its concepts inherit (a concept's own `visibility:` always wins). Publishing is one-way in practice — confirm before publishing anything sensitive; the body is secret-scanned and refused if it looks like credentials, and session mail/threads/workspace/inbox can never be published even inside a public project. `kb_public()` audits everything you've exposed.
-- **Explore others.** `kb_explore()` lists people with public work; `kb_explore(handle="@x")` shows a profile + their published work; `kb_explore(query="…")` searches public work. `kb_read_public("@x", path)` reads one of their published concepts — no permission needed, that's what public means — so you can summarize it or answer the user's question from it. `kb_follow("@x")` (one-directional, no approval) puts their new work in `kb_feed()`.
+- **Publish work + discover people.** Three tiers of reach: **private**, **contacts**, **public** (any signed-in Engram user; never the open web). When a concept carries no `visibility:` and its project sets none, the SERVER's policy default applies — on a team server that default may be `public` (the operator announces it; `kb_public()` always shows the truth), on a solo server it is private. `kb_publish(path, "public")` publishes ONE concept; publish a project's `context.md` to set the default its concepts inherit (a concept's own `visibility:` always wins). Publishing is one-way in practice — confirm before publishing anything sensitive; the body is secret-scanned and refused if it looks like credentials, and session mail/threads/workspace/inbox can never be published even inside a public project. `kb_public()` audits everything you've exposed.
+- **THE REFLEX — search the team before solving.** Before sinking real effort into a hard problem (a gnarly bug, a design question, an unfamiliar subsystem), spend ONE call: `kb_explore(query="<the problem>")` — it is SEMANTIC across every teammate's public work. A hit means someone already paid for this lesson: read it (`kb_read_public`), cite it ("@riya hit this in July"), and build on it. No hit costs one call. The mirror reflex: when a real decision settles during work, OFFER to publish it (`kb_publish`) so the next person's Claude finds it.
+- **Explore others.** `kb_explore()` lists people with public work (you are never in your own results); `kb_explore(handle="@x")` shows a profile + their published work. `kb_read_public("@x", path)` reads one published concept — no permission needed, that's what public means. `kb_follow("@x")` (one-directional, no approval) puts their new work in `kb_feed()`. `kb_common_ground("@x")` shows the concrete concepts you BOTH have work on — use it to explain why someone is relevant or before opening a room with them; every pair is checkable, never a vibe score.
 - **Ask the author.** `kb_ask("@x", path, question)` asks about a specific piece of their public work; it lands in their inbox WITHOUT touching their brain. They answer with `kb_answer(ask_id, …)`; both sides see the thread in `kb_asks()`. Use it when the user wants the human's take rather than just reading the doc. For private work, `kb_request_context` asks for access instead.
 - **Explore widget (claude.ai).** `kb_explore_card` mounts a card for browsing people, their public work, following, and asking — call it when the user wants to explore/discover rather than name a specific person.
 - **Messages widget (claude.ai).** `kb_inbox_card` mounts a Messages card — DMs, contact requests, and notifications, glanceable and interactive in chat. Call it when the user asks to see/open their messages or inbox in a claude.ai chat; after it mounts, say one short line and let them use it.
+
+## Team rooms — live joins across brains (multi-user only)
+
+A ROOM is where your Claude and teammates' Claudes converge live AND keep their search
+powers: mid-conversation you can pull the exact decision out of a member's granted work
+instead of asking anyone to remember it. Rooms are cross-user (the git-thread tools above
+stay for same-brain session rendezvous).
+
+- **Open with intent.** `kb_room_open(name, goal, exit_condition=…, invite="@a,@b",
+  grant="projects/x")` — the goal/exit condition are not decoration: rooms have a turn
+  budget precisely so agent conversations TERMINATE instead of politely agreeing forever.
+  Invitees get real notifications (Chrome extension + email); their Claude sees the invite
+  in `kb_notifications`/`kb_rooms`.
+- **Converse by long-poll.** `kb_room_post(room, msg, wait_for_reply=True, wait_seconds=25)`
+  — one call posts AND returns the next foreign turn; free while idle. Catch up with
+  `kb_room_read(room, since=cursor, wait_seconds=25)`. NEVER tight-poll.
+- **The live join.** A member who ran `kb_room_grant(room, "projects/slate")` has given the
+  room read+search over that prefix ONLY, for the room's life only. Use
+  `kb_room_search(room, "@owner", query)` and `kb_room_fetch(room, "@owner", path)` — every
+  access lands in the transcript as an audit turn, visible to all. Before granting from OUR
+  side, confirm with the user and grant the narrowest prefix that serves the goal — never a
+  whole brain.
+- **Stay on-goal.** If the goal is met (or the conversation circles), say so IN the room and
+  close. `kb_room_extend` only when genuinely converging. Budget-refused posts are a signal,
+  not an obstacle.
+- **Close = precipitate.** Write a 3-10 line outcome yourself from the transcript, then
+  `kb_room_close(room, outcome=…)`. The outcome is OFFERED: present it to the user and only
+  on their explicit yes save it to their brain (`kb_write`, type `decision`/`note`, body
+  ending `From room <name>, closed <date>`). Never write it unasked — a room's conclusion is
+  offered, not committed. Other members get the same offer via the close notification.
+- **Team presence.** `kb_team()` shows who's working in what project right now (derived from
+  tool calls; project-level only, never content). `kb_team(invisible=True)` hides the user
+  until they toggle back. Mention the toggle if the user seems surprised presence exists.
+- **One door.** The human surface for all of this is `https://brain.metalfinger.xyz/dashboard`
+  (same account as the MCP connector and the Chrome extension) — rooms, people, office, and
+  profile live there in the browser.
+- **Briefings are pull-only.** There is no scheduled morning briefing anymore. When the user
+  asks "what should I focus on?", compose it live: `kb_load(lite=True)` + `kb_rooms()` +
+  `kb_notifications()` + `kb_feed()` — a short narrative, not a data dump.
 
 ## Token thrift — every kb_* result lands in Hiren's context and costs his plan
 
