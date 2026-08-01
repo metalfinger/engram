@@ -1,13 +1,13 @@
 //! Persisted config (JSON in the OS app-config dir) + the in-memory
 //! runtime state shared across the tray, poller and menu handlers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::TeamMember;
+use crate::api::{NotificationItem, TeamMember};
 
 pub const DEFAULT_ORIGIN: &str = "https://engram.metalfinger.xyz";
 pub const DEFAULT_POLL_SECONDS: u64 = 60;
@@ -85,6 +85,9 @@ pub struct RuntimeState {
     pub handle: Option<String>,
     pub invisible: bool,
     pub unread_count: u64,
+    /// The full unread list from the last successful poll — the tray
+    /// menu only needed the count, but the popup renders each row.
+    pub notifications: Vec<NotificationItem>,
     pub team: Vec<TeamMember>,
     pub autostart_enabled: bool,
     /// Ids already seen since sign-in — first poll after sign-in seeds
@@ -103,6 +106,11 @@ impl RuntimeState {
 pub struct AppState {
     pub config: Mutex<Config>,
     pub runtime: Mutex<RuntimeState>,
+    /// `avatar_url` -> resolved `data:` URI. Populated during polling
+    /// (see `avatar::resolve`) so the popup's rendering pass never makes
+    /// a network call of its own. Keyed by url, not handle, so a shared
+    /// avatar is only ever fetched once.
+    pub avatar_cache: Mutex<HashMap<String, String>>,
 }
 
 impl AppState {
@@ -110,6 +118,7 @@ impl AppState {
         Self {
             config: Mutex::new(config),
             runtime: Mutex::new(RuntimeState::default()),
+            avatar_cache: Mutex::new(HashMap::new()),
         }
     }
 

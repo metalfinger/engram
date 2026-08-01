@@ -1,28 +1,97 @@
 # Engram Tray
 
 Ambient desktop presence for [Engram](https://engram.metalfinger.xyz) — a
-system-tray-only app (Windows/macOS/Linux) built with **Rust + Tauri v2**.
+system-tray app (Windows/macOS/Linux) built with **Rust + Tauri v2**.
 
-v1 is a *thin agent*: it never opens a window or renders any web content.
-It shows native OS notifications for room invites, DMs, questions and
-answers, and a tray menu with the live team roster. Every menu action
-opens the real dashboard in your default browser.
+v1 was a *thin agent*: tray-only, no window, no web content. **v1.1 adds
+a popup** — left-click the tray icon for a small local-HTML panel with
+your avatar, the live "working now" roster with everyone's avatars, and
+actionable notifications. Right-click keeps the classic menu. The
+thin-agent security model is unchanged: the popup renders a page shipped
+in `dist/` and talks to Rust only over `invoke` — it never loads
+`engram.metalfinger.xyz` and never sees the bearer token (see "The
+popup" below).
 
 ## What it does
 
 - Polls `GET {origin}/dashboard/api/notifications` every `poll_seconds`
   (default 60s) and fires a native notification for anything new.
 - Polls `GET {origin}/dashboard/api/team` on the same cadence to show
-  who's active right now in the tray menu.
+  who's active right now, and resolves each teammate's `avatar_url` into
+  a cached `data:` URI (see "Avatars" below).
 - Tray icon swaps to an "unread" badge variant whenever there's anything
   unread; tooltip shows the count.
-- Tray menu: header (`@handle` or "signed out"), up to 6 "working now"
-  rows, "Appear invisible" toggle, Open Dashboard / Open Rooms, Mark all
-  read, Sign in / Sign out, Launch at login, Quit.
+- **Left-click** the tray icon to toggle the popup (see below).
+  **Right-click** for the classic menu: header (`@handle` or "signed
+  out"), Open Engram (same popup toggle), Open Dashboard, Sign in / Sign
+  out, Launch at login, Quit. The roster, invisible toggle, and mark-all
+  -read live in the popup now instead of the menu.
 - Sign-in is a loopback OAuth flow: it opens your browser at the
   dashboard's GitHub/Google sign-in, and a short-lived local HTTP
   listener on `127.0.0.1` catches the token when the browser redirects
   back (see "How sign-in works" below).
+
+## The popup
+
+A frameless, always-on-top, ~360×520 window (label `popup`) created once
+at startup, hidden, and only ever shown/hidden after that — never torn
+down and recreated. Left-clicking the tray toggles it; it's positioned
+near the click point, opening upward on a bottom taskbar (Windows/Linux)
+or downward from a top menu bar (macOS) — inferred from which half of
+the monitor the click landed in, not a per-OS branch. It hides on focus
+loss or **Esc**. If the tray click doesn't carry a usable position (or
+monitor lookup fails), it falls back to a fixed corner of the primary
+monitor's work area.
+
+Sections top to bottom:
+
+1. **Me** — your avatar, `@handle`, and "working on `<project>`" if your
+   own roster row has one (you might not be in `team[]` at all; the
+   popup only shows what's there). An eye-icon toggles "appear
+   invisible", a gear opens the config folder, and a power icon signs
+   out.
+2. **Working now** — friend cards (avatar, name, project, a freshness
+   dot: green ≤15m / amber ≤2h / grey older, relative time). Click a
+   card to open `{origin}/dashboard/u/<handle>` in your browser.
+3. **Notifications** — one row per unread item, with a per-kind action
+   button (room invite/closed → open the room, DM → open messages,
+   question/answer → open asks) plus a single "Mark all read" in the
+   section header (there's no per-row dismiss server-side).
+4. A footer with Open Dashboard / Open Rooms.
+
+### Security model: local HTML, Rust-mediated data
+
+The popup's webview loads `dist/index.html`/`main.js`/`style.css` — it
+never fetches anything from the network and never receives the bearer
+token. Every piece of data it shows comes from Rust over `invoke`
+(`get_state`, `refresh_now`, `set_invisible`, `mark_all_read`, `sign_in`,
+`sign_out`, `open_url`, `open_config_folder`, `hide_popup`, `quit_app` —
+all defined in `src-tauri/src/main.rs`). `open_url` only ever opens
+`{origin}` + a path under an explicit `/dashboard` allowlist — the
+webview can ask to navigate the *browser* to a dashboard page, never to
+an arbitrary URL. A strict CSP (`default-src 'self'; img-src 'self'
+data:; style-src 'self' 'unsafe-inline'`) is set in `tauri.conf.json`.
+
+Updates reach the popup two ways: every mutating command returns a
+fresh state snapshot for immediate re-render, and the background poll
+loop pushes a snapshot into the popup's JS after every tick via
+`WebviewWindow::eval` (`window.__engramPush`) — deliberately **not**
+Tauri's `emit`/`listen` event bridge, which is IPC/ACL-gated the moment
+an app defines a `capabilities/*.json` manifest (this project
+intentionally has none, so its own custom commands stay ungated too —
+see the doc comment above the commands in `main.rs`). `eval` bypasses
+that layer entirely since it's a direct Rust→webview call, not an IPC
+round-trip.
+
+### Avatars
+
+`team[]` entries carry `avatar_url`, which can be an `https://` URL or
+an already-inlined `data:` URI. Rust resolves these — never the webview:
+`data:` values pass straight through; `https://` values are fetched with
+a 5s timeout and a 300KB/`image/*`-only cap, then cached by URL (so a
+shared avatar is fetched once) and handed to the popup as a `data:` URI.
+No avatar (or a failed fetch) falls back to a deterministic initials
+circle, colored by a hash of the handle, drawn entirely in JS.
 
 ## Config file
 
@@ -83,28 +152,33 @@ The token is written straight to `config.json` — never printed to logs.
   click events are not reliably delivered on Windows without registering
   a proper AUMID/WinRT app identity (a whole separate rabbit hole for a
   v1 tray app) — clicking a Windows toast may just dismiss it. macOS and
-  Linux are more consistent. Don't rely on it; the tray menu ("Open
-  Dashboard" / "Open Rooms") is always the reliable path.
+  Linux are more consistent. Don't rely on it; opening the popup (or the
+  tray menu's Open Dashboard) is always the reliable path.
 
 ## Project layout
 
 ```
 clients/desktop/
 ├── README.md
-├── dist/index.html          # placeholder frontend Tauri requires but never shows
+├── dist/
+│   ├── index.html            # the popup's markup
+│   ├── style.css              # dark theme, fixed 360x520
+│   └── main.js                 # invoke()-driven rendering, no bundler
 ├── scripts/gen_icons.py      # one-off generator for src-tauri/icons/*
 └── src-tauri/
     ├── Cargo.toml
     ├── build.rs
-    ├── tauri.conf.json
+    ├── tauri.conf.json         # CSP + withGlobalTauri for the popup
     ├── icons/                 # app bundle icons + embedded tray PNGs
     └── src/
-        ├── main.rs            # setup: plugins, tray build, menu wiring, poll loop
-        ├── state.rs            # Config (on-disk) + RuntimeState (in-memory) + AppState
+        ├── main.rs            # setup: plugins, tray build, menu wiring, poll loop, IPC commands
+        ├── state.rs            # Config (on-disk) + RuntimeState (in-memory) + AppState (+ avatar cache)
         ├── api.rs              # reqwest client for the dashboard's tray API
         ├── auth.rs             # loopback OAuth (tiny_http listener + nonce)
         ├── tray.rs             # tray icon + menu construction/refresh
-        └── notify.rs           # dedupe + native notifications per kind
+        ├── notify.rs           # dedupe + native notifications per kind
+        ├── popup.rs            # popup window lifecycle, positioning, state snapshot, eval-push
+        └── avatar.rs           # avatar_url -> cached data: URI resolution
 ```
 
 ## Crates
@@ -117,7 +191,7 @@ Everything else: `tokio` (async runtime, timers), `reqwest`
 (`rustls-tls`, `json`), `serde`/`serde_json`, `dirs` (config dir),
 `rand` (nonce), `tiny_http` (loopback listener), `webbrowser` (open the
 sign-in URL), `urlencoding`, `image` (decode the embedded tray PNGs),
-`chrono`, `log`.
+`base64` (encode fetched avatars as `data:` URIs), `chrono`, `log`.
 
 ## Building
 
@@ -176,15 +250,33 @@ handles cutting `.msi`/`.dmg`/`.AppImage` releases across all three OSes
 — you shouldn't normally need to run `cargo tauri build` by hand except
 to test locally.
 
-## Known compromises (v1)
+## Known compromises
 
 - **Notification click-to-open on Windows** is unreliable (see above) —
   documented rather than chased down a WinRT identity rabbit hole.
-- **No settings UI.** `origin`/`poll_seconds` are config-file only; there
-  is deliberately no window to edit them in, per the "thin agent, no
-  webview ever" brief.
+- **No settings UI for `origin`/`poll_seconds`.** The popup is a real
+  window now, but these two are still config-file only — the popup's
+  job is presence/notifications, not app preferences.
 - **Single fetch of `poll_seconds` at startup** — changing it in
   `config.json` while the app is running has no effect until restart.
+- **Popup positioning assumes one monitor's worth of precision.** It
+  reads the tray click's own physical position and picks the monitor
+  under it via `monitor_from_point`, but doesn't convert the tray icon's
+  `rect` (which is in a platform-dependent logical/physical `Position`
+  enum) — multi-monitor setups with mixed DPI scaling may land the popup
+  slightly off from the icon. Still clamped inside the target monitor's
+  work area either way, so it never ends up off-screen.
+- **No window transparency/rounded window corners.** The popup content
+  has border-radius on its internal elements, but the window itself is
+  an opaque rectangle (no `transparent: true`) — avoids the extra
+  WebView2/compositor edge cases that come with true window transparency
+  on Windows for a first pass.
+- **Push updates use `eval`, not `emit`/`listen`.** See "Security model"
+  above — this project ships no `capabilities/*.json`, and adding one
+  would gate every custom command (not just the plugin ones), so genuine
+  live-push went through `WebviewWindow::eval` instead. Functionally
+  equivalent for this single-popup app; would need revisiting if a
+  second webview surface is ever added.
 - The tray-only PNGs (`icons/tray-normal.png` / `tray-unread.png`) and
   the full bundle icon set are placeholder art (a simple violet "node"
   mark, plain vs. with a red badge dot) generated by
