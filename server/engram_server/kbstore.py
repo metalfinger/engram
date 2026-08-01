@@ -575,6 +575,10 @@ class KBStore:
             if settings.semantic_search and settings.qdrant_url
             else None
         )
+        if self.semantic is not None:
+            # v3: every indexed point carries effective visibility, so the vector
+            # store can answer "team-visible?" without touching the filesystem.
+            self.semantic.visibility_resolver = self._visibility_sync
         self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:

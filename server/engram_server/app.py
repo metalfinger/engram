@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from anyio import to_thread
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -1370,20 +1371,35 @@ async def kb_explore(handle: str = "", query: str = "") -> dict[str, Any]:
     someone, browse what others have published, or look at a person's profile.
 
     No arguments: lists people with public work (the directory). With `handle`: that
-    person's profile + everything they've published. With `query`: searches across public
-    work (optionally narrowed to one handle). Read a specific item with kb_read_public.
+    person's profile + everything they've published. With `query`: SEMANTIC search across
+    everyone's public work — use this reflexively before solving a hard problem ("has
+    anyone on the team hit this?"); results carry `engine:"semantic"` and a score, or
+    fall back to substring matching when the vector backend is down. Read a specific
+    item with kb_read_public.
 
-    Returns {people: [...]} or {profile, public_work: [...]} or {results: [...]}.
+    Returns {people: [...]} or {profile, public_work: [...]} or {results: [...], engine}.
     """
     me = current_user()
     viewer_id = me.id if me else None
     if handle and not query:
         return {"profile": await _profile_of_handle(handle, viewer_id), "public_work": await _public_work_of(handle)}
     if query:
+        # The save (v3 Wave 5): semantic first — meaning-level matches across the
+        # team's public work, own points excluded. Substring scan is the fallback.
+        my_store = await current_store()
+        me_tenant = my_store.settings.tenant_id
+        if not handle and my_store.semantic is not None:
+            sem = await to_thread.run_sync(
+                lambda: my_store.semantic.search_team(query, exclude_user=me_tenant)
+            )
+            if sem is not None:
+                return {"results": sem, "engine": "semantic"}
         handles = [handle.lstrip("@")] if handle else [u.handle for u in registry.tenancy.list_users()]
         needle = query.lower()
         hits: list[dict[str, Any]] = []
         for h in handles:
+            if not handle and h == me_tenant:
+                continue  # your own work is kb_search's job, not discovery's
             try:
                 for item in await _public_work_of(h):
                     hay = f"{item.get('title','')} {item.get('description','')} {item.get('path','')}".lower()
@@ -1391,7 +1407,7 @@ async def kb_explore(handle: str = "", query: str = "") -> dict[str, Any]:
                         hits.append({**item, "handle": h})
             except KBError:
                 continue
-        return {"results": hits[:50]}
+        return {"results": hits[:50], "engine": "text"}
     people = []
     for u in registry.tenancy.list_users():
         if u.status != "active":
@@ -1443,6 +1459,32 @@ async def kb_read_public(handle: str, path: str) -> dict[str, Any]:
         "title": str(meta.get("title") or ""), "type": str(meta.get("type") or ""),
         "project": str(meta.get("project") or ""), "content": concept.get("content") or "",
     }
+
+
+@mcp.tool()
+async def kb_common_ground(handle: str) -> dict[str, Any]:
+    """What do I and this person have in COMMON? Explainable work-overlap: pairs of
+    (your concept, their public concept) that are semantically close — never an
+    opaque similarity score. Call when the user asks what they share with someone,
+    before opening a room with them, or to explain WHY a person surfaced in discovery.
+
+    Every pair is a checkable claim: read theirs with kb_read_public, yours with
+    kb_read. Empty overlap is a real answer (no manufactured matches).
+
+    Returns {handle, pairs: [{mine:{path,title}, theirs:{path,title,description}, score}]}.
+    """
+    me = _require_user()
+    other = handle.lstrip("@").lower()
+    target = registry.tenancy.user_by_handle(other)
+    if target is None:
+        raise KBError(f"No Engram account with the handle '@{other}'. kb_explore() lists people.")
+    if me is not None and target.id == me.id:
+        raise KBError("Common ground is with SOMEONE ELSE — kb_search covers your own brain.")
+    my_store = await current_store()
+    if my_store.semantic is None:
+        return {"handle": other, "pairs": [], "note": "semantic backend offline — no overlap scan"}
+    pairs = await to_thread.run_sync(lambda: my_store.semantic.common_ground(other))
+    return {"handle": other, "pairs": pairs or []}
 
 
 @mcp.tool()

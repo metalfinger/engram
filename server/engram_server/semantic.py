@@ -27,6 +27,7 @@ import logging
 import math
 import posixpath
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,15 @@ class SemanticIndex:
         self.tenant = settings.tenant_id
         self._ctl = controls or _FakeControls()
         self._collection_ready = False
+        # v3: KBStore injects its _visibility_sync after construction so every point
+        # carries the concept's EFFECTIVE visibility (own frontmatter -> project
+        # default -> policy default). Payload-only — vectors never re-embed for a
+        # visibility flip; the incremental upsert's payload-drift re-upsert and the
+        # nightly full pass propagate changes. Unset (tests, standalone) -> ''.
+        # A missing/'' visibility payload NEVER matches the public filter, so points
+        # indexed before v3 stay private until reindexed — private-by-default even
+        # in the vector store.
+        self.visibility_resolver: Callable[[str], str] | None = None
 
     # ------------------------------------------------------------------ lazy deps
 
@@ -246,7 +256,7 @@ class SemanticIndex:
             # (delete-by-path on upsert; project/type filters at search time;
             # user_id on every call post-multi-tenancy) — without these, filtered
             # requests 400. Idempotent per field.
-            for field in ("path", "project", "type", "user_id"):
+            for field in ("path", "project", "type", "user_id", "visibility"):
                 try:
                     client.create_payload_index(
                         collection_name=self.collection,
@@ -290,6 +300,12 @@ class SemanticIndex:
     def _payload(self, path: str, text: str, chunk: Chunk) -> dict[str, Any]:
         doc = split(text)
         meta = normalize_meta(doc.meta) if doc is not None else {}
+        visibility = ""
+        if self.visibility_resolver is not None:
+            try:
+                visibility = str(self.visibility_resolver(path) or "")
+            except Exception:  # noqa: BLE001 — resolver hiccup must never block indexing
+                visibility = ""
         return {
             "path": path,
             "project": _project_of(path),
@@ -300,6 +316,7 @@ class SemanticIndex:
             "heading": chunk.heading,
             "timestamp": str(meta.get("timestamp") or ""),
             "user_id": self.tenant,
+            "visibility": visibility,
         }
 
     def _point_id(self, path: str, heading: str, idx: int) -> str:
@@ -509,6 +526,151 @@ class SemanticIndex:
             return ranked[: max(1, limit)]
         except Exception as exc:  # noqa: BLE001
             log.warning("semantic: search(%r) failed: %s", query, exc)
+            return None
+
+    # ------------------------------------------------------------------ team (v3 Wave 5)
+
+    def _not_user_condition(self, user: str) -> list[Any]:
+        """must_not conditions excluding one tenant's points — the mirror of
+        _tenant_condition, including hiren's pre-multi-tenant points with NO
+        user_id field (they are his, so excluding 'hiren' must exclude them too)."""
+        qm = self._models()
+        out: list[Any] = [qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user))]
+        if user == "hiren":
+            out.append(qm.IsEmptyCondition(is_empty=qm.PayloadField(key="user_id")))
+        return out
+
+    def search_team(
+        self, query: str, exclude_user: str | None = None, limit: int = 12
+    ) -> list[dict[str, Any]] | None:
+        """Cross-user semantic search over PUBLIC work — the v3 'save'.
+
+        The mandatory tenant condition is REPLACED by visibility=='public': the
+        one deliberate cross-tenant read path, and it can only ever surface points
+        whose payload says public (missing/'' visibility never matches, so
+        pre-v3 points stay invisible until reindexed). ``exclude_user`` drops the
+        caller's own points — you are not a discovery to yourself. Deduped to the
+        best chunk per (user, path). None on any failure (caller falls back to
+        the substring scan)."""
+        if not query or not query.strip():
+            return None
+        if not self.ensure_collection():
+            return None
+        try:
+            qvec = self._embed([query])[0]
+            qm = self._models()
+            query_filter = qm.Filter(
+                must=[qm.FieldCondition(key="visibility", match=qm.MatchValue(value="public"))],
+                must_not=self._not_user_condition(exclude_user) if exclude_user else None,
+            )
+            hits = self._client().query_points(
+                collection_name=self.collection,
+                query=qvec,
+                query_filter=query_filter,
+                limit=max(1, limit) * 4,
+                with_payload=True,
+            ).points
+            best: dict[tuple[str, str], dict[str, Any]] = {}
+            for hit in hits:
+                payload = dict(hit.payload or {})
+                path = str(payload.get("path") or "")
+                user = str(payload.get("user_id") or "")
+                if not path or not user:
+                    continue
+                score = float(getattr(hit, "score", 0.0) or 0.0)
+                key = (user, path)
+                if key not in best or score > best[key]["score"]:
+                    best[key] = {
+                        "handle": user,
+                        "path": path,
+                        "title": str(payload.get("title") or ""),
+                        "description": str(payload.get("description") or ""),
+                        "project": str(payload.get("project") or ""),
+                        "score": round(score, 4),
+                        "matched_heading": payload.get("heading") or None,
+                    }
+            ranked = sorted(best.values(), key=lambda r: r["score"], reverse=True)
+            return ranked[: max(1, limit)]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("semantic: search_team(%r) failed: %s", query, exc)
+            return None
+
+    def common_ground(
+        self, other_user: str, pairs: int = 8, threshold: float = 0.55
+    ) -> list[dict[str, Any]] | None:
+        """Explainable work-overlap between the CALLER's brain and another user's
+        PUBLIC work: pairs of (my concept, their public concept) whose stored
+        vectors sit above ``threshold`` cosine. This is the v3 'people matching'
+        primitive — never an affinity score, always the overlapping concepts
+        themselves, so every match is a checkable claim.
+
+        Uses vectors ALREADY in the store (scroll mine, query theirs) — zero
+        re-embedding. Recency-biased: my candidate concepts are the most recent
+        ~15 distinct paths by frontmatter timestamp. None on failure."""
+        if not other_user or other_user == self.tenant:
+            return None
+        if not self.ensure_collection():
+            return None
+        try:
+            qm = self._models()
+            records, _next = self._client().scroll(
+                collection_name=self.collection,
+                scroll_filter=qm.Filter(must=[self._tenant_condition()]),
+                with_vectors=True,
+                with_payload=True,
+                limit=500,
+            )
+            # Best (first-seen) point per path, newest paths first by ISO timestamp.
+            by_path: dict[str, Any] = {}
+            for rec in records:
+                payload = dict(rec.payload or {})
+                path = str(payload.get("path") or "")
+                if path and path not in by_path:
+                    by_path[path] = (str(payload.get("timestamp") or ""), rec.vector, payload)
+            candidates = sorted(by_path.items(), key=lambda kv: kv[1][0], reverse=True)[:15]
+
+            their_filter = qm.Filter(
+                must=[
+                    qm.FieldCondition(key="user_id", match=qm.MatchValue(value=other_user)),
+                    qm.FieldCondition(key="visibility", match=qm.MatchValue(value="public")),
+                ]
+            )
+            found: dict[str, dict[str, Any]] = {}  # their path -> best pair
+            for my_path, (_ts, vec, my_payload) in candidates:
+                if vec is None:
+                    continue
+                hits = self._client().query_points(
+                    collection_name=self.collection,
+                    query=vec,
+                    query_filter=their_filter,
+                    limit=3,
+                    with_payload=True,
+                ).points
+                for hit in hits:
+                    score = float(getattr(hit, "score", 0.0) or 0.0)
+                    if score < threshold:
+                        continue
+                    tp = dict(hit.payload or {})
+                    their_path = str(tp.get("path") or "")
+                    if not their_path:
+                        continue
+                    if their_path not in found or score > found[their_path]["score"]:
+                        found[their_path] = {
+                            "mine": {
+                                "path": my_path,
+                                "title": str(my_payload.get("title") or ""),
+                            },
+                            "theirs": {
+                                "path": their_path,
+                                "title": str(tp.get("title") or ""),
+                                "description": str(tp.get("description") or ""),
+                            },
+                            "score": round(score, 4),
+                        }
+            ranked = sorted(found.values(), key=lambda r: r["score"], reverse=True)
+            return ranked[: max(1, pairs)]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("semantic: common_ground(%r) failed: %s", other_user, exc)
             return None
 
     # ------------------------------------------------------------------ rebuild-guard

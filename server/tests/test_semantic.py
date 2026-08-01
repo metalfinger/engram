@@ -114,9 +114,12 @@ class FakeQdrant:
 
         must = query_filter.must or []
         should = query_filter.should or []
+        must_not = getattr(query_filter, "must_not", None) or []
         if must and not all(_cond(c) for c in must):
             return False
         if should and not any(_cond(c) for c in should):
+            return False
+        if must_not and any(_cond(c) for c in must_not):
             return False
         return True
 
@@ -415,3 +418,107 @@ async def test_kb_search_semantic_only_when_text_has_no_hits(store: KBStore) -> 
         {"path": "projects/alt/x.md", "title": "X", "description": "d", "score": 0.9,
          "matched_heading": None, "engine": "semantic"}
     ]
+
+
+# ------------------------------------------------------------------ v3: team layer
+
+
+def _two_tenants():
+    """Two SemanticIndex instances (hiren + riya) sharing ONE fake backend —
+    the exact production topology: one collection, tenant-stamped points."""
+    client = FakeQdrant()
+    emb = FakeEmbedder()
+    mk = lambda tenant: SemanticIndex(
+        Settings(_env_file=None, qdrant_url="http://fake", qdrant_collection="team-col", tenant_id=tenant),
+        controls=_FakeControls(client=client, embedder=emb),
+    )
+    return mk("hiren"), mk("riya"), client
+
+
+_PUB = (
+    "---\ntype: decision\ntitle: Widget CSP Limits\ndescription: CSP constraints for MCP widgets.\n"
+    "timestamp: 2026-07-10T00:00:00Z\n---\n\nWidgets cannot load external scripts; inline only.\n"
+)
+_PRIV = (
+    "---\ntype: note\ntitle: Salary Notes\ndescription: private compensation notes.\n"
+    "timestamp: 2026-07-11T00:00:00Z\n---\n\nStrictly private compensation figures.\n"
+)
+
+
+def test_payload_carries_visibility_from_resolver() -> None:
+    idx = _index()
+    idx.visibility_resolver = lambda path: "public"
+    idx.upsert_file("projects/alt/decisions/csp.md", _PUB)
+    payloads = [pl for (_v, pl) in idx._ctl.client.points["test-col"].values()]
+    assert payloads and all(pl["visibility"] == "public" for pl in payloads)
+
+
+def test_resolver_error_is_soft_and_lands_private() -> None:
+    idx = _index()
+
+    def boom(_path):
+        raise RuntimeError("resolver down")
+
+    idx.visibility_resolver = boom
+    assert idx.upsert_file("projects/alt/x.md", _PUB) is True
+    payloads = [pl for (_v, pl) in idx._ctl.client.points["test-col"].values()]
+    assert all(pl["visibility"] == "" for pl in payloads)  # '' never matches public
+
+
+def test_search_team_returns_only_public_and_excludes_caller() -> None:
+    hiren, riya, _client = _two_tenants()
+    hiren.visibility_resolver = lambda p: "public"
+    riya.visibility_resolver = lambda p: "public" if "csp" in p else "private"
+    hiren.upsert_file("projects/eng/decisions/csp-mine.md", _PUB)  # caller's own — excluded
+    riya.upsert_file("projects/web/decisions/csp.md", _PUB)  # public — the hit
+    riya.upsert_file("projects/web/notes/salary.md", _PRIV)  # private — never surfaced
+
+    hits = hiren.search_team("widget csp constraints", exclude_user="hiren")
+    assert hits, "expected riya's public decision"
+    assert {h["handle"] for h in hits} == {"riya"}
+    assert all("salary" not in h["path"] for h in hits)
+
+
+def test_search_team_excludes_hiren_legacy_unstamped_points() -> None:
+    """Pre-multi-tenant points have NO user_id — they are hiren's, so excluding
+    'hiren' must exclude them even if somehow marked public."""
+    hiren, _riya, client = _two_tenants()
+    client.collection_exists("team-col") or client.create_collection("team-col", None)
+    client.upsert(
+        "team-col",
+        [SimpleNamespace(id="legacy-1",
+                         vector=next(FakeEmbedder().embed(["widget csp constraints inline"])),
+                         payload={"path": "projects/old/x.md", "title": "Old", "description": "",
+                                  "project": "old", "heading": "Old", "visibility": "public"})],
+    )
+    hits = hiren.search_team("widget csp constraints", exclude_user="hiren")
+    assert hits == []
+
+
+def test_search_team_ignores_points_without_visibility() -> None:
+    hiren, riya, _client = _two_tenants()
+    riya.upsert_file("projects/web/decisions/csp.md", _PUB)  # NO resolver -> visibility ''
+    hits = hiren.search_team("widget csp constraints", exclude_user="hiren")
+    assert hits == []  # pre-v3 points stay private until reindexed
+
+
+def test_common_ground_pairs_are_explainable() -> None:
+    hiren, riya, _client = _two_tenants()
+    hiren.visibility_resolver = lambda p: "private"  # MY side needs no publishing
+    riya.visibility_resolver = lambda p: "public" if "csp" in p else "private"
+    hiren.upsert_file("projects/eng/decisions/widget-csp.md", _PUB)
+    riya.upsert_file("projects/web/decisions/csp.md", _PUB)
+    riya.upsert_file("projects/web/notes/salary.md", _PRIV)
+
+    pairs = hiren.common_ground("riya", threshold=0.3)
+    assert pairs, "expected an overlap pair"
+    top = pairs[0]
+    assert top["mine"]["path"] == "projects/eng/decisions/widget-csp.md"
+    assert top["theirs"]["path"] == "projects/web/decisions/csp.md"
+    assert all("salary" not in p["theirs"]["path"] for p in pairs)
+
+
+def test_common_ground_with_self_or_nobody_is_none() -> None:
+    hiren, _riya, _client = _two_tenants()
+    assert hiren.common_ground("hiren") is None
+    assert hiren.common_ground("") is None
