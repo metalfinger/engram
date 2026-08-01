@@ -23,10 +23,12 @@ class Settings(BaseSettings):
     # http
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 9210
-    public_url: str = "https://engram.metalfinger.xyz"  # MCP + OAuth issuer host (machines)
-    explorer_url: str = (
-        "https://brain.metalfinger.xyz"  # the HUMAN hostname (dashboard + explorer; v3 one door)
-    )
+    public_url: str = "https://engram.metalfinger.xyz"  # THE host — machines AND humans
+    # ONE DOMAIN (Hiren, 2026-08-01): two hostnames confused real users on day one.
+    # engram.* is everything — no redirects, no second name; brain.* was removed
+    # from the tunnel ingress and its DNS record retired. explorer_url stays as a
+    # knob for self-hosters but defaults to the same host.
+    explorer_url: str = "https://engram.metalfinger.xyz"
 
     # oauth (ProxyOAuthProvider -> upstream IdP)
     oauth_provider: str = "github"  # github | google

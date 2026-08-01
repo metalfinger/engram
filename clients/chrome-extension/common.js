@@ -5,7 +5,7 @@
 // plain <script src="common.js"> (before popup.js/options.js) in the pages.
 
 const DEFAULT_ORIGIN = "https://engram.metalfinger.xyz"; // API / MCP connector origin
-const DASHBOARD_ORIGIN = "https://brain.metalfinger.xyz"; // web dashboard for humans
+const DASHBOARD_ORIGIN = "https://engram.metalfinger.xyz"; // ONE domain — dashboard lives here too
 const DEFAULT_POLL_MINUTES = 1;
 
 async function getOrigin() {

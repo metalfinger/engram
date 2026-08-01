@@ -35,7 +35,7 @@ clears the stored token; the next click on "Sign in with Engram" gets a fresh on
 
 - `https://engram.metalfinger.xyz` — the API/connector origin. This is the only origin the
   extension ever calls with `fetch()`.
-- `https://brain.metalfinger.xyz` — the web dashboard. This is where "Open dashboard", room-invite
+- The web dashboard lives on the SAME origin (`/dashboard`). This is where "Open dashboard", room-invite
   **Open** buttons, and notification clicks send you (`chrome.tabs.create`, not `fetch`).
 
 Both are declared in `host_permissions` so the extension can reach the API and open dashboard tabs

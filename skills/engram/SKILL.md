@@ -185,7 +185,7 @@ stay for same-brain session rendezvous).
 - **Team presence.** `kb_team()` shows who's working in what project right now (derived from
   tool calls; project-level only, never content). `kb_team(invisible=True)` hides the user
   until they toggle back. Mention the toggle if the user seems surprised presence exists.
-- **One door.** The human surface for all of this is `https://brain.metalfinger.xyz/dashboard`
+- **One door, ONE domain.** The human surface for all of this is `https://engram.metalfinger.xyz/dashboard`
   (same account as the MCP connector and the Chrome extension) — rooms, people, office, and
   profile live there in the browser.
 - **Briefings are pull-only.** There is no scheduled morning briefing anymore. When the user

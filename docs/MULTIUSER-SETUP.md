@@ -6,7 +6,7 @@ is already deployed. **The hard rule stands: do not send an invite until steps 3
 
 ## 0. Prerequisites (already true)
 - Single-user Engram runs on this PC, port 9210, tunneled by cloudflared as
-  `engram.metalfinger.xyz` (MCP + OAuth) and `brain.metalfinger.xyz` (explorer).
+  `engram.metalfinger.xyz` — ONE domain for everything: MCP + OAuth + the dashboard.
 - Full test suite green, including `tests/test_isolation_harness.py` (the isolation gate).
 
 ## 1. Flip the flag + session secret (`~/.engram/.env`)
@@ -99,7 +99,7 @@ Then walk the whole loop yourself:
 - `/join?token=` — invite acceptance → sign in → claim handle → account + brain.
 - **Messages widget** (`kb_inbox_card` in claude.ai) — in-chat DMs/contacts/notifications.
 - **Chrome extension** (`clients/chrome-extension/`) — desktop push for new DMs.
-- The **explorer** (`brain.metalfinger.xyz/brain/*`) stays yours — owner-only via the
+- The **explorer** (`engram.metalfinger.xyz/brain/*`) stays yours — owner-only via the
   dashboard session cookie since v3 (see the one-door section below) —
   it is NOT multi-tenant yet (per-user explorer is a future milestone). Tenants use
   their Claude + the dashboard, not the explorer.

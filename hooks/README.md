@@ -40,7 +40,7 @@ and leaves the one-writer invariant intact. See
    ```
 
 3. That's it — the server side is already deployed. Watch yourself appear at
-   `https://brain.metalfinger.xyz/brain/workspace`.
+   `https://engram.metalfinger.xyz/brain/workspace`.
 
 ## Attaching a repo to a project (`.engram-project`)
 

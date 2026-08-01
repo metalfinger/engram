@@ -83,8 +83,8 @@ CHANGES = (
     "working; kb_team(invisible=True) hides you",
     "morning briefing PUSH is retired — briefing is pull-only (ask for a briefing and "
     "compose from live tools); no more daily artifacts/messages",
-    "ONE DOOR: brain.metalfinger.xyz is the human dashboard (same account as MCP + "
-    "extension); Cloudflare Access is gone",
+    "ONE DOMAIN: engram.metalfinger.xyz is everything — connector, dashboard, and "
+    "extension; Cloudflare Access is gone",
     "unified app: one widget (Home/Browse/People/Rooms/Office) replaces the five cards",
 )
 
