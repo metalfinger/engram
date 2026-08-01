@@ -1396,11 +1396,13 @@ async def kb_explore(handle: str = "", query: str = "") -> dict[str, Any]:
     for u in registry.tenancy.list_users():
         if u.status != "active":
             continue
+        if me and u.id == me.id:
+            continue  # discovery shows OTHER people — you are not a search result to yourself
         try:
             work = await _public_work_of(u.handle)
         except KBError:
             work = []
-        if not work and not (me and u.id == me.id):
+        if not work:
             continue  # only surface people who've actually published something
         counts = registry.discovery.follow_counts(u.id)
         people.append({

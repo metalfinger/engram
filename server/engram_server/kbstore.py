@@ -3188,7 +3188,11 @@ class KBStore:
                 default = str(read_meta(ctx).get("visibility") or "").strip().lower()
                 if default in VISIBILITY_VALUES:
                     return default
-        return "private"
+        # Nothing marked anywhere -> the operator's policy default (v3 team test:
+        # ENGRAM_DEFAULT_VISIBILITY=public for one consenting team). Never applies
+        # to _never_public segments — those returned 'private' above.
+        policy = str(self.settings.default_visibility or "").strip().lower()
+        return policy if policy in VISIBILITY_VALUES else "private"
 
     def _project_root_rel(self, rel: str) -> str:
         """'projects/alt/decisions/x.md' -> 'projects/alt'; 'metalfinger/x.md' -> 'metalfinger'."""

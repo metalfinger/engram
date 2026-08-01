@@ -86,7 +86,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ENGRAM_SCHEDULER", "ENGRAM_SCHEDULER_ENABLED"),
     )
     reconcile_at: str = "03:30"
-    briefing_at: str = "08:00"
+    # v3: the scheduled morning-briefing PUSH is retired — it manufactured its own
+    # backlog (each day's "unread" was mostly previous briefings) and, with no
+    # server-side LLM, could never be more than counts. The briefing is now a PULL
+    # (the daily_briefing prompt composes from live tools). Set a HH:MM here only
+    # to resurrect the legacy artifact job.
+    briefing_at: str = ""
 
     # Auto-presence spool ingest. Claude Code hooks drop plain JSON intent files
     # into presence_spool_dir (NO git — a second checkout writer would race the
@@ -104,6 +109,13 @@ class Settings(BaseSettings):
     # where per-user brains live (users_root/<handle>/brain.git bare + /brain
     # checkout). Empty strings resolve to the ~/.engram defaults below.
     multiuser: bool = False
+    # v3 team-test policy default (Hiren, 2026-08-01): what an unmarked project's
+    # visibility resolves to when neither the concept nor the project context.md
+    # says otherwise. Code default stays 'private'; the live server sets
+    # ENGRAM_DEFAULT_VISIBILITY=public for the consenting Alt Inc team — a
+    # SETTING, not a code change, so it reverts the day Engram is no longer one
+    # team. The _never_public segments ignore this entirely.
+    default_visibility: str = "private"
     # Anyone with a GitHub/Google account can create their own Engram (the product
     # intent). Set ENGRAM_OPEN_SIGNUP=0 to go back to invite-only — existing invites
     # keep working either way. Only meaningful when multiuser is on.
