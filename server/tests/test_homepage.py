@@ -80,7 +80,8 @@ def test_self_contained_no_external_requests() -> None:
 
 
 def test_different_public_url_reflected() -> None:
-    settings = Settings(public_url="https://example.test")
+    settings = Settings(public_url="https://example.test",
+                        explorer_url="https://example.test")
     html = homepage_html(settings)
     assert "https://example.test/mcp" in html
     assert "https://engram.metalfinger.xyz" not in html
@@ -128,3 +129,27 @@ def test_register_homepage_is_unguarded() -> None:
     client = _client(settings)
     resp = client.get("/")
     assert resp.status_code == 200
+
+
+def test_extension_zip_endpoint_serves_the_real_extension() -> None:
+    """The extension is downloadable from the product itself — manifest included."""
+    import io
+    import zipfile
+
+    import engram_server.app as app_module
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    app = Starlette(routes=app_module.mcp._custom_starlette_routes)
+    client = TestClient(app)
+    r = client.get("/downloads/engram-chrome-extension.zip")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert "engram-chrome-extension/manifest.json" in names
+    assert "engram-chrome-extension/popup.js" in names
+
+
+def test_homepage_links_the_extension_download() -> None:
+    html = homepage_html(SETTINGS)
+    assert "/downloads/engram-chrome-extension.zip" in html

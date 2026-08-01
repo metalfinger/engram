@@ -237,9 +237,11 @@ def homepage_html(settings: Settings) -> str:
         "Requires a ChatGPT plan that supports custom MCP connectors.",
     ]
 
+    ext_zip = settings.public_url.rstrip("/") + "/downloads/engram-chrome-extension.zip"
     extension_steps = [
-        "Get the extension folder from your admin (<code>clients/chrome-extension</code>).",
-        "Open <strong>chrome://extensions</strong>, enable Developer mode, <strong>Load unpacked</strong>.",
+        f'<a href="{_escape(ext_zip)}"><strong>Download the extension</strong></a> and unzip it.',
+        "Open <strong>chrome://extensions</strong>, enable Developer mode, <strong>Load unpacked</strong> "
+        "&rarr; pick the unzipped folder.",
         "Click the Engram icon and sign in &mdash; same GitHub/Google account, one click. "
         "You'll get room invites, DMs, and questions as native notifications.",
     ]

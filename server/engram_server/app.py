@@ -15,6 +15,7 @@ import logging
 import posixpath
 import sys
 import time
+from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -2579,6 +2580,37 @@ async def _share_resolver(token: str):
         return (await registry.store_for_handle(handle)).root
     except KBError:
         return None
+
+
+# The Chrome extension, downloadable from the product itself (no 'ask your admin
+# for a folder'). Zipped live from the repo checkout, cached by newest mtime;
+# PUBLIC on purpose — it's client code with no secrets (auth happens via OAuth
+# after install), and a teammate needs it BEFORE they can sign in to anything.
+_EXT_DIR = Path(__file__).resolve().parents[2] / "clients" / "chrome-extension"
+_ext_zip_cache: dict[str, bytes] = {}
+
+
+@mcp.custom_route("/downloads/engram-chrome-extension.zip", ["GET"])
+async def extension_zip(request: Request) -> Response:
+    import io as _io
+    import zipfile
+
+    if not _EXT_DIR.is_dir():
+        return PlainTextResponse("Extension not bundled on this server.", status_code=404)
+    files = sorted(p for p in _EXT_DIR.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    stamp = str(max((p.stat().st_mtime_ns for p in files), default=0))
+    if stamp not in _ext_zip_cache:
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in files:
+                z.write(p, f"engram-chrome-extension/{p.relative_to(_EXT_DIR).as_posix()}")
+        _ext_zip_cache.clear()
+        _ext_zip_cache[stamp] = buf.getvalue()
+    return Response(
+        _ext_zip_cache[stamp],
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=engram-chrome-extension.zip"},
+    )
 
 
 # ONE WEB APP (Hiren, 2026-08-01): in multi-user, the dashboard IS the human web —
