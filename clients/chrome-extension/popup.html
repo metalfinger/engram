@@ -2,106 +2,325 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Engram Notifications</title>
+    <title>Engram</title>
     <style>
       :root {
-        color-scheme: light dark;
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
       }
       body {
         margin: 0;
-        width: 320px;
-        font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
-        background: #fff;
-        color: #1b1b1f;
-      }
-      @media (prefers-color-scheme: dark) {
-        body {
-          background: #1e1f22;
-          color: #e7e7ea;
-        }
+        width: 340px;
+        font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #17181c;
+        color: #e7e7ea;
       }
       header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 10px 12px;
-        border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+        padding: 12px 14px 8px;
       }
-      header h1 {
-        font-size: 13px;
-        font-weight: 600;
-        margin: 0;
-      }
-      #list {
-        max-height: 320px;
-        overflow-y: auto;
-      }
-      .item {
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(127, 127, 127, 0.12);
-      }
-      .item .kind {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-        opacity: 0.6;
-      }
-      .item .body {
-        margin: 2px 0;
-        word-wrap: break-word;
-      }
-      .item .at {
-        font-size: 11px;
-        opacity: 0.5;
-      }
-      .empty,
-      .signed-out {
-        padding: 20px 12px;
-        text-align: center;
-        opacity: 0.7;
-      }
-      footer {
+      .brand {
         display: flex;
-        gap: 8px;
-        padding: 8px 12px;
-        border-top: 1px solid rgba(127, 127, 127, 0.25);
+        align-items: center;
+        gap: 6px;
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: 0.01em;
       }
-      button,
-      a.button {
-        flex: 1;
-        text-align: center;
-        padding: 6px 8px;
-        border-radius: 6px;
-        border: 1px solid rgba(127, 127, 127, 0.4);
-        background: transparent;
-        color: inherit;
+      .brand .mark {
+        color: #5b7cfa;
+        font-size: 16px;
+      }
+      .who {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #9a9ba3;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        background: #4a4b52;
+      }
+      .dot-green {
+        background: #2a9d5c;
+      }
+      .dot-gray {
+        background: #6b6d76;
+      }
+      .header-links {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 14px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .header-links a,
+      .header-links button {
         font: inherit;
+        font-size: 12px;
+        color: #9db2ff;
+        background: none;
+        border: none;
+        padding: 0;
         cursor: pointer;
         text-decoration: none;
-        box-sizing: border-box;
       }
-      button:hover,
-      a.button:hover {
-        background: rgba(127, 127, 127, 0.15);
+      .header-links a:hover,
+      .header-links button:hover {
+        text-decoration: underline;
       }
-      button:disabled {
-        opacity: 0.5;
+      .panel {
+        padding: 4px 0 2px;
+      }
+      .panel[hidden] {
+        display: none;
+      }
+      #signed-out {
+        padding: 22px 16px 20px;
+        text-align: center;
+      }
+      #signed-out .lead {
+        margin: 0 0 14px;
+        color: #c9cacf;
+      }
+      #signin-status {
+        margin: 10px 0 0;
+        font-size: 12px;
+        min-height: 16px;
+        color: #d64545;
+      }
+      .section {
+        padding: 10px 14px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .section:last-child {
+        border-bottom: none;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .section-head h2 {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #9a9ba3;
+      }
+      .link-btn {
+        font: inherit;
+        font-size: 11px;
+        color: #9db2ff;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+      }
+      .link-btn:hover {
+        text-decoration: underline;
+      }
+      .link-btn:disabled {
+        color: #55565c;
         cursor: default;
+        text-decoration: none;
       }
-      a.primary {
-        background: #3a5cd6;
-        border-color: #3a5cd6;
+      .invisible-toggle {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        color: #9a9ba3;
+        cursor: pointer;
+      }
+      .invisible-toggle input {
+        margin: 0;
+      }
+      .invisible-toggle input:disabled + span {
+        opacity: 0.5;
+      }
+      #team-list,
+      #notif-list {
+        max-height: 190px;
+        overflow-y: auto;
+      }
+      .empty-note {
+        padding: 10px 2px;
+        color: #75767e;
+        font-size: 12px;
+      }
+      .team-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 0;
+      }
+      .avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 700;
         color: #fff;
+        overflow: hidden;
+      }
+      .avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .team-info {
+        flex: 1;
+        min-width: 0;
+      }
+      .team-name {
+        font-size: 12.5px;
+        color: #e7e7ea;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .team-project {
+        font-size: 11px;
+        color: #83848c;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .fresh-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+        background: #4a4b52;
+      }
+      .fresh-green {
+        background: #2a9d5c;
+      }
+      .fresh-amber {
+        background: #d68c2a;
+      }
+      .notif-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 7px 0;
+      }
+      .badge {
+        flex: none;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .notif-main {
+        flex: 1;
+        min-width: 0;
+      }
+      .notif-body {
+        color: #e7e7ea;
+        word-wrap: break-word;
+      }
+      .notif-meta {
+        font-size: 11px;
+        color: #75767e;
+        margin-top: 1px;
+      }
+      .open-btn {
+        flex: none;
+        font: inherit;
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: transparent;
+        color: #cfd3ff;
+        cursor: pointer;
+      }
+      .open-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      footer {
+        padding: 10px 14px 14px;
+      }
+      button.primary,
+      a.primary {
+        display: block;
+        width: 100%;
+        text-align: center;
+        padding: 8px 10px;
+        border-radius: 7px;
+        border: 1px solid #3a5cd6;
+        background: #3a5cd6;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button.primary:hover,
+      a.primary:hover {
+        background: #4a6ae0;
+      }
+      button.primary:disabled {
+        opacity: 0.6;
+        cursor: default;
       }
     </style>
   </head>
   <body>
     <header>
-      <h1>Engram</h1>
-      <span id="badge"></span>
+      <div class="brand"><span class="mark">◗</span>Engram</div>
+      <div class="who">
+        <span id="status-dot" class="dot"></span>
+        <span id="handle-label"></span>
+      </div>
     </header>
-    <div id="list"></div>
-    <footer id="footer"></footer>
+    <div class="header-links">
+      <a id="open-dashboard-link" href="#">Open dashboard</a>
+      <button id="sign-out-btn" hidden>Sign out</button>
+    </div>
+
+    <div id="signed-out" class="panel" hidden>
+      <p class="lead">Sign in to see notifications and who's working now.</p>
+      <button id="signin" class="primary">Sign in with Engram</button>
+      <p id="signin-status"></p>
+    </div>
+
+    <div id="signed-in" class="panel" hidden>
+      <section class="section" id="team-section">
+        <div class="section-head">
+          <h2>Working now</h2>
+          <label class="invisible-toggle">
+            <input type="checkbox" id="invisible" disabled />
+            <span>Appear invisible</span>
+          </label>
+        </div>
+        <div id="team-list"></div>
+      </section>
+
+      <section class="section" id="notif-section">
+        <div class="section-head">
+          <h2>Notifications</h2>
+          <button id="mark-read" class="link-btn" disabled>Mark all read</button>
+        </div>
+        <div id="notif-list"></div>
+      </section>
+    </div>
+
+    <script src="common.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

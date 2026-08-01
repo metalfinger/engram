@@ -25,6 +25,13 @@
         font-size: 16px;
         margin: 0 0 4px;
       }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.6;
+        margin: 24px 0 8px;
+      }
       p.hint {
         opacity: 0.7;
         margin: 0 0 16px;
@@ -34,7 +41,8 @@
         font-weight: 600;
         margin-bottom: 6px;
       }
-      input[type="text"] {
+      input[type="text"],
+      select {
         width: 100%;
         box-sizing: border-box;
         padding: 8px 10px;
@@ -44,8 +52,16 @@
         color: inherit;
         font: inherit;
       }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+      }
+      .row input[type="text"] {
+        flex: 1;
+      }
       button {
-        margin-top: 12px;
         padding: 8px 16px;
         border-radius: 6px;
         border: 1px solid #3a5cd6;
@@ -53,12 +69,18 @@
         color: #fff;
         font: inherit;
         cursor: pointer;
+        white-space: nowrap;
+      }
+      button.secondary {
+        background: transparent;
+        color: inherit;
+        border-color: rgba(127, 127, 127, 0.4);
       }
       button:hover {
         opacity: 0.9;
       }
       #status {
-        margin-top: 10px;
+        margin-top: 14px;
         font-size: 13px;
         min-height: 18px;
       }
@@ -68,27 +90,58 @@
       #status.err {
         color: #d64545;
       }
+      .note {
+        margin-top: 28px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.1);
+        font-size: 12.5px;
+        opacity: 0.85;
+      }
+      code {
+        font-size: 12px;
+      }
     </style>
   </head>
   <body>
     <h1>Engram Notifications</h1>
     <p class="hint">
-      The easiest way to connect: set your origin (defaults to the hosted instance), then
-      <strong>Sign in with Engram</strong> — the same GitHub/Google login as your Claude connector.
-      No token to copy. (Advanced: you can still paste a token from the dashboard instead.)
+      Sign in once with the same GitHub/Google login as your Claude connector — there's no token
+      to copy or paste anywhere.
     </p>
-    <label for="origin">Engram origin</label>
-    <input type="text" id="origin" placeholder="https://engram.metalfinger.xyz" />
-    <div>
-      <button id="signin">Sign in with Engram</button>
+
+    <h2>Account</h2>
+    <button id="signin">Sign in with Engram</button>
+    <button id="signout" class="secondary" hidden>Sign out</button>
+
+    <h2>Origin</h2>
+    <label for="origin">Engram API origin</label>
+    <div class="row">
+      <input type="text" id="origin" placeholder="https://engram.metalfinger.xyz" />
+      <button id="save-origin" class="secondary">Save</button>
     </div>
-    <details style="margin-top: 20px">
-      <summary style="cursor: pointer; opacity: 0.8">Advanced: paste a token manually</summary>
-      <label for="token" style="margin-top: 12px">Extension token</label>
-      <input type="text" id="token" placeholder="paste your extension token" />
-      <div><button id="save">Save token</button></div>
-    </details>
+
+    <h2>Polling</h2>
+    <label for="poll-interval">Check for new notifications every</label>
+    <select id="poll-interval">
+      <option value="1">1 minute</option>
+      <option value="2">2 minutes</option>
+      <option value="5">5 minutes</option>
+      <option value="10">10 minutes</option>
+      <option value="15">15 minutes</option>
+      <option value="30">30 minutes</option>
+    </select>
+
     <div id="status"></div>
+
+    <div class="note">
+      Two hostnames, one server: <code>engram.metalfinger.xyz</code> is the API/connector origin
+      this extension talks to, and <code>brain.metalfinger.xyz</code> is the web dashboard that
+      opens in your browser when you click "Open dashboard" — only change the origin above if
+      you're self-hosting or testing against a different Engram instance.
+    </div>
+
+    <script src="common.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

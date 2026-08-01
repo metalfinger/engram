@@ -1,104 +1,70 @@
-const DEFAULT_ORIGIN = "https://engram.metalfinger.xyz";
+// Engram Notifications — options page. Relies on common.js (loaded first)
+// for storage/auth helpers.
 
 const originInput = document.getElementById("origin");
-const tokenInput = document.getElementById("token");
+const pollSelect = document.getElementById("poll-interval");
 const status = document.getElementById("status");
+const signinBtn = document.getElementById("signin");
+const signoutBtn = document.getElementById("signout");
 
 function setStatus(text, kind) {
   status.textContent = text;
   status.className = kind || "";
 }
 
-function normalizeOrigin(raw) {
-  const trimmed = raw.trim().replace(/\/+$/, "");
-  let url;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:") return null;
-  if (url.pathname !== "/" && url.pathname !== "") return null;
-  return `${url.protocol}//${url.host}`;
+async function refreshSignedInState() {
+  const token = await getToken();
+  signinBtn.textContent = token ? "Re-sign in" : "Sign in with Engram";
+  signoutBtn.hidden = !token;
 }
 
 async function load() {
-  const { engramOrigin, engramToken } = await chrome.storage.sync.get([
-    "engramOrigin",
-    "engramToken",
-  ]);
-  originInput.value = engramOrigin || DEFAULT_ORIGIN;
-  tokenInput.value = engramToken || "";
+  originInput.value = await getOrigin();
+  pollSelect.value = String(await getPollMinutes());
+  await refreshSignedInState();
 }
 
-async function ensureOriginPermission(origin) {
-  try {
-    return await chrome.permissions.request({ origins: [`${origin}/*`] });
-  } catch {
-    return false;
-  }
-}
-
-// Sign in with the same GitHub/Google OAuth as the MCP connector, via
-// chrome.identity.launchWebAuthFlow -> /dashboard/ext-auth -> token in the redirect.
-document.getElementById("signin").addEventListener("click", async () => {
-  const origin = normalizeOrigin(originInput.value) || DEFAULT_ORIGIN;
-  if (!(await ensureOriginPermission(origin))) {
-    setStatus("Chrome needs permission to reach that origin — please allow it.", "err");
-    return;
-  }
-  const redirectUrl = chrome.identity.getRedirectURL(); // https://<id>.chromiumapp.org/
-  const authUrl = `${origin}/dashboard/ext-auth?redirect=${encodeURIComponent(redirectUrl)}`;
-  setStatus("Opening Engram sign-in…", "");
-  try {
-    const finalUrl = await chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true });
-    const m = finalUrl && finalUrl.match(/[#?&]token=([^&]+)/);
-    if (!m) {
-      setStatus("Sign-in didn't return a token — try again.", "err");
-      return;
-    }
-    const token = decodeURIComponent(m[1]);
-    await chrome.storage.sync.set({ engramOrigin: origin, engramToken: token });
-    originInput.value = origin;
-    tokenInput.value = token;
-    setStatus("Signed in — you're connected.", "ok");
-  } catch {
-    setStatus("Sign-in was cancelled or failed.", "err");
-  }
-});
-
-document.getElementById("save").addEventListener("click", async () => {
-  const token = tokenInput.value.trim();
-  if (!token) {
-    setStatus("Paste your extension token from the Engram dashboard.", "err");
-    return;
-  }
-
+document.getElementById("save-origin").addEventListener("click", async () => {
   const origin = normalizeOrigin(originInput.value);
   if (!origin) {
     setStatus("Enter a valid https:// origin (no path), e.g. https://engram.example.com", "err");
     return;
   }
-
-  const originPattern = `${origin}/*`;
-  try {
-    const granted = await chrome.permissions.request({ origins: [originPattern] });
-    if (!granted) {
-      setStatus(
-        "Permission denied — Chrome needs access to this origin to poll it. Try again, or load the extension unpacked with the origin added to host_permissions.",
-        "err",
-      );
-      return;
-    }
-  } catch {
-    setStatus("Could not request permission for that origin.", "err");
+  if (!(await ensureOriginPermission(origin))) {
+    setStatus(
+      "Permission denied — Chrome needs access to this origin to poll it. Try again, or load " +
+        "the extension unpacked with the origin added to host_permissions.",
+      "err",
+    );
     return;
   }
-
-  await chrome.storage.sync.set({ engramOrigin: origin, engramToken: token });
+  await chrome.storage.local.set({ engramOrigin: origin });
   originInput.value = origin;
-  tokenInput.value = token;
-  setStatus("Saved.", "ok");
+  setStatus("Saved. Sign in again if you switched to a different Engram instance.", "ok");
+});
+
+pollSelect.addEventListener("change", async () => {
+  await setPollMinutes(Number(pollSelect.value));
+  setStatus("Poll interval updated.", "ok");
+});
+
+signinBtn.addEventListener("click", async () => {
+  setStatus("Opening Engram sign-in…", "");
+  try {
+    const origin = normalizeOrigin(originInput.value) || DEFAULT_ORIGIN;
+    await signIn(origin);
+    await refreshSignedInState();
+    setStatus("Signed in — you're connected.", "ok");
+    chrome.runtime.sendMessage({ type: "poll-now" });
+  } catch (err) {
+    setStatus(err.message || "Sign-in was cancelled or failed.", "err");
+  }
+});
+
+signoutBtn.addEventListener("click", async () => {
+  await signOut();
+  await refreshSignedInState();
+  setStatus("Signed out.", "ok");
 });
 
 load();

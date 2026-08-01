@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Engram Notifications",
-  "version": "1.0.0",
-  "description": "Desktop notifications for new Engram DMs and notifications.",
-  "permissions": ["notifications", "storage", "alarms", "identity"],
-  "host_permissions": ["https://engram.metalfinger.xyz/*"],
+  "version": "2.0.0",
+  "description": "Ambient Engram teammate: DM/room-invite/question notifications and a live \"who's working now\" team list — sign in once, no tokens to paste.",
+  "permissions": ["storage", "alarms", "notifications", "identity"],
+  "host_permissions": ["https://engram.metalfinger.xyz/*", "https://brain.metalfinger.xyz/*"],
   "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Engram Notifications",
+    "default_title": "Engram",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

@@ -5,39 +5,28 @@
 // chrome.storage (never in a module-level variable), and polling is driven by
 // chrome.alarms rather than setInterval (which would die with the worker).
 
-const DEFAULT_ORIGIN = "https://engram.metalfinger.xyz";
+importScripts("common.js");
+
 const ALARM_NAME = "engram-poll";
-const POLL_PERIOD_MINUTES = 1;
 
-async function getOrigin() {
-  const { engramOrigin } = await chrome.storage.sync.get("engramOrigin");
-  return engramOrigin || DEFAULT_ORIGIN;
+function ensureAlarm(periodInMinutes) {
+  chrome.alarms.create(ALARM_NAME, { periodInMinutes });
 }
 
-async function getToken() {
-  const { engramToken } = await chrome.storage.sync.get("engramToken");
-  return engramToken || "";
+async function resetAlarm() {
+  ensureAlarm(await getPollMinutes());
 }
 
-function authHeaders(token) {
-  return { Authorization: `Bearer ${token}` };
-}
-
-function ensureAlarm() {
-  chrome.alarms.get(ALARM_NAME, (alarm) => {
-    if (!alarm) {
-      chrome.alarms.create(ALARM_NAME, { periodInMinutes: POLL_PERIOD_MINUTES });
-    }
-  });
-}
-
-chrome.runtime.onInstalled.addListener(() => {
-  ensureAlarm();
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === "update") {
+    await migrateFromSync();
+  }
+  await resetAlarm();
   poll();
 });
 
-chrome.runtime.onStartup.addListener(() => {
-  ensureAlarm();
+chrome.runtime.onStartup.addListener(async () => {
+  await resetAlarm();
   poll();
 });
 
@@ -46,6 +35,37 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     poll();
   }
 });
+
+// The options page writes a new interval straight to storage — pick it up
+// immediately instead of waiting for the next browser restart.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.pollMinutes) {
+    resetAlarm();
+  }
+});
+
+// One-time upgrade path from the 1.x extension, which stored the (manually
+// pasted) token in chrome.storage.sync. Best-effort: a fresh sign-in via the
+// popup/options always works too, so failures here are silently ignored.
+async function migrateFromSync() {
+  try {
+    const { engramOrigin, engramToken } = await chrome.storage.sync.get([
+      "engramOrigin",
+      "engramToken",
+    ]);
+    if (!engramToken) return;
+    const { engramToken: existingLocal } = await chrome.storage.local.get("engramToken");
+    if (!existingLocal) {
+      await chrome.storage.local.set({
+        engramOrigin: engramOrigin || DEFAULT_ORIGIN,
+        engramToken,
+      });
+    }
+    await chrome.storage.sync.remove(["engramOrigin", "engramToken"]);
+  } catch {
+    // best-effort migration only
+  }
+}
 
 async function poll() {
   try {
@@ -58,22 +78,16 @@ async function poll() {
     }
 
     const origin = await getOrigin();
-    const res = await fetch(`${origin}/dashboard/api/notifications`, {
+    const { ok, status, data } = await fetchOk(`${origin}/dashboard/api/notifications`, {
       headers: authHeaders(token),
     });
 
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      // Non-JSON response (proxy error page, offline, etc). Stay silent, try
-      // again on the next alarm tick.
-      return;
-    }
-
-    if (!data || data.ok !== true) {
+    if (!ok) {
       // Covers the documented 401 {"ok": false, "error": "not signed in"}
-      // shape and any other non-ok response.
+      // shape, a rejected/expired token, and any offline/proxy-error case.
+      if (status === 401) {
+        await clearToken();
+      }
       await chrome.storage.local.set({ signedIn: false });
       await chrome.action.setBadgeText({ text: "" });
       return;
@@ -84,6 +98,22 @@ async function poll() {
     // Network failure. Never throw out of the alarm handler — just retry
     // next tick.
   }
+}
+
+// kind -> title shown on the native Chrome notification. Mirrors the badges
+// used in the popup so the same vocabulary appears everywhere.
+const KIND_META = {
+  dm: { emoji: "\u{1F4AC}", title: "New Engram DM" },
+  room_invite: { emoji: "\u{1F6AA}", title: "Room invite" },
+  question: { emoji: "❓", title: "New question" },
+  answer: { emoji: "✅", title: "Answered" },
+  contact_request: { emoji: "\u{1F44B}", title: "Contact request" },
+  contact_accepted: { emoji: "\u{1F44B}", title: "Contact accepted" },
+  room_closed: { emoji: "\u{1F512}", title: "Room closed" },
+};
+
+function metaFor(kind) {
+  return KIND_META[kind] || { emoji: "\u{1F514}", title: "Engram" };
 }
 
 async function handleUnread(data) {
@@ -103,10 +133,11 @@ async function handleUnread(data) {
       .sort((a, b) => a.id - b.id);
 
     for (const item of freshItems) {
-      chrome.notifications.create(`engram-${item.id}`, {
+      const meta = metaFor(item.kind);
+      chrome.notifications.create(encodeNotificationId(item), {
         type: "basic",
         iconUrl: "icons/icon128.png",
-        title: notificationTitle(item.kind),
+        title: `${meta.emoji} ${meta.title}`,
         message: item.body || "",
         contextMessage: "Engram",
       });
@@ -128,10 +159,25 @@ async function handleUnread(data) {
   await chrome.action.setBadgeBackgroundColor({ color: "#d64545" });
 }
 
-function notificationTitle(kind) {
-  if (kind === "dm") return "New Engram DM";
-  if (kind === "notification") return "Engram notification";
-  return "Engram";
+// Notification ids carry enough to route a click without a second lookup:
+// "engram:<id>:<kind>:<url-encoded ref>" (ref is empty for kinds without one).
+// encodeURIComponent guarantees the ref segment never contains a literal ":",
+// so a plain split(":") on click is safe.
+function encodeNotificationId(item) {
+  return `engram:${item.id}:${item.kind || ""}:${encodeURIComponent(item.ref || "")}`;
+}
+
+function decodeNotificationId(notificationId) {
+  const parts = String(notificationId).split(":");
+  if (parts[0] !== "engram") return null;
+  const [, id, kind, refEncoded] = parts;
+  let ref = "";
+  try {
+    ref = decodeURIComponent(refEncoded || "");
+  } catch {
+    ref = "";
+  }
+  return { id, kind: kind || "", ref };
 }
 
 async function markRead() {
@@ -149,15 +195,19 @@ async function markRead() {
 }
 
 chrome.notifications.onClicked.addListener(async (notificationId) => {
-  const origin = await getOrigin();
-  chrome.tabs.create({ url: `${origin}/dashboard` });
+  const decoded = decodeNotificationId(notificationId);
+  const url =
+    decoded && decoded.kind === "room_invite" && decoded.ref
+      ? dashboardUrl(`/dashboard/rooms/${encodeURIComponent(decoded.ref)}`)
+      : dashboardUrl();
+  chrome.tabs.create({ url });
   chrome.notifications.clear(notificationId);
   await markRead();
   await chrome.action.setBadgeText({ text: "" });
 });
 
-// Allow the popup's "Mark all read" button to reuse this logic instead of
-// duplicating the fetch + badge update.
+// Let the popup reuse this logic instead of duplicating the fetch + badge
+// update, and let either page force an immediate poll right after sign-in.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "mark-read") {
     markRead().then(async () => {
@@ -165,6 +215,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse();
     });
     return true; // keep the message channel open for the async response
+  }
+  if (message?.type === "poll-now") {
+    poll().then(() => sendResponse());
+    return true;
   }
   return false;
 });
