@@ -1714,6 +1714,18 @@ def _room_of(name: str):
     return room
 
 
+def _require_member(room, me) -> None:
+    """Explicit membership gate. Some tool bodies are ALSO protected incidentally
+    (their audit post_turn enforces membership) — but that protection is a side
+    effect a refactor could silently remove (sec-review), so guest-content tools
+    check membership FIRST, before any granted data is assembled."""
+    if not any(m["user_id"] == me.id for m in registry.rooms.members(room.id)):
+        raise KBError(
+            f"You are not a member of room '{room.name}' — ask a member for a "
+            "kb_room_invite before touching its granted content."
+        )
+
+
 def _room_scan(text: str, what: str) -> None:
     findings = _scan_secrets(text)
     if findings:
@@ -1920,6 +1932,7 @@ async def kb_room_search(room: str, owner: str, query: str) -> dict[str, Any]:
     kb_room_fetch. Returns {results: [...]}."""
     me = _require_room_user()
     r = _room_of(room)
+    _require_member(r, me)
     owner_user = registry.tenancy.user_by_handle(owner.lstrip("@").lower())
     if owner_user is None:
         raise KBError(f"No Engram user @{owner.lstrip('@')}.")
@@ -1956,6 +1969,7 @@ async def kb_room_fetch(room: str, owner: str, path: str) -> dict[str, Any]:
     like kb_read (no depth)."""
     me = _require_room_user()
     r = _room_of(room)
+    _require_member(r, me)
     owner_user = registry.tenancy.user_by_handle(owner.lstrip("@").lower())
     if owner_user is None:
         raise KBError(f"No Engram user @{owner.lstrip('@')}.")

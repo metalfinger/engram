@@ -34,3 +34,13 @@ def test_hostile_schemes_refused(store):
 def test_oversize_data_uri_refused(store):
     with pytest.raises(TenancyError, match="too large"):
         store.set_profile("ava", avatar_url="data:image/jpeg;base64," + "A" * 100_001)
+
+
+def test_svg_data_uri_refused(store):
+    with pytest.raises(TenancyError):
+        store.set_profile("ava", avatar_url="data:image/svg+xml;base64,PHN2Zz4=")
+
+
+def test_raster_subtypes_accepted(store):
+    for ok in ("data:image/png;base64,iVBORw0=", "data:image/webp;base64,UklGR"):
+        assert store.set_profile("ava", avatar_url=ok).avatar_url == ok

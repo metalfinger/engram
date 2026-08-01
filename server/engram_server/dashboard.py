@@ -2138,24 +2138,59 @@ class Dashboard:
             session, "Ops", body, [("home", "/dashboard"), ("ops", "/dashboard/ops")]))
 
 
+def _same_origin_guard(settings: "Settings"):
+    """CSRF defense-in-depth for state-changing POSTs (sec-review, v3).
+
+    The one-door session cookie is Domain-wide (.metalfinger.xyz) so both hostnames
+    share the login — but SameSite=Lax does NOT block a POST from a SIBLING
+    subdomain (same registrable domain = same-site). If any other subdomain were
+    ever attacker-influenceable (dangling CNAME, a forgotten preview deploy), it
+    could auto-submit forms with the victim's cookie. So: when a browser sends an
+    Origin header, it must match one of OUR two origins exactly, or the POST is
+    refused. Requests WITHOUT an Origin (curl, tests, non-browser clients) pass —
+    they can't ride a browser's cookie jar, which is the only thing this defends.
+    """
+    from urllib.parse import urlsplit as _split
+
+    def _origin_of(url: str) -> str:
+        p = _split(url or "")
+        return f"{p.scheme}://{p.netloc}".lower() if p.scheme and p.netloc else ""
+
+    allowed = {o for o in (_origin_of(settings.public_url), _origin_of(settings.explorer_url)) if o}
+
+    def wrap(handler):
+        async def guarded(request: "Request") -> "Response":
+            origin = (request.headers.get("origin") or "").strip().lower()
+            if origin and origin != "null" and allowed and origin not in allowed:
+                return PlainTextResponse(
+                    "Cross-origin request refused.", status_code=403
+                )
+            return await handler(request)
+
+        return guarded
+
+    return wrap
+
+
 def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idps: dict) -> Dashboard | None:
     """Wire the dashboard + onboarding routes. No-op (returns None) unless multiuser
     is on and at least one IdP is configured — single-user deployments never expose it."""
     if not settings.multiuser or not idps:
         return None
     dash = Dashboard(settings, registry, idps)
+    csrf = _same_origin_guard(settings)
 
     mcp.custom_route("/dashboard", ["GET"])(dash.dashboard)
     mcp.custom_route("/dashboard/login", ["GET"])(dash.login)
     mcp.custom_route("/dashboard/auth/{idp}", ["GET"])(dash.start_oauth)
     mcp.custom_route(CALLBACK_PATH, ["GET"])(dash.callback)
     mcp.custom_route("/join", ["GET"])(dash.join)
-    mcp.custom_route("/join/claim", ["POST"])(dash.claim)
-    mcp.custom_route("/dashboard/invite", ["POST"])(dash.create_invite)
-    mcp.custom_route("/dashboard/invite/github", ["POST"])(dash.create_github_invite)
-    mcp.custom_route("/dashboard/invite/revoke", ["POST"])(dash.revoke_invite)
-    mcp.custom_route("/dashboard/logout", ["POST"])(dash.logout)
-    mcp.custom_route("/dashboard/profile", ["POST"])(dash.save_profile)
+    mcp.custom_route("/join/claim", ["POST"])(csrf(dash.claim))
+    mcp.custom_route("/dashboard/invite", ["POST"])(csrf(dash.create_invite))
+    mcp.custom_route("/dashboard/invite/github", ["POST"])(csrf(dash.create_github_invite))
+    mcp.custom_route("/dashboard/invite/revoke", ["POST"])(csrf(dash.revoke_invite))
+    mcp.custom_route("/dashboard/logout", ["POST"])(csrf(dash.logout))
+    mcp.custom_route("/dashboard/profile", ["POST"])(csrf(dash.save_profile))
     mcp.custom_route("/dashboard/p/{project}", ["GET"])(dash.browse_project)
     mcp.custom_route("/dashboard/f/{path:path}", ["GET"])(dash.browse_concept)
     mcp.custom_route("/dashboard/people", ["GET"])(dash.people_view)
@@ -2163,27 +2198,27 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/asks", ["GET"])(dash.asks_view)
     mcp.custom_route("/dashboard/u/{handle}", ["GET"])(dash.profile_view)
     mcp.custom_route("/dashboard/u/{handle}/f/{path:path}", ["GET"])(dash.public_concept_view)
-    mcp.custom_route("/dashboard/follow", ["POST"])(dash.follow_action)
-    mcp.custom_route("/dashboard/ask", ["POST"])(dash.ask_action)
-    mcp.custom_route("/dashboard/asks/answer", ["POST"])(dash.answer_action)
+    mcp.custom_route("/dashboard/follow", ["POST"])(csrf(dash.follow_action))
+    mcp.custom_route("/dashboard/ask", ["POST"])(csrf(dash.ask_action))
+    mcp.custom_route("/dashboard/asks/answer", ["POST"])(csrf(dash.answer_action))
     mcp.custom_route("/dashboard/search", ["GET"])(dash.browse_search)
     mcp.custom_route("/dashboard/activity", ["GET"])(dash.browse_activity)
     mcp.custom_route("/dashboard/graph", ["GET"])(dash.browse_graph)
-    mcp.custom_route("/dashboard/contact/add", ["POST"])(dash.add_contact)
-    mcp.custom_route("/dashboard/contact/accept", ["POST"])(dash.accept_contact)
-    mcp.custom_route("/dashboard/notifications/read", ["POST"])(dash.read_notifications)
+    mcp.custom_route("/dashboard/contact/add", ["POST"])(csrf(dash.add_contact))
+    mcp.custom_route("/dashboard/contact/accept", ["POST"])(csrf(dash.accept_contact))
+    mcp.custom_route("/dashboard/notifications/read", ["POST"])(csrf(dash.read_notifications))
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
-    mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(dash.api_mark_read)
+    mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(csrf(dash.api_mark_read))
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
     mcp.custom_route("/dashboard/rooms", ["GET"])(dash.rooms_list)
-    mcp.custom_route("/dashboard/rooms", ["POST"])(dash.create_room)
-    mcp.custom_route("/dashboard/rooms/open-with", ["POST"])(dash.open_room_with)
+    mcp.custom_route("/dashboard/rooms", ["POST"])(csrf(dash.create_room))
+    mcp.custom_route("/dashboard/rooms/open-with", ["POST"])(csrf(dash.open_room_with))
     mcp.custom_route("/dashboard/rooms/{name}", ["GET"])(dash.room_view)
-    mcp.custom_route("/dashboard/rooms/{name}/post", ["POST"])(dash.post_room_turn)
-    mcp.custom_route("/dashboard/rooms/{name}/close", ["POST"])(dash.close_room_route)
+    mcp.custom_route("/dashboard/rooms/{name}/post", ["POST"])(csrf(dash.post_room_turn))
+    mcp.custom_route("/dashboard/rooms/{name}/close", ["POST"])(csrf(dash.close_room_route))
     mcp.custom_route("/dashboard/api/rooms/{name}.json", ["GET"])(dash.api_room_json)
     mcp.custom_route("/dashboard/api/team", ["GET"])(dash.api_team)
-    mcp.custom_route("/dashboard/api/presence", ["POST"])(dash.api_set_presence)
+    mcp.custom_route("/dashboard/api/presence", ["POST"])(csrf(dash.api_set_presence))
     mcp.custom_route("/dashboard/office", ["GET"])(dash.office_view)
     mcp.custom_route("/dashboard/artifacts", ["GET"])(dash.artifacts_view)
     mcp.custom_route("/dashboard/setup", ["GET"])(dash.setup_view)

@@ -219,3 +219,36 @@ async def test_kb_team_roster_and_invisible(mu, monkeypatch):
     _login(monkeypatch, "alice@example.com")
     team2 = await app_module.kb_team()
     assert all(m["handle"] != "bob" for m in team2["team"])
+
+
+# -- sec-review hardening (v3 assessment) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_member_cannot_search_or_fetch_granted_content(mu, monkeypatch):
+    """Membership must be checked EXPLICITLY, not via the audit-write side effect."""
+    await _alice_slate(monkeypatch)
+    await app_module.kb_room_open("private-room", "granted access", grant="projects/slate")
+    _login(monkeypatch, "bob@example.com")  # bob was never invited
+    with pytest.raises(KBError, match="not a member"):
+        await app_module.kb_room_search("private-room", "alice", "render")
+    with pytest.raises(KBError, match="not a member"):
+        await app_module.kb_room_fetch("private-room", "alice",
+                                       "projects/slate/decisions/render.md")
+
+
+@pytest.mark.asyncio
+async def test_grant_check_rejects_traversal_paths_by_itself(mu, monkeypatch):
+    """assert_grant must refuse '..' textual-prefix tricks WITHOUT relying on
+    kbstore's independent path validation (self-sufficient boundary)."""
+    from engram_server.teamwork import TeamworkError
+
+    await _alice_slate(monkeypatch)
+    await app_module.kb_room_open("trav", "traversal test", invite="@bob",
+                                  grant="projects/slate")
+    r = app_module.registry.rooms.room_by_name("trav")
+    alice_id = _uid(mu, "alice")
+    with pytest.raises(TeamworkError, match="'\.'"):
+        app_module.registry.rooms.assert_grant(
+            r.id, alice_id, "projects/slate/../private-x/context.md"
+        )

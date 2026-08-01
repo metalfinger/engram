@@ -204,8 +204,14 @@ class TenancyStore:
             params.append(display_name.strip()[:60] or None)
         if avatar_url is not None:
             url = avatar_url.strip()
-            if url and not (url.startswith("https://") or url.startswith("data:image/")):
-                raise TenancyError("Avatar must be an https:// link or an uploaded image.")
+            _raster = ("data:image/png", "data:image/jpeg", "data:image/webp")
+            if url and not (url.startswith("https://") or url.startswith(_raster)):
+                # Raster subtypes ONLY — data:image/svg+xml can script in contexts
+                # a future render site might introduce (href, CSS url()); the three
+                # raster types are inert everywhere (sec-review hardening).
+                raise TenancyError(
+                    "Avatar must be an https:// link or an uploaded PNG/JPEG/WebP image."
+                )
             if len(url) > 100_000:
                 raise TenancyError("Avatar image is too large — use a smaller photo.")
             sets.append("avatar_url = ?")

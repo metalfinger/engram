@@ -225,3 +225,37 @@ def test_setup_page_mentions_kb_import(env):
 def test_artifacts_page_200(env):
     r = env.client.get("/dashboard/artifacts", cookies=_ck(env, "alice"), follow_redirects=False)
     assert r.status_code == 200
+
+
+# -- sec-review: same-origin guard on state-changing POSTs -------------------
+
+
+def test_cross_subdomain_post_is_refused(env, settings):
+    """The domain-wide cookie is same-SITE for sibling subdomains, so SameSite=Lax
+    does not stop them — the Origin check must."""
+    resp = env.client.post(
+        "/dashboard/rooms", cookies=_ck(env, "alice"),
+        data={"name": "evil-room", "goal": "csrf"},
+        headers={"Origin": "https://evil.metalfinger.xyz"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    assert "Cross-origin" in resp.text
+    # and nothing was created
+    assert env.registry.rooms.room_by_name("evil-room") is None
+
+
+def test_own_origins_and_no_origin_still_pass(env, settings):
+    ok = env.client.post(
+        "/dashboard/rooms", cookies=_ck(env, "alice"),
+        data={"name": "good-room", "goal": "a real goal"},
+        headers={"Origin": settings.public_url},
+        follow_redirects=False,
+    )
+    assert ok.status_code == 302
+    no_origin = env.client.post(
+        "/dashboard/rooms", cookies=_ck(env, "alice"),
+        data={"name": "curl-room", "goal": "another goal"},
+        follow_redirects=False,
+    )
+    assert no_origin.status_code == 302

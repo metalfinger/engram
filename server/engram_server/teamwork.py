@@ -547,6 +547,16 @@ class RoomStore:
         check_path = (path or "").strip().replace("\\", "/")
         while check_path.endswith("/"):
             check_path = check_path[:-1]
+        # The boundary must be SELF-SUFFICIENT (sec-review): a '../' path is a
+        # textual prefix-match of the grant while resolving elsewhere. KBStore
+        # rejects such paths independently today, but any other consumer of this
+        # check (a cache, the semantic index) must be equally safe on its own.
+        segments = [seg for seg in check_path.split("/") if seg]
+        if any(seg in (".", "..") for seg in segments) or check_path.startswith("/"):
+            raise TeamworkError(
+                f"Path {path!r} contains '.'/'..' segments or is absolute — "
+                "grant checks require a plain repo-relative path."
+            )
         with self._lock:
             room = self._room_locked(room_id)
             if room is None or room.status != "open":
