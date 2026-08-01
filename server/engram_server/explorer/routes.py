@@ -1652,6 +1652,7 @@ def register(
     settings: Settings,
     store: object | None = None,
     share_resolver: object | None = None,
+    human_pages: bool = True,
 ) -> None:
     """Register all explorer routes, every one behind the Access guard.
 
@@ -1667,6 +1668,14 @@ def register(
     guard = make_guard(settings)
     brain = settings.brain_path
     _graph_cache: dict[str, dict] = {}
+
+    # ONE WEB APP: with human_pages=False (multi-user prod) every explorer page and
+    # API simply DOES NOT REGISTER — no redirects, no second UI; the dashboard is
+    # the human web. Only the public /share/* infrastructure always exists.
+    def route(path: str, methods):
+        if not human_pages and not path.startswith("/share"):
+            return lambda fn: fn  # deliberately unregistered
+        return mcp.custom_route(path, methods)
 
     if store is None:
         from engram_server.kbstore import KBStore  # lazy: avoid any import-time cycle
@@ -1685,7 +1694,7 @@ def register(
             _graph_cache[sha] = data
         return data
 
-    @mcp.custom_route("/brain", ["GET"])
+    @route("/brain", ["GET"])
     @guard
     async def brain_overview(request: Request) -> Response:
         summaries = _project_summaries(brain)
@@ -1740,7 +1749,7 @@ def register(
             _shell(brain, "brain", "\n".join(body), [("brain", "/brain")], "/brain")
         )
 
-    @mcp.custom_route("/brain/p/{project}", ["GET"])
+    @route("/brain/p/{project}", ["GET"])
     @guard
     async def project_view(request: Request) -> Response:
         name = request.path_params["project"]
@@ -1845,7 +1854,7 @@ def register(
             _shell(brain, title, "\n".join(parts), crumbs, f"/brain/p/{name}")
         )
 
-    @mcp.custom_route("/brain/f/{path:path}", ["GET"])
+    @route("/brain/f/{path:path}", ["GET"])
     @guard
     async def file_view(request: Request) -> Response:
         rel_param = str(request.path_params.get("path", "")).replace("\\", "/").strip("/")
@@ -1994,7 +2003,7 @@ def register(
             _shell(brain, title, "\n".join(body_parts), _crumbs_for(rel, leaf), f"/brain/f/{rel}")
         )
 
-    @mcp.custom_route("/brain/search", ["GET"])
+    @route("/brain/search", ["GET"])
     @guard
     async def search_view(request: Request) -> Response:
         q = (request.query_params.get("q") or "").strip()
@@ -2038,7 +2047,7 @@ def register(
             _shell(brain, title, "\n".join(parts), crumbs, "/brain/search", search_value=q)
         )
 
-    @mcp.custom_route("/brain/setup", ["GET"])
+    @route("/brain/setup", ["GET"])
     @guard
     async def setup_view(request: Request) -> Response:
         mcp_url = settings.public_url.rstrip("/") + "/mcp"
@@ -2058,7 +2067,7 @@ def register(
         crumbs = [("brain", "/brain"), ("Setup", "/brain/setup")]
         return HTMLResponse(_shell(brain, "Setup", body, crumbs, "/brain/setup"))
 
-    @mcp.custom_route("/brain/artifacts", ["GET"])
+    @route("/brain/artifacts", ["GET"])
     @guard
     async def artifacts_gallery(request: Request) -> Response:
         def collect() -> list[dict]:
@@ -2139,7 +2148,7 @@ def register(
             _shell(brain, "Artifacts", "".join(body), crumbs, "/brain/artifacts")
         )
 
-    @mcp.custom_route("/brain/workspace", ["GET"])
+    @route("/brain/workspace", ["GET"])
     @guard
     async def workspace_view(request: Request) -> Response:
         now = dt.datetime.now(dt.timezone.utc)
@@ -2269,7 +2278,7 @@ def register(
             _shell(brain, "No such thread", body, crumbs, "/brain/threads"), status_code=404
         )
 
-    @mcp.custom_route("/brain/threads", ["GET"])
+    @route("/brain/threads", ["GET"])
     @guard
     async def threads_view(request: Request) -> Response:
         threads = await to_thread.run_sync(_thread_summaries, brain)
@@ -2296,7 +2305,7 @@ def register(
             _shell(brain, "Threads", "\n".join(parts), crumbs, "/brain/threads")
         )
 
-    @mcp.custom_route("/brain/threads/{thread_id}", ["GET"])
+    @route("/brain/threads/{thread_id}", ["GET"])
     @guard
     async def thread_view(request: Request) -> Response:
         tid = str(request.path_params.get("thread_id", ""))
@@ -2363,7 +2372,7 @@ def register(
             _shell(brain, topic, "\n".join(parts), crumbs, "/brain/threads", head_extra=head_extra)
         )
 
-    @mcp.custom_route("/brain/setup/engram-setup.ps1", ["GET"])
+    @route("/brain/setup/engram-setup.ps1", ["GET"])
     @guard
     async def setup_script(request: Request) -> Response:
         mcp_url = settings.public_url.rstrip("/") + "/mcp"
@@ -2373,7 +2382,7 @@ def register(
             headers={"Content-Disposition": 'attachment; filename="engram-setup.ps1"'},
         )
 
-    @mcp.custom_route("/brain/system", ["GET"])
+    @route("/brain/system", ["GET"])
     @guard
     async def system_view(request: Request) -> Response:
         tools = await mcp.list_tools()
@@ -2434,7 +2443,7 @@ def register(
             _shell(brain, "System", "\n".join(parts), crumbs, "/brain/system")
         )
 
-    @mcp.custom_route("/brain/activity", ["GET"])
+    @route("/brain/activity", ["GET"])
     @guard
     async def activity_view(request: Request) -> Response:
         parts = ["<h1>Activity</h1>", '<p class="meta">Every commit to the brain repo, newest first.</p>']
@@ -2462,18 +2471,18 @@ def register(
             _shell(brain, "Activity", "\n".join(parts), crumbs, "/brain/activity")
         )
 
-    @mcp.custom_route("/brain/graph.json", ["GET"])
+    @route("/brain/graph.json", ["GET"])
     @guard
     async def graph_json(request: Request) -> Response:
         return JSONResponse(await _graph_payload())
 
-    @mcp.custom_route("/brain/graph", ["GET"])
+    @route("/brain/graph", ["GET"])
     @guard
     async def graph_view(request: Request) -> Response:
         data = await _graph_payload()
         return HTMLResponse(graph_page(data, dict(TYPE_GLYPHS)))
 
-    @mcp.custom_route("/brain/api/office.json", ["GET"])
+    @route("/brain/api/office.json", ["GET"])
     @guard
     async def office_json(request: Request) -> Response:
         now = dt.datetime.now(dt.timezone.utc)
@@ -2483,7 +2492,7 @@ def register(
         payload["team"] = await to_thread.run_sync(_office_team, settings)
         return JSONResponse(payload)
 
-    @mcp.custom_route("/brain/api/session/{sid}", ["GET"])
+    @route("/brain/api/session/{sid}", ["GET"])
     @guard
     async def session_json(request: Request) -> Response:
         sid = str(request.path_params.get("sid", ""))
@@ -2493,7 +2502,7 @@ def register(
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(data)
 
-    @mcp.custom_route("/brain/api/thread/{thread_id}.json", ["GET"])
+    @route("/brain/api/thread/{thread_id}.json", ["GET"])
     @guard
     async def thread_json(request: Request) -> Response:
         # Live transcript for the office thread panel — the SAME lock-free local read the
@@ -2511,7 +2520,7 @@ def register(
             return JSONResponse({"error": "not found"}, status_code=404, headers=_NO_STORE)
         return JSONResponse(data, headers=_NO_STORE)
 
-    @mcp.custom_route("/brain/api/thread/{thread_id}/post", ["POST"])
+    @route("/brain/api/thread/{thread_id}/post", ["POST"])
     @guard
     async def thread_post(request: Request) -> Response:
         # Hiren replies to an OPEN thread from the browser — routed through the lock-safe
@@ -2551,7 +2560,7 @@ def register(
             return JSONResponse({"error": str(exc)}, status_code=400, headers=_NO_STORE)
         return JSONResponse(result, headers=_NO_STORE)
 
-    @mcp.custom_route("/brain/office", ["GET"])
+    @route("/brain/office", ["GET"])
     @guard
     async def office_view(request: Request) -> Response:
         # The frontend owns office.html — served VERBATIM (full-bleed, its own <!doctype>,
@@ -2570,7 +2579,7 @@ def register(
             return HTMLResponse("<h1>office.html pending</h1>")
         return HTMLResponse(text)
 
-    @mcp.custom_route("/brain/office/assets/{path:path}", ["GET"])
+    @route("/brain/office/assets/{path:path}", ["GET"])
     @guard
     async def office_asset(request: Request) -> Response:
         # Same-origin sprite sheets for the office page. Path-safe: the candidate must
@@ -2601,7 +2610,7 @@ def register(
             return JSONResponse({"error": "not found"}, status_code=404)
         return Response(content=data, media_type=media_type, headers=_ASSET_CACHE)
 
-    @mcp.custom_route("/share/{token}", ["GET"])
+    @route("/share/{token}", ["GET"])
     async def share_view(request: Request) -> Response:
         # DELIBERATELY UNGUARDED — the ONLY content route without the Cloudflare Access
         # gate. It serves ONLY the rendered body of an explicitly-shared artifact: no
@@ -2661,7 +2670,7 @@ def register(
             )
         return HTMLResponse(share_page(title, body, str(meta.get("description") or "")))
 
-    @mcp.custom_route("/", ["GET"])
+    @route("/", ["GET"])
     @guard
     async def root_redirect(request: Request) -> Response:
         # UX only, never security: the Access guard already ran above. This just

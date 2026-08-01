@@ -172,3 +172,21 @@ def test_oauth_state_cookie_spans_both_hostnames(settings):
     set_cookie = r.headers.get("set-cookie", "")
     assert "engram_oauth_state" in set_cookie
     assert "Domain=.metalfinger.xyz" in set_cookie or "domain=.metalfinger.xyz" in set_cookie
+
+
+def test_multiuser_registers_no_explorer_pages(settings):
+    """ONE WEB APP: with human_pages=False (multi-user prod) the explorer's pages
+    and APIs do not exist — no redirects, no second UI. Only /share/* survives."""
+    mcp = FastMCP("test-one-web")
+    register_explorer(mcp, settings.model_copy(update={"dev_no_access": True}),
+                      human_pages=False)
+    paths = sorted({r.path for r in mcp._custom_starlette_routes})
+    assert paths == ["/share/{token}"], paths
+
+
+def test_single_user_keeps_the_full_explorer(settings):
+    mcp = FastMCP("test-single")
+    register_explorer(mcp, settings.model_copy(update={"dev_no_access": True}),
+                      human_pages=True)
+    paths = {r.path for r in mcp._custom_starlette_routes}
+    assert "/brain" in paths and "/brain/office" in paths and "/share/{token}" in paths

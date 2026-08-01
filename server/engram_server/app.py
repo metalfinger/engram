@@ -2581,9 +2581,15 @@ async def _share_resolver(token: str):
         return None
 
 
+# ONE WEB APP (Hiren, 2026-08-01): in multi-user, the dashboard IS the human web —
+# the explorer's HTML pages are NOT registered at all (no redirects, no second UI;
+# the pixel office lives on in the claude.ai widget, workspace/system in the tools).
+# /share/* always registers — public share links are host-independent infrastructure.
+# Single-user deployments (no dashboard) keep the full explorer: there it IS the UI.
 register_explorer(
     mcp, settings, store,
     share_resolver=_share_resolver if settings.multiuser else None,
+    human_pages=not settings.multiuser,
 )
 register_app_widget(mcp, settings)  # v3: the ONE widget every launcher mounts
 register_navigator(mcp, settings.widget)

@@ -1323,7 +1323,7 @@ class Dashboard:
         # the nav. Pure CSS (details/summary) — no JS to break.
         menu_links = "<a href='/dashboard'>Profile &amp; account</a><a href='/dashboard/setup'>Setup</a>"
         if is_owner:
-            menu_links += "<a href='/dashboard/ops'>Ops</a><a href='/brain'>Explorer (advanced)</a>"
+            menu_links += "<a href='/dashboard/ops'>Ops</a>"
         account = (
             "<details class='acct'><summary>"
             + (self._avatar_for(handle or "you", size=26) if handle else "☰")
@@ -2115,7 +2115,8 @@ class Dashboard:
                 rooms_html = "<div class='cards'>" + "".join(
                     self._render_room_card(r, handles) for r in rows) + "</div>"
         owner_link = (
-            "<p class='meta'><a href='/brain/office'>Open the full pixel office →</a></p>"
+            "<p class='meta'>The pixel office floor lives in the claude.ai app — "
+            "say <i>open the office</i> in any chat.</p>"
             if self._is_owner(session) else ""
         )
         body = (
