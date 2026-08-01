@@ -116,6 +116,31 @@ async def test_links_pointing_INTO_the_moved_project_are_fixed(store):
 
 
 @pytest.mark.asyncio
+async def test_move_leaves_the_checkout_clean(store):
+    """Regression (hit in production): links rewritten OUTSIDE the moved tree —
+    library/, self/, metalfinger/ — must be staged too. An unstaged rewrite leaves
+    the checkout dirty, and a dirty checkout blocks EVERY later write."""
+    await store.kb_write("library/runbooks/how.md",
+                         "---\ntype: runbook\ndescription: r\n---\n\n# R\n\nSteps.\n", "seed")
+    await store.kb_write("projects/omega/context.md", _doc("omega"), "seed")
+    # a file OUTSIDE projects/ that links INTO the project being moved
+    await store.kb_write(
+        "self/stack.md",
+        "---\ntype: reference\ndescription: stack\n---\n\n# Stack\n\n"
+        "See [omega](../projects/omega/context.md).\n",
+        "seed",
+    )
+
+    await store.kb_move_project("omega", "personal")
+
+    dirty = store.repo.is_dirty()
+    assert dirty == [], f"checkout left dirty after move: {dirty}"
+    # and the outside link actually got fixed
+    text = (store.root / "self/stack.md").read_text(encoding="utf-8")
+    assert "](../projects/personal/omega/context.md)" in text
+
+
+@pytest.mark.asyncio
 async def test_external_links_are_left_alone(store):
     await store.kb_write(
         "projects/iota/context.md",

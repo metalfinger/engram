@@ -3286,9 +3286,13 @@ class KBStore:
                     )
                 holder.mkdir(parents=True, exist_ok=True)
             old_dir.rename(new_dir)
-            state["links"] = self._relink_after_move(old_rel, new_rel)
+            touched_files = self._relink_after_move(old_rel, new_rel)
+            state["links"] = len(touched_files)
             self._ensure_folder_indexes()
-            return ["projects", old_rel, new_rel]
+            # Every rewritten file must be staged, not just the moved tree: links live
+            # in library/, self/, metalfinger/ too, and an unstaged rewrite leaves the
+            # checkout dirty — which blocks EVERY later write until someone commits it.
+            return ["projects", old_rel, new_rel, *touched_files]
 
         sha, pushed = await self._locked_commit(
             _mutate, f"kb: move {pid} -> {dest_folder or 'top level'}"
@@ -3296,13 +3300,16 @@ class KBStore:
         return {"project": pid, "folder": dest_folder, "from": old_rel, "to": new_rel,
                 "links_rewritten": state["links"], "sha": sha, "pushed": pushed}
 
-    def _relink_after_move(self, old_rel: str, new_rel: str) -> int:
+    def _relink_after_move(self, old_rel: str, new_rel: str) -> list[str]:
         """Rewrite every relative markdown link so it still points at the same concept.
 
         Resolve each target against the file's OLD directory, map it through the move,
         then re-express it relative to the file's NEW directory. Depth-correct by
-        construction, which regex substitution is not."""
-        rewritten = 0
+        construction, which regex substitution is not.
+
+        Returns the repo-relative paths of every file it changed, so the caller can
+        stage them all."""
+        touched: list[str] = []
         old_p, new_p = PurePosixPath(old_rel), PurePosixPath(new_rel)
 
         def _moved(path: PurePosixPath) -> PurePosixPath:
@@ -3323,7 +3330,7 @@ class KBStore:
             changed = False
 
             def _sub(m: "re.Match[str]") -> str:
-                nonlocal changed, rewritten
+                nonlocal changed
                 target = m.group("target")
                 if not target or target.startswith(("http://", "https://", "mailto:", "#", "/")):
                     return m.group(0)
@@ -3345,13 +3352,13 @@ class KBStore:
                 new_target = posixpath.relpath(str(new_target_abs), str(new_file_rel.parent))
                 if new_target != target:
                     changed = True
-                    rewritten += 1
                 return f"]({new_target}{frag})"
 
             text2 = _MOVE_LINK_RE.sub(_sub, text)
             if changed and text2 != text:
                 _write_text(f, text2)
-        return rewritten
+                touched.append(str(new_file_rel))
+        return touched
 
     def _ensure_folder_indexes(self) -> None:
         """Give every folder directory an index.md listing the projects inside it, and
