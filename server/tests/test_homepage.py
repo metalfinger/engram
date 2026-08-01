@@ -153,3 +153,33 @@ def test_extension_zip_endpoint_serves_the_real_extension() -> None:
 def test_homepage_links_the_extension_download() -> None:
     html = homepage_html(SETTINGS)
     assert "/downloads/engram-chrome-extension.zip" in html
+
+
+def test_skill_zip_endpoint_serves_the_protocol() -> None:
+    """claude.ai custom-skill upload needs the skill FOLDER at the zip root —
+    exactly the shape this serves (engram/SKILL.md)."""
+    import io
+    import zipfile
+
+    import engram_server.app as app_module
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    app = Starlette(routes=app_module.mcp._custom_starlette_routes)
+    client = TestClient(app)
+    r = client.get("/downloads/engram-skill.zip")
+    assert r.status_code == 200
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    assert "engram/SKILL.md" in z.namelist()
+    text = z.read("engram/SKILL.md").decode("utf-8")
+    assert "kb_load" in text and "Rooms" in text
+
+
+def test_mcp_instructions_are_set() -> None:
+    """Claude Code + spec-honoring clients inject server instructions at connect —
+    the channel must carry the core protocol verbs."""
+    import engram_server.app as app_module
+
+    text = app_module._MCP_INSTRUCTIONS
+    assert "kb_load" in text and "kb_explore" in text and "wait_for_reply" in text
+    assert len(text) < 2000  # a protocol note, not a novel

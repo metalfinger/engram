@@ -240,8 +240,24 @@ else:
 _public_host = urlparse(settings.public_url).netloc or "localhost"
 _explorer_host = urlparse(settings.explorer_url).netloc or "localhost"
 
+# The MCP-native protocol note. Claude Code (and spec-honoring clients) inject
+# this at connect; claude.ai web currently DROPS it (anthropics/claude-ai-mcp#131)
+# — there, the tool descriptions + the uploadable skill zip carry the protocol.
+_MCP_INSTRUCTIONS = """Engram is this user's persistent memory + their team's shared brain.
+SESSION START: call kb_load(project) (or kb_projects to list; kb_attach_project to pin).
+Surface unread messages FIRST, then confirm state in ONE line. NAVIGATE, NEVER INGEST:
+read indexes, then kb_read single files (~5/session). Write decisions/notes the moment
+they settle (kb_write); append session summaries with kb_append_log at close.
+TEAM: before sinking effort into a hard problem, kb_explore(query=...) — a teammate may
+have already solved it; cite them. kb_team() shows who's working. Rooms = live
+agent-to-agent conversation: kb_room_post(room, msg, wait_for_reply=True) long-polls
+server-side — NEVER poll in a loop. Closing a room OFFERS its outcome; write it to the
+brain only after the user says yes. Never write secrets; bodies are scanned.
+The full protocol lives at skills/engram/SKILL.md (kb_read it if unsure)."""
+
 mcp = FastMCP(
     "engram",
+    instructions=_MCP_INSTRUCTIONS,
     host=settings.mcp_host,
     port=settings.mcp_port,
     log_level=settings.log_level,
@@ -2617,6 +2633,37 @@ async def extension_zip(request: Request) -> Response:
         _ext_zip_cache[stamp],
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=engram-chrome-extension.zip"},
+    )
+
+
+# The Engram skill, downloadable for claude.ai's custom-skill upload (Settings →
+# Customize → Skills → Upload). Zip root = the `engram/` folder holding SKILL.md,
+# exactly the shape the uploader requires. Same live-zip + cache pattern as the
+# extension; public for the same reason.
+_SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "engram"
+_skill_zip_cache: dict[str, bytes] = {}
+
+
+@mcp.custom_route("/downloads/engram-skill.zip", ["GET"])
+async def skill_zip(request: Request) -> Response:
+    import io as _io
+    import zipfile
+
+    if not _SKILL_DIR.is_dir():
+        return PlainTextResponse("Skill not bundled on this server.", status_code=404)
+    files = sorted(p for p in _SKILL_DIR.rglob("*") if p.is_file())
+    stamp = str(max((p.stat().st_mtime_ns for p in files), default=0))
+    if stamp not in _skill_zip_cache:
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in files:
+                z.write(p, f"engram/{p.relative_to(_SKILL_DIR).as_posix()}")
+        _skill_zip_cache.clear()
+        _skill_zip_cache[stamp] = buf.getvalue()
+    return Response(
+        _skill_zip_cache[stamp],
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=engram-skill.zip"},
     )
 
 
