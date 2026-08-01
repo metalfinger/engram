@@ -305,7 +305,8 @@ class Dashboard:
 
     async def _social_shell(self, session: dict, title: str, body: str, crumbs, active_tab: str = "") -> str:
         projects = await self._user_projects(session)
-        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects), active_tab=active_tab)
+        return self._brain_shell(title, body, crumbs, self._brain_sidebar(projects), active_tab=active_tab,
+                                 is_owner=self._is_owner(session), handle=self._account_handle(session) or "")
 
     def _render_working_strip(self) -> str:
         """The "Working now" strip: who's active, in what project, how fresh.
@@ -350,7 +351,8 @@ class Dashboard:
                 "public_projects": len({i.get("project") for i in work if i.get("project")}),
                 "is_following": bool(me and self.registry.discovery.is_following(me.id, u.id)),
             })
-        body = self._render_working_strip() + social_pages.people_body(people, me.handle if me else "")
+        body = (self._subtabs(self._PEOPLE_SUBTABS, "/dashboard/people")
+                + self._render_working_strip() + social_pages.people_body(people, me.handle if me else ""))
         return HTMLResponse(await self._social_shell(session, "People", body,
                                                      [("home", "/dashboard"), ("people", "/dashboard/people")],
                                                      active_tab="people"))
@@ -427,9 +429,10 @@ class Dashboard:
                     items.append({**item, "handle": u.handle, "display_name": u.display_name,
                                   "avatar_url": u.avatar_url})
             items.sort(key=lambda i: str(i.get("updated") or ""), reverse=True)
-        body = social_pages.feed_body(items[:50])
+        body = self._subtabs(self._PEOPLE_SUBTABS, "/dashboard/feed") + social_pages.feed_body(items[:50])
         return HTMLResponse(await self._social_shell(session, "Feed", body,
-                                                     [("home", "/dashboard"), ("feed", "/dashboard/feed")]))
+                                                     [("home", "/dashboard"), ("feed", "/dashboard/feed")],
+                                                     active_tab="people"))
 
     async def asks_view(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -456,9 +459,11 @@ class Dashboard:
                  "created": a.created, "answered_at": a.answered_at}
                 for a in self.registry.discovery.list_asks_by(me.id)
             ]
-        body = social_pages.asks_body(to_answer, i_asked, me.handle if me else "")
+        body = (self._subtabs(self._PEOPLE_SUBTABS, "/dashboard/asks")
+                + social_pages.asks_body(to_answer, i_asked, me.handle if me else ""))
         return HTMLResponse(await self._social_shell(session, "Questions", body,
-                                                     [("home", "/dashboard"), ("questions", "/dashboard/asks")]))
+                                                     [("home", "/dashboard"), ("questions", "/dashboard/asks")],
+                                                     active_tab="people"))
 
     async def follow_action(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -1272,18 +1277,37 @@ class Dashboard:
         ("rooms", "/dashboard/rooms", "Rooms"),
         ("office", "/dashboard/office", "Office"),
     )
-    # Deep routes that predate the five-tab IA — still fully functional, just no
-    # longer primary nav real estate. Kept reachable as a quiet secondary row.
-    _NAV_MORE = (
-        ("/dashboard/feed", "Feed"),
-        ("/dashboard/asks", "Questions"),
+    # Polish pass (Hiren, 2026-08-01): a product has FIVE destinations and an
+    # account menu — not eleven links. The old secondary row folds into the tabs
+    # as sub-tabs (Browse: Search|Artifacts|Graph|Activity · People: Directory|
+    # Feed|Questions) and the person-scoped pages live under the avatar menu.
+    _NAV_MORE = ()
+    _BROWSE_SUBTABS = (
+        ("/dashboard/search", "Search"),
+        ("/dashboard/artifacts", "Artifacts"),
         ("/dashboard/graph", "Graph"),
         ("/dashboard/activity", "Activity"),
-        ("/dashboard/artifacts", "Artifacts"),
-        ("/dashboard/setup", "Setup"),
+    )
+    _PEOPLE_SUBTABS = (
+        ("/dashboard/people", "Directory"),
+        ("/dashboard/feed", "Feed"),
+        ("/dashboard/asks", "Questions"),
     )
 
-    def _brain_shell(self, title: str, body: str, crumbs, sidebar_html: str, active_tab: str = "") -> str:
+    def _subtabs(self, tabs, current_path: str) -> str:
+        from engram_server.explorer.html import esc
+
+        return (
+            "<div class='subtabs'>"
+            + "".join(
+                f"<a href='{href}' class='{'on' if href == current_path else ''}'>{esc(label)}</a>"
+                for href, label in tabs
+            )
+            + "</div>"
+        )
+
+    def _brain_shell(self, title: str, body: str, crumbs, sidebar_html: str, active_tab: str = "",
+                     is_owner: bool = False, handle: str = "") -> str:
         from engram_server.explorer.html import CSS, esc
 
         crumb_html = ""
@@ -1295,9 +1319,17 @@ class Dashboard:
             + f">{esc(label)}</a>"
             for key, href, label in self._NAV_TABS
         )
-        secondary = "".join(
-            f"<a href='{href}' style='font-size:.8rem;opacity:.65'>{esc(label)}</a>"
-            for href, label in self._NAV_MORE
+        # Account menu: person-scoped destinations live behind the avatar, not in
+        # the nav. Pure CSS (details/summary) — no JS to break.
+        menu_links = "<a href='/dashboard'>Profile &amp; account</a><a href='/dashboard/setup'>Setup</a>"
+        if is_owner:
+            menu_links += "<a href='/dashboard/ops'>Ops</a><a href='/brain'>Explorer (advanced)</a>"
+        account = (
+            "<details class='acct'><summary>"
+            + (self._avatar_for(handle or "you", size=26) if handle else "☰")
+            + "</summary><div class='acct-menu'>" + menu_links
+            + "<form method=post action='/dashboard/logout'><button type=submit>Sign out</button></form>"
+            + "</div></details>"
         )
         return (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
@@ -1345,6 +1377,25 @@ class Dashboard:
             ".bigsearch input{flex:1 1 auto;margin:0;font-size:1rem;padding:.7rem .9rem}"
             ".bigsearch button{flex:0 0 auto}"
             ".stat-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.3rem 0}"
+            # sub-tabs (Browse: Search|Artifacts|Graph|Activity · People: Directory|Feed|Questions)
+            ".subtabs{display:flex;gap:.2rem;border-bottom:1px solid var(--line);margin:0 0 1rem}"
+            ".subtabs a{padding:.45rem .8rem;color:var(--muted);font-size:.85rem;border-bottom:2px solid transparent}"
+            ".subtabs a:hover{color:var(--fg);text-decoration:none}"
+            ".subtabs a.on{color:var(--accent-ink);border-bottom-color:var(--accent);font-weight:600}"
+            # account menu (avatar dropdown, pure CSS)
+            ".acct{position:relative;margin-left:.7rem}"
+            ".acct summary{list-style:none;cursor:pointer;display:flex;align-items:center}"
+            ".acct summary::-webkit-details-marker{display:none}"
+            ".acct-menu{position:absolute;right:0;top:2.2rem;background:var(--surface);"
+            "border:1px solid var(--line-2);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);"
+            "padding:.4rem;min-width:11rem;z-index:50;display:flex;flex-direction:column}"
+            ".acct-menu a,.acct-menu button{display:block;width:100%;text-align:left;padding:.5rem .7rem;"
+            "border-radius:7px;color:var(--fg);background:none;border:0;font:inherit;font-size:.85rem;cursor:pointer}"
+            ".acct-menu a:hover,.acct-menu button:hover{background:var(--surface-2);text-decoration:none}"
+            # empty states as invitations, not shrugs
+            ".empty-cta{background:var(--surface);border:1px dashed var(--line-2);border-radius:12px;"
+            "padding:1.2rem;text-align:center;color:var(--muted);margin:.6rem 0}"
+            ".empty-cta b{color:var(--fg)}"
             "</style></head><body>"
             "<input type=checkbox id=navcb class=navcb aria-hidden=true>"
             "<header class=topbar><div class=topbar-inner>"
@@ -1354,11 +1405,7 @@ class Dashboard:
             "<input type=search name=q placeholder='Search your brain…' aria-label='Search' autocomplete=off></form>"
             # The five-tab IA is the product surface; older deep links (Feed, Questions,
             # Graph, Activity, ...) still work — they're a quiet second row, not gone.
-            f"<nav class=topnav>{primary}"
-            f"<span style='opacity:.3'>|</span>{secondary}"
-            "<form method=post action='/dashboard/logout' style='display:inline;margin-left:.6rem'>"
-            "<button type=submit style='background:none;border:0;color:var(--muted);cursor:pointer;"
-            "font:inherit;font-size:.8rem;padding:0'>Sign out</button></form></nav>"
+            f"<nav class=topnav>{primary}</nav>{account}"
             "</div></header><div class=layout>"
             f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
             f"<main>{crumb_html}{body}</main></div></body></html>"
@@ -1524,8 +1571,9 @@ class Dashboard:
     def _render_search(self, q: str, results: list, projects: list) -> str:
         from engram_server.explorer.html import esc
 
-        parts = [f"<div class='page-head'><div><p class='eyebrow'>Search</p>"
-                 f"<h1>{esc(q) if q else 'Search your brain'}</h1></div></div>"]
+        parts = [f"<div class='page-head'><div><p class='eyebrow'>Browse</p>"
+                 f"<h1>{esc(q) if q else 'Search your brain'}</h1></div></div>",
+                 self._subtabs(self._BROWSE_SUBTABS, '/dashboard/search')]
         # The query box lives ON the page (the topbar box alone confused real users —
         # 'no place to type the query'). Autofocus when empty, keep the value when not.
         parts.append(
@@ -1578,7 +1626,10 @@ class Dashboard:
                 )
             parts.append("<div class='timeline'>" + "".join(items) + "</div>")
         crumbs = [("home", "/dashboard"), ("activity", "/dashboard/activity")]
-        return self._brain_shell("Activity", "".join(parts), crumbs, self._brain_sidebar(projects))
+        return self._brain_shell(
+            "Activity",
+            self._subtabs(self._BROWSE_SUBTABS, "/dashboard/activity") + "".join(parts),
+            crumbs, self._brain_sidebar(projects), active_tab="browse")
 
     def _render_concept(self, store, path: str, concept: dict, projects: list) -> str:
         from engram_server.explorer.html import esc
@@ -1692,7 +1743,12 @@ class Dashboard:
         )
         parts = [banner, "<div class='page-head'><div><p class='eyebrow'>Live rooms</p><h1>Rooms</h1></div></div>"]
         if not rows:
-            parts.append("<p class='empty'>No rooms yet — open one below, or ask someone to invite you.</p>")
+            parts.append(
+                "<div class='empty-cta'><b>No rooms yet.</b><br>"
+                "A room is a live space where your Claude and a teammate's Claude work "
+                "something out together — and can search whatever each side chooses to "
+                "share, for the life of the room only.<br>Open one below, or from any "
+                "profile via <i>Open a room</i>.</div>")
         else:
             parts.append("<div class='cards'>" + "".join(self._render_room_card(r, handles) for r in rows) + "</div>")
         parts.append(
@@ -2104,9 +2160,10 @@ class Dashboard:
         if store is None:
             return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
         artifacts = await store.kb_artifacts()
-        body = self._render_artifacts(artifacts)
+        body = self._subtabs(self._BROWSE_SUBTABS, "/dashboard/artifacts") + self._render_artifacts(artifacts)
         return HTMLResponse(await self._social_shell(
-            session, "Artifacts", body, [("home", "/dashboard"), ("artifacts", "/dashboard/artifacts")]))
+            session, "Artifacts", body, [("home", "/dashboard"), ("artifacts", "/dashboard/artifacts")],
+            active_tab="browse"))
 
     async def setup_view(self, request: "Request") -> "Response":
         from engram_server.explorer.html import esc
