@@ -103,6 +103,29 @@ Shipped:
   morning briefing RETIRED (`briefing_at` default '') — briefing is pull-only.
 - Homepage rewritten as the teammate front door (visibility copy tracks the policy knob).
 
+## Engram Tray + live push + ONE domain/web (post-v3 field day, 2026-08-01)
+Field-driven wave with Hiren testing live:
+- **ONE DOMAIN**: engram.metalfinger.xyz is everything (brain.* removed from tunnel
+  ingress + code; no redirects). **ONE WEB APP**: explorer HTML pages are NOT
+  registered in multiuser (invariant-tested: explorer contributes only /share/*);
+  single-user self-hosts keep the explorer. Dashboard = 5 tabs + sub-tabs + avatar
+  account menu; form-styling layer added (explorer CSS had no form styles at all).
+- **Engram Tray** (`clients/desktop/`, Tauri v2, Rust, no webview content): tray
+  icon + popup (local HTML over IPC only — webview never sees token/remote), team
+  roster w/ avatar pipeline (SSRF-hardened: https-only, public-IP-only, DNS pinned
+  via resolve_to_addrs, no redirects), native toasts (field-verified on Windows),
+  loopback OAuth (nonce path, RFC 8252 — server allowlist in _valid_ext_redirect).
+  CI matrix on tag `desktop-v*` builds .msi/.dmg(universal)/.AppImage to a GitHub
+  Release. Versions: 0.1 menu-only -> 0.2 popup -> 0.3 LIVE push.
+- **Live notification delivery**: `pushbus.py` per-user wake bus; SocialStore.
+  create_notification wakes it (single funnel); /dashboard/api/notifications
+  ?wait&since parks until newer-than-cursor (backlog parks too). Tray latency
+  ~1-2s for in-process writers; external scripts land at cycle end. Per-id
+  mark-read (`{"ids":[..]}`) — acting on a notification consumes it.
+- **Turn attribution**: room turns carry via (human vs their Claude, 🤖 chip) —
+  session channel: MCP=claude, dashboard:web/app composer=human.
+- Extension downloadable from the product (/downloads/engram-chrome-extension.zip).
+
 ## What's next
 1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
 2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.

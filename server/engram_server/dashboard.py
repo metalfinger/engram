@@ -983,7 +983,18 @@ class Dashboard:
         user = self._bearer_user(request)
         if user is None:
             return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
-        self.registry.social.mark_notifications_read(user.id)
+        # Optional JSON body {"ids": [..]} marks just those (acting on ONE
+        # notification — e.g. clicking its Open button — clears that one, not
+        # everything). No/empty body keeps the mark-ALL behavior.
+        ids: list[int] | None = None
+        try:
+            payload = await request.json()
+            raw = payload.get("ids") if isinstance(payload, dict) else None
+            if isinstance(raw, list):
+                ids = [int(x) for x in raw]
+        except Exception:  # noqa: BLE001 — no body / not json = mark all
+            ids = None
+        self.registry.social.mark_notifications_read(user.id, ids)
         return JSONResponse({"ok": True})
 
     def _cookie_domain(self) -> str | None:

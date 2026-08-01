@@ -300,3 +300,21 @@ to test locally.
   `scripts/gen_icons.py` — swap in real brand art whenever it exists by
   re-running that script against a new source mark, or replacing the
   PNGs directly.
+
+## Live delivery (v0.3)
+
+Notifications are PUSH-latency: instead of polling every minute, the app parks a
+request on the server (`/dashboard/api/notifications?wait=50&since=<max id>`);
+the server holds it until something NEWER than your cursor lands and answers
+immediately (~1-2s from event to toast). A standing unread backlog parks too, so
+the client never tight-loops. The team roster refreshes on its own 60s cadence.
+On errors the live loop backs off 5s.
+
+Acting on a notification consumes it: clicking a row's action button (Open room
+/ Open messages / View) marks THAT notification read (`POST
+/dashboard/api/notifications/read` with `{"ids":[id]}`) and then opens the
+browser — the row and the badge clear without touching the rest.
+
+Windows toasts: if toasts don't appear but the tray dot updates, check Windows
+Settings -> System -> Notifications -> "Engram Tray" is On, and Do Not Disturb /
+Focus Assist is off. (Field-verified: with those on, toasts pop natively.)

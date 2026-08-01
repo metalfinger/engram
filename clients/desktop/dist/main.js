@@ -188,7 +188,12 @@
         btn.type = "button";
         btn.className = "notif-action";
         btn.textContent = action.label;
-        btn.addEventListener("click", () => openPath(action.path));
+        btn.addEventListener("click", () => {
+          // Acting on a notification consumes it: clear THIS one, then open.
+          invoke("mark_read_one", { id: Number(item.id) }).then(render)
+            .catch((e) => console.error("mark_read_one failed", e));
+          openPath(action.path);
+        });
         row.appendChild(btn);
       }
 

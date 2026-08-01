@@ -297,6 +297,23 @@ async fn set_invisible(app: AppHandle, invisible: bool) -> popup::PopupState {
 }
 
 #[tauri::command]
+async fn mark_read_one(app: AppHandle, id: i64) -> popup::PopupState {
+    let (origin, token) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        (cfg.origin.clone(), cfg.token.clone())
+    };
+    if let Some(token) = token {
+        let client = ApiClient::new(&origin, &token);
+        if let Err(e) = client.mark_read_ids(&[id]).await {
+            log::warn!("mark_read_one failed: {e}");
+        }
+    }
+    poll_once(&app).await;
+    popup::build_state(&app.state::<AppState>())
+}
+
+#[tauri::command]
 async fn mark_all_read(app: AppHandle) -> popup::PopupState {
     let state = app.state::<AppState>();
     let (origin, token) = {
@@ -386,6 +403,7 @@ fn main() {
             refresh_now,
             set_invisible,
             mark_all_read,
+            mark_read_one,
             sign_in,
             sign_out,
             open_url,

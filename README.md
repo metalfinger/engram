@@ -59,7 +59,12 @@ is a git repo you own, portable across model vendors.
   invisible mode.
 - **One app, one door** — a single MCP widget (Home / Browse / People / Rooms / Office)
   replaces five cards; the web dashboard mirrors the same five-tab IA; one OAuth account
-  spans the connector, the browser, and the Chrome extension.
+  spans the connector, the browser, the Chrome extension, and the desktop app.
+- **Engram Tray** (`clients/desktop/`, Tauri v2) — a native Windows/macOS/Linux tray app:
+  LIVE server-push notifications (~1-2s, long-poll — an LLM app can't reach you when it's
+  closed; this can), a popup with the team roster + actionable notifications, one-click
+  OAuth via the system browser (RFC 8252 loopback), and a webview that never sees your
+  token or remote content. Installers built per-tag by CI (`desktop-v*`).
 
 ~65 MCP tools; ~1,100 tests.
 

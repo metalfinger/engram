@@ -144,6 +144,19 @@ impl ApiClient {
         Ok(resp.json::<NotificationsResponse>().await?)
     }
 
+    /// Mark ONE notification read (acting on it — e.g. its Open button).
+    pub async fn mark_read_ids(&self, ids: &[i64]) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .post(self.url("/dashboard/api/notifications/read"))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "ids": ids }))
+            .send()
+            .await?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
     pub async fn mark_all_read(&self) -> Result<(), ApiError> {
         let resp = self
             .http
