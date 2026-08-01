@@ -259,3 +259,20 @@ def test_own_origins_and_no_origin_still_pass(env, settings):
         follow_redirects=False,
     )
     assert no_origin.status_code == 302
+
+
+# -- desktop tray app: loopback OAuth redirect --------------------------------
+
+
+def test_loopback_redirect_allowed_for_desktop_app(env):
+    from engram_server.dashboard import Dashboard
+
+    ok = Dashboard._valid_ext_redirect
+    assert ok("http://127.0.0.1:53123/callback/abc123XYZ_-") is True
+    assert ok("https://abcdef.chromiumapp.org/x") is True  # extension unchanged
+    # everything else refused
+    assert ok("http://127.0.0.1:53123/steal") is False           # wrong path shape
+    assert ok("http://127.0.0.1:53123/callback/x") is False      # nonce too short
+    assert ok("http://192.168.1.5:53123/callback/abc123XYZ_") is False  # not loopback
+    assert ok("https://evil.example/callback/abc123XYZ_") is False
+    assert ok("http://localhost:53123/callback/abc123XYZ_") is False  # IP literal only (RFC 8252)

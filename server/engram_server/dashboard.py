@@ -612,13 +612,22 @@ class Dashboard:
 
     @staticmethod
     def _valid_ext_redirect(url: str) -> bool:
-        """A Chrome extension's launchWebAuthFlow redirect is always
-        https://<extension-id>.chromiumapp.org/... — only allow that, so a
-        signed-in user's notify token can never be exfiltrated to an arbitrary host."""
+        """Where may a notify token be delivered? Two shapes only, so it can never
+        be exfiltrated to an arbitrary host:
+        - https://<extension-id>.chromiumapp.org/...   (Chrome extension)
+        - http://127.0.0.1:<port>/callback/<nonce>     (desktop tray app, RFC 8252
+          loopback: plain http is correct on the loopback interface; the nonce path
+          keeps other local processes from squatting the callback)."""
         from urllib.parse import urlsplit
 
         parts = urlsplit(url)
-        return parts.scheme == "https" and (parts.hostname or "").endswith(".chromiumapp.org")
+        if parts.scheme == "https" and (parts.hostname or "").endswith(".chromiumapp.org"):
+            return True
+        return (
+            parts.scheme == "http"
+            and parts.hostname in ("127.0.0.1", "::1")
+            and bool(re.fullmatch(r"/callback/[A-Za-z0-9_-]{8,64}", parts.path or ""))
+        )
 
     async def ext_auth(self, request: "Request") -> "Response":
         """Sign the Chrome notifier extension in with the SAME GitHub/Google OAuth
