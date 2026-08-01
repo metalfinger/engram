@@ -37,7 +37,7 @@ impl From<reqwest::Error> for ApiError {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NotificationItem {
-    pub id: String,
+    pub id: i64,
     pub kind: String,
     pub body: String,
     pub at: String,
@@ -125,13 +125,21 @@ impl ApiClient {
         Ok(resp)
     }
 
-    pub async fn fetch_notifications(&self) -> Result<NotificationsResponse, ApiError> {
-        let resp = self
+    /// `wait_secs > 0` = LIVE mode: the server parks the request until a
+    /// notification NEWER than `since` exists (or the wait lapses) — push
+    /// latency with polling simplicity. The per-request timeout must outlive
+    /// the server-side park, so it's wait + 15s.
+    pub async fn fetch_notifications(&self, since: i64, wait_secs: u64) -> Result<NotificationsResponse, ApiError> {
+        let mut req = self
             .http
             .get(self.url("/dashboard/api/notifications"))
-            .bearer_auth(&self.token)
-            .send()
-            .await?;
+            .bearer_auth(&self.token);
+        if wait_secs > 0 {
+            req = req
+                .query(&[("wait", wait_secs.to_string()), ("since", since.to_string())])
+                .timeout(std::time::Duration::from_secs(wait_secs + 15));
+        }
+        let resp = req.send().await?;
         let resp = Self::check_status(resp).await?;
         Ok(resp.json::<NotificationsResponse>().await?)
     }

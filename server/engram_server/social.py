@@ -439,7 +439,22 @@ class SocialStore:
             row = self._conn.execute(
                 "SELECT * FROM notifications WHERE id = ?", (cur.lastrowid,)
             ).fetchone()
-            return self._notification(row)  # type: ignore[return-value]
+        # Live delivery: wake any desktop long-poll parked on this user
+        # (?wait= on /dashboard/api/notifications). Deliberately HERE — every
+        # in-process writer funnels through this method, so no future caller
+        # can forget the wake. Layering note: this store is sync; the wake is
+        # scheduled onto the running loop when one exists (server), silently
+        # skipped when none does (scripts, sync tests — their inserts land at
+        # the end of the current wait cycle instead).
+        try:
+            import asyncio
+
+            from engram_server import pushbus
+
+            asyncio.get_running_loop().create_task(pushbus.wake(user_id))
+        except RuntimeError:
+            pass
+        return self._notification(row)  # type: ignore[return-value]
 
     def list_notifications(
         self, user_id: int, unread_only: bool = False, limit: int = 50

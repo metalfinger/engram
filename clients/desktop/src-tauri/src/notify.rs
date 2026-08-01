@@ -31,17 +31,17 @@ fn title_for_kind(kind: &str) -> &'static str {
 pub fn notify_new(app: &AppHandle, rt: &mut RuntimeState, unread: &[NotificationItem]) {
     if !rt.baseline_captured {
         for item in unread {
-            rt.seen_ids.insert(item.id.clone());
+            rt.seen_ids.insert(item.id.to_string());
         }
         rt.baseline_captured = true;
         return;
     }
 
     for item in unread {
-        if rt.seen_ids.contains(&item.id) {
+        if rt.seen_ids.contains(&item.id.to_string()) {
             continue;
         }
-        rt.seen_ids.insert(item.id.clone());
+        rt.seen_ids.insert(item.id.to_string());
         fire(app, item);
     }
 }

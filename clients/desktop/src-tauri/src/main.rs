@@ -63,7 +63,7 @@ async fn poll_once(app: &AppHandle) {
     };
     let client = ApiClient::new(&origin, &token);
 
-    let notifications = client.fetch_notifications().await;
+    let notifications = client.fetch_notifications(0, 0).await;
     let team = client.fetch_team().await;
 
     if matches!(notifications, Err(ApiError::Unauthorized)) || matches!(team, Err(ApiError::Unauthorized)) {
@@ -117,11 +117,66 @@ async fn poll_once(app: &AppHandle) {
 
 fn spawn_poll_loop(app: AppHandle, poll_seconds: u64) {
     tauri::async_runtime::spawn(async move {
+        // First cycle is instant (baseline). After that, LIVE: each request
+        // parks server-side (?wait=50&since=<max id>) and returns the moment
+        // something new lands — push latency, no tight polling. The team
+        // roster doesn't need push; it refreshes when a cycle ends and 60s+
+        // have passed. poll_seconds still paces the signed-out retry.
+        let mut last_full = std::time::Instant::now();
+        poll_once(&app).await;
         loop {
-            poll_once(&app).await;
-            tokio::time::sleep(Duration::from_secs(poll_seconds.max(5))).await;
+            let (signed_in, since) = {
+                let state = app.state::<AppState>();
+                let has_token = state.config.lock().unwrap().token.is_some();
+                let rt = state.runtime.lock().unwrap();
+                let max_id = rt.notifications.iter().map(|n| n.id).max().unwrap_or(0);
+                (has_token, max_id)
+            };
+            if !signed_in {
+                tokio::time::sleep(Duration::from_secs(poll_seconds.max(5))).await;
+                poll_once(&app).await;
+                continue;
+            }
+            live_cycle(&app, since).await;
+            if last_full.elapsed() >= Duration::from_secs(60) {
+                last_full = std::time::Instant::now();
+                poll_once(&app).await; // team roster + avatars refresh
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await; // breather, not a poll
         }
     });
+}
+
+/// One LIVE cycle: park on the server until a notification newer than `since`
+/// arrives (or ~50s lapse), then process exactly like a poll result.
+async fn live_cycle(app: &AppHandle, since: i64) {
+    let state = app.state::<AppState>();
+    let (origin, token) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.origin.clone(), cfg.token.clone())
+    };
+    let Some(token) = token else { return };
+    let client = ApiClient::new(&origin, &token);
+    match client.fetch_notifications(since, 50).await {
+        Err(ApiError::Unauthorized) => handle_sign_out(app),
+        Err(e) => {
+            log::warn!("live notifications cycle failed: {e}");
+            tokio::time::sleep(Duration::from_secs(5)).await; // don't hammer on errors
+        }
+        Ok(resp) => {
+            {
+                let mut rt = state.runtime.lock().unwrap();
+                rt.unread_count = resp.unread.len() as u64;
+                notify::notify_new(app, &mut rt, &resp.unread);
+                rt.notifications = resp.unread;
+            }
+            let snapshot = state.runtime.lock().unwrap().clone();
+            if let Err(e) = tray::refresh_tray(app, &snapshot) {
+                log::warn!("failed to refresh tray: {e}");
+            }
+            popup::push_state(app);
+        }
+    }
 }
 
 fn start_sign_in(app: AppHandle) {

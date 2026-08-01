@@ -276,3 +276,34 @@ def test_loopback_redirect_allowed_for_desktop_app(env):
     assert ok("http://192.168.1.5:53123/callback/abc123XYZ_") is False  # not loopback
     assert ok("https://evil.example/callback/abc123XYZ_") is False
     assert ok("http://localhost:53123/callback/abc123XYZ_") is False  # IP literal only (RFC 8252)
+
+
+# -- live notification delivery (?wait / ?since long-poll) --------------------
+
+
+def test_notifications_longpoll_returns_instantly_when_new_exists(env):
+    import time
+
+    env.registry.social.create_notification(env.users["alice"].id, "dm", "hi", "1")
+    tok = env.dash.auth.issue("google:alice@example.com", "alice@example.com", "alice",
+                              ttl=3600, scope="notify")
+    t0 = time.monotonic()
+    r = env.client.get("/dashboard/api/notifications?wait=30&since=0",
+                       headers={"Authorization": f"Bearer {tok}"})
+    took = time.monotonic() - t0
+    assert r.status_code == 200 and r.json()["unread"]
+    assert took < 2, f"should not park when something newer than since exists ({took:.1f}s)"
+
+
+def test_notifications_longpoll_parks_then_times_out_on_stale_cursor(env):
+    import time
+
+    note = env.registry.social.create_notification(env.users["alice"].id, "dm", "old", "1")
+    tok = env.dash.auth.issue("google:alice@example.com", "alice@example.com", "alice",
+                              ttl=3600, scope="notify")
+    t0 = time.monotonic()
+    r = env.client.get(f"/dashboard/api/notifications?wait=1&since={note.id}",
+                       headers={"Authorization": f"Bearer {tok}"})
+    took = time.monotonic() - t0
+    assert r.status_code == 200
+    assert took >= 0.9, f"should have parked ~1s on an up-to-date cursor ({took:.2f}s)"

@@ -73,7 +73,7 @@ fn avatar_for(cache: &HashMap<String, String>, member: &TeamMember) -> Option<St
 
 fn notification_row(item: &NotificationItem) -> NotificationRow {
     NotificationRow {
-        id: item.id.clone(),
+        id: item.id.to_string(),
         kind: item.kind.clone(),
         body: item.body.clone(),
         at: item.at.clone(),

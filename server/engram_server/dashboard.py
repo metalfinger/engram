@@ -950,11 +950,26 @@ class Dashboard:
     async def api_notifications(self, request: "Request") -> "Response":
         from starlette.responses import JSONResponse
 
+        from engram_server import pushbus
+
         user = self._bearer_user(request)
         if user is None:
             return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
         social = self.registry.social
+
+        # LIVE delivery (?wait=N&since=<max seen id>): park the request on the
+        # user's wake bus until a notification NEWER than the client's cursor
+        # exists (or timeout) — a standing unread backlog therefore parks too,
+        # instead of tight-looping the client at one request per second.
+        try:
+            wait_s = float(request.query_params.get("wait", 0) or 0)
+            since = int(request.query_params.get("since", 0) or 0)
+        except ValueError:
+            wait_s, since = 0.0, 0
         notes = social.list_notifications(user.id, unread_only=True)
+        if wait_s > 0 and not any(n.id > since for n in notes):
+            await pushbus.wait(user.id, wait_s)
+            notes = social.list_notifications(user.id, unread_only=True)
         counts = social.unread_counts(user.id)
         return JSONResponse({
             "ok": True,
