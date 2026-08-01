@@ -101,3 +101,41 @@ def test_dev_bypass_still_works(settings):
     dev = settings.model_copy(update={"dev_no_access": True})
     resp = _client(dev).get("/brain")
     assert resp.status_code == 200
+
+
+# -- one-door session cookie scope -----------------------------------------
+
+
+def _dash(settings):
+    """A Dashboard wired enough to test _cookie_domain (no routes needed)."""
+    from engram_server.dashboard import Dashboard
+    from engram_server.registry import StoreRegistry
+
+    s = settings.model_copy(update={"dashboard_session_secret": SECRET})
+    return Dashboard(s, StoreRegistry(s), idps={})
+
+
+def test_session_cookie_spans_both_production_hostnames(settings):
+    """The OAuth callback lands on engram.*, humans live on brain.* — the cookie
+    must be parent-domain-scoped or brain.* stays logged out forever."""
+    d = _dash(settings.model_copy(update={
+        "public_url": "https://engram.metalfinger.xyz",
+        "explorer_url": "https://brain.metalfinger.xyz",
+    }))
+    assert d._cookie_domain() == ".metalfinger.xyz"
+
+
+def test_session_cookie_stays_host_only_when_single_host(settings):
+    d = _dash(settings.model_copy(update={
+        "public_url": "https://engram.example.com",
+        "explorer_url": "https://engram.example.com",
+    }))
+    assert d._cookie_domain() is None
+
+
+def test_session_cookie_stays_host_only_across_unrelated_domains(settings):
+    d = _dash(settings.model_copy(update={
+        "public_url": "https://a.example.com",
+        "explorer_url": "https://b.other.net",
+    }))
+    assert d._cookie_domain() is None

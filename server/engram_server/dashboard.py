@@ -35,6 +35,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
+from urllib.parse import urlsplit
 
 import httpx
 import jwt
@@ -825,6 +826,9 @@ class Dashboard:
 
     async def logout(self, request: "Request") -> "Response":
         resp = RedirectResponse("/dashboard/login", status_code=302)
+        # Clear BOTH scopes — the parent-domain cookie (one-door) and any legacy
+        # host-only cookie from before the change.
+        resp.delete_cookie(SESSION_COOKIE, path="/", domain=self._cookie_domain())
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
@@ -946,6 +950,21 @@ class Dashboard:
         self.registry.social.mark_notifications_read(user.id)
         return JSONResponse({"ok": True})
 
+    def _cookie_domain(self) -> str | None:
+        """ONE DOOR: the session must work on BOTH hostnames (engram. serves the OAuth
+        callback, brain. serves the humans), so when public_url and explorer_url share
+        a registrable parent the cookie is scoped to it (".metalfinger.xyz"). Host-only
+        (None) otherwise — tests, localhost, single-host deployments. Naive about
+        multi-part TLDs (co.uk) by design; both production hosts are *.metalfinger.xyz."""
+        a = (urlsplit(self.settings.public_url).hostname or "").lower()
+        b = (urlsplit(self.settings.explorer_url or "").hostname or "").lower()
+        if not a or not b or a == b or "." not in a:
+            return None
+        pa, pb = a.split("."), b.split(".")
+        if len(pa) >= 2 and len(pb) >= 2 and pa[-2:] == pb[-2:]:
+            return "." + ".".join(pa[-2:])
+        return None
+
     def _logged_in_redirect(self, subject: str, email_or_login: str, handle: str) -> "Response":
         resp = RedirectResponse("/dashboard", status_code=302)
         resp.set_cookie(
@@ -953,6 +972,7 @@ class Dashboard:
             self.auth.issue(subject, email_or_login, handle),
             max_age=self.settings.dashboard_session_ttl_hours * 3600,
             httponly=True, secure=True, samesite="lax", path="/",
+            domain=self._cookie_domain(),
         )
         return resp
 
