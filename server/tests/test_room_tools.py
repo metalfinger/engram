@@ -252,3 +252,19 @@ async def test_grant_check_rejects_traversal_paths_by_itself(mu, monkeypatch):
         app_module.registry.rooms.assert_grant(
             r.id, alice_id, "projects/slate/../private-x/context.md"
         )
+
+
+@pytest.mark.asyncio
+async def test_turns_carry_who_actually_wrote_them(mu, monkeypatch):
+    """Demarcation (Hiren): a turn from the person and a turn from their Claude
+    must be distinguishable. MCP posts -> via=claude; the widget composer ->
+    via=human; system turns carry no via."""
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_room_open("who-said-it", "actor attribution", invite="@bob")
+    await app_module.kb_room_post("who-said-it", "my Claude wrote this")
+    await app_module.room_reply("who-said-it", "the human typed this in the app")
+    turns = (await app_module.kb_room_read("who-said-it", since=0))["turns"]
+    by_body = {t["body"]: t for t in turns}
+    assert by_body["my Claude wrote this"]["via"] == "claude"
+    assert by_body["the human typed this in the app"]["via"] == "human"
+    assert "via" not in next(t for t in turns if t["kind"] == "system")

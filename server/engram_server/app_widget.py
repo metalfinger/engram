@@ -154,6 +154,7 @@ h1 { font-size:1.25rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .2r
 .rmeta { color:var(--muted); font-size:.72rem; }
 .rgrants { display:flex; gap:.35rem; flex-wrap:wrap; margin:.3rem 0 0; }
 .rgrants .badge code { font-size:.68rem; }
+.viachip { font-size:.6rem; margin-left:.3rem; opacity:.7; }
 .headrow { display:flex; align-items:center; gap:.5rem; }
 .headrow h1 { flex:1 1 auto; min-width:0; margin:0; }
 
@@ -963,8 +964,9 @@ function roomBubble(t){
   const kind=t.kind||"message"; const me=(t.author===((state.roomsData&&state.roomsData.me)||"__none__"));
   if(kind==="system") return '<div class="row sys"><div class="bubble">'+esc(t.body||"")+'</div></div>';
   if(kind==="guest_read") return '<div class="row audit"><div class="bubble">'+esc(t.author||"guest")+" read this &mdash; "+esc(t.body||"")+'</div></div>';
+  const via=(t.via==="claude")?'<span class="viachip" title="written by their Claude">🤖</span>':"";
   return '<div class="row'+(me?" me":"")+'">'+(me?"":avatarHtml(t.author,t.author,null,"sm"))
-    +'<div class="bubble"><div class="who">'+esc(t.author||"")+'</div><div class="msg">'+esc(t.body||"")+'</div>'
+    +'<div class="bubble"><div class="who">'+esc(t.author||"")+via+'</div><div class="msg">'+esc(t.body||"")+'</div>'
     +(t.created?'<div class="tm">'+esc(relTime(t.created))+'</div>':'')+'</div></div>';
 }
 function appendRoomTurns(turns){

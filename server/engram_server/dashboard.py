@@ -1396,6 +1396,8 @@ class Dashboard:
             ".empty-cta{background:var(--surface);border:1px dashed var(--line-2);border-radius:12px;"
             "padding:1.2rem;text-align:center;color:var(--muted);margin:.6rem 0}"
             ".empty-cta b{color:var(--fg)}"
+            ".via-chip{font-size:.62rem;background:var(--surface-2);border:1px solid var(--line-2);"
+            "border-radius:999px;padding:.02rem .45rem;color:var(--muted);margin-left:.35rem}"
             "</style></head><body>"
             "<input type=checkbox id=navcb class=navcb aria-hidden=true>"
             "<header class=topbar><div class=topbar-inner>"
@@ -1863,10 +1865,15 @@ class Dashboard:
             handle = handles.get(t.user_id, str(t.user_id))
             rel, exact = humanize_time(t.created)
             body_html = render_markdown_public(t.body)
+            sess = t.session or ""
+            via_tag = (
+                "<span class='via-chip' title='written by their Claude'>🤖 Claude</span>"
+                if sess == "claude" else ""
+            )
             parts.append(
                 f"<div class='bubble {side} c{color}'>"
                 f"<div class='bhead'>{self._avatar_for(handle, size=18)} "
-                f"<span class='bsender'>@{esc(handle)}</span>"
+                f"<span class='bsender'>@{esc(handle)}</span>{via_tag}"
                 f"<span class='btime' title='{esc(exact)}'>{esc(rel)}</span></div>"
                 f"<div class='bbody md'>{body_html}</div></div>"
             )
@@ -1931,7 +1938,8 @@ class Dashboard:
             "since=t.id;"
             "var div=document.createElement('div');"
             "div.className='bubble left c0';"
-            "div.innerHTML='<div class=\"bhead\"><span class=\"bsender\">@'+esc(t.author)+'</span></div>'"
+            "div.innerHTML='<div class=\"bhead\"><span class=\"bsender\">@'+esc(t.author)+'</span>'"
+            "+(t.via==='claude'?'<span class=\"via-chip\">🤖 Claude</span>':'')+'</div>'"
             "+'<div class=\"bbody\">'+esc(t.body)+'</div>';"
             "box.appendChild(div);"
             "});"
@@ -2052,7 +2060,8 @@ class Dashboard:
         handles = self.registry.tenancy_handle_map()
         out = [
             {"id": t.id, "author": handles.get(t.user_id, str(t.user_id)), "kind": t.kind,
-             "body": t.body, "created": t.created}
+             "body": t.body, "created": t.created,
+             "via": ("human" if ((t.session or "").startswith("dashboard:") or (t.session or "") in ("web","app")) else ("claude" if (t.session or "") == "claude" else ""))}
             for t in turns
         ]
         cursor = out[-1]["id"] if out else since

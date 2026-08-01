@@ -1755,8 +1755,14 @@ def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
 
 
 def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:
-    return {"id": t.id, "author": handles.get(t.user_id, "?"), "kind": t.kind,
-            "body": t.body, "created": t.created}
+    sess = t.session or ""
+    via = ("human" if (sess in ("web", "app") or sess.startswith("dashboard:"))
+           else ("claude" if sess == "claude" else ""))
+    out = {"id": t.id, "author": handles.get(t.user_id, "?"), "kind": t.kind,
+           "body": t.body, "created": t.created}
+    if via:
+        out["via"] = via  # who actually wrote it: the person, or their Claude
+    return out
 
 
 @mcp.tool()
@@ -1854,7 +1860,7 @@ async def kb_room_post(
     r = _room_of(room)
     _room_scan(message, "room message")
     _rate_limit_post()
-    turn = registry.rooms.post_turn(r.id, me.id, message)
+    turn = registry.rooms.post_turn(r.id, me.id, message, session="claude")
     await _room_notify(r.id)
     handles = registry.tenancy_handle_map()
     replies: list[dict[str, Any]] = []
@@ -1957,7 +1963,7 @@ async def kb_room_search(room: str, owner: str, query: str) -> dict[str, Any]:
     t = registry.rooms.post_turn(
         r.id, me.id,
         f"searched @{owner_user.handle}'s granted work for '{query[:80]}' ({len(results)} hits)",
-        kind="guest_read",
+        kind="guest_read", session="claude",
     )
     await _room_notify(r.id)
     return {"results": results[:12], "turn": t.id}
@@ -1978,7 +1984,7 @@ async def kb_room_fetch(room: str, owner: str, path: str) -> dict[str, Any]:
     store = await registry.store_for_handle(owner_user.handle)
     got = await store.kb_read(path)
     t = registry.rooms.post_turn(
-        r.id, me.id, f"read @{owner_user.handle}'s {path}", kind="guest_read"
+        r.id, me.id, f"read @{owner_user.handle}'s {path}", kind="guest_read", session="claude"
     )
     await _room_notify(r.id)
     return {**got, "owner": owner_user.handle, "turn": t.id}
@@ -2101,7 +2107,8 @@ async def room_reply(room: str, message: str) -> dict[str, Any]:
     r = _room_of(room)
     _room_scan(message, "room message")
     _rate_limit_post()
-    turn = registry.rooms.post_turn(r.id, me.id, message)
+    # The widget composer is the HUMAN typing in claude.ai — not their model.
+    turn = registry.rooms.post_turn(r.id, me.id, message, session="app")
     await _room_notify(r.id)
     return {"ok": True, "turn": _turn_view(turn, registry.tenancy_handle_map())}
 
