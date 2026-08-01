@@ -420,6 +420,23 @@ class RoomStore:
                 ).fetchone()
                 read_floor = read_row["last_turn_id"] if read_row is not None else 0
                 unread = max(0, last_id - read_floor)
+                messages_used = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM room_turns WHERE room_id = ? AND kind = 'message'",
+                    (room.id,),
+                ).fetchone()["n"]
+                last_turn_row = self._conn.execute(
+                    "SELECT user_id, kind, body, created FROM room_turns "
+                    "WHERE room_id = ? ORDER BY id DESC LIMIT 1",
+                    (room.id,),
+                ).fetchone()
+                last_turn = None
+                if last_turn_row is not None:
+                    last_turn = {
+                        "author_id": last_turn_row["user_id"],
+                        "kind": last_turn_row["kind"],
+                        "body": last_turn_row["body"][:200],
+                        "created": last_turn_row["created"],
+                    }
                 results.append({
                     "id": room.id,
                     "name": room.name,
@@ -436,6 +453,8 @@ class RoomStore:
                     "member_ids": member_ids,
                     "last_turn_id": last_id,
                     "unread": unread,
+                    "messages_used": messages_used,
+                    "last_turn": last_turn,
                 })
         return results
 
@@ -658,3 +677,39 @@ class PresenceStore:
             "updated": row["updated"],
             "minutes_ago": minutes_ago,
         }
+
+
+# ---------------------------------------------------------------- long-poll bus
+# The waiting primitive shared by EVERY room writer (MCP tools in app.py, the web
+# reply form in dashboard.py): posting a turn calls room_notify(room_id); a waiting
+# reader calls room_wait(room_id, seconds). asyncio-level (the stores stay sync) and
+# in-process — one server, one loop, so a Condition per room is sufficient and a
+# waiting agent costs nothing while idle. Never add client-side polling on top.
+
+import asyncio as _asyncio
+
+_room_conditions: dict[int, _asyncio.Condition] = {}
+
+
+def _room_condition(room_id: int) -> _asyncio.Condition:
+    cond = _room_conditions.get(room_id)
+    if cond is None:
+        cond = _room_conditions[room_id] = _asyncio.Condition()
+    return cond
+
+
+async def room_notify(room_id: int) -> None:
+    """Wake every waiter on a room — call after ANY turn lands (message/system/audit)."""
+    cond = _room_condition(room_id)
+    async with cond:
+        cond.notify_all()
+
+
+async def room_wait(room_id: int, seconds: int) -> None:
+    """Block until the room sees a new turn or the timeout lapses (1..120s clamp)."""
+    cond = _room_condition(room_id)
+    try:
+        async with cond:
+            await _asyncio.wait_for(cond.wait(), timeout=max(1, min(120, seconds)))
+    except (TimeoutError, _asyncio.TimeoutError):
+        pass

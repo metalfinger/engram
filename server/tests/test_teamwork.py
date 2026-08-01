@@ -214,6 +214,58 @@ def test_unread_drops_to_zero_after_read_turns(rooms):
     assert this_room_after["unread"] == 0
 
 
+def test_list_rooms_for_messages_used_and_last_turn(rooms):
+    room = rooms.open_room(1, "planning", "goal", turn_budget=10, hard_cap=20)
+    rooms.invite(room.id, 1, 2)
+    # only "message" kind turns count toward messages_used
+    rooms.post_turn(room.id, 1, "one")
+    rooms.post_turn(room.id, 1, "two")
+    rooms.post_turn(room.id, 1, "a system note", kind="system")
+
+    listing = rooms.list_rooms_for(1)
+    this_room = next(r for r in listing if r["id"] == room.id)
+    assert this_room["messages_used"] == 2  # system turns excluded, "room opened" excluded too
+    assert this_room["last_turn"] == {
+        "author_id": 1,
+        "kind": "system",
+        "body": "a system note",
+        "created": this_room["last_turn"]["created"],
+    }
+
+
+def test_list_rooms_for_last_turn_body_truncated_to_200(rooms):
+    room = rooms.open_room(1, "planning", "goal")
+    long_body = "x" * 4000
+    rooms.post_turn(room.id, 1, long_body)
+    listing = rooms.list_rooms_for(1)
+    this_room = next(r for r in listing if r["id"] == room.id)
+    assert this_room["last_turn"]["body"] == "x" * 200
+
+
+def test_list_rooms_for_last_turn_none_when_room_has_no_turns(rooms):
+    # unreachable in practice (open_room always writes a system turn), but the
+    # contract says last_turn can be None — cover it directly against the store.
+    with rooms._lock:
+        rooms._conn.execute(
+            "INSERT INTO rooms (name, creator_id, goal, exit_condition, turn_budget, "
+            "hard_cap, status, outcome, created, closed_at) "
+            "VALUES ('empty-room', 1, 'goal', '', 40, 200, 'open', NULL, '2026-01-01T00:00:00Z', NULL)"
+        )
+        room_id = rooms._conn.execute(
+            "SELECT id FROM rooms WHERE name = 'empty-room'"
+        ).fetchone()["id"]
+        rooms._conn.execute(
+            "INSERT INTO room_members (room_id, user_id, invited_by, joined) "
+            "VALUES (?, 1, NULL, '2026-01-01T00:00:00Z')",
+            (room_id,),
+        )
+        rooms._conn.commit()
+    listing = rooms.list_rooms_for(1)
+    this_room = next(r for r in listing if r["id"] == room_id)
+    assert this_room["last_turn"] is None
+    assert this_room["messages_used"] == 0
+
+
 def test_last_turn_id(rooms):
     room = rooms.open_room(1, "planning", "goal")
     assert rooms.last_turn_id(room.id) >= 1

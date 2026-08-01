@@ -14,6 +14,7 @@ import asyncio
 import logging
 import posixpath
 import sys
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -95,7 +96,54 @@ async def current_store() -> KBStore:
         # (returned in single-user mode and for owner subjects/handle), so the
         # operator is never throttled or quota-capped.
         limits.enforce(resolved, token.subject, settings)
+    _touch_presence(token.subject)
     return resolved
+
+
+# v3 Wave 3: team presence derived from tool calls. The server sees every kb_*
+# call with the caller's identity — zero setup for teammates (the hook->spool
+# path only ever worked on the operator's own machines). Throttled in-memory so
+# presence costs one SQLite upsert per user per minute, not per call. The tool
+# name comes from the calling frame (tool bodies call current_store directly);
+# frame introspection is best-effort — '' on any surprise. Project attribution
+# is explicit, not guessed: kb_load / kb_attach_project call _presence_project.
+_PRESENCE_THROTTLE_S = 60.0
+_presence_last: dict[int, float] = {}
+
+
+def _touch_presence(subject: str) -> None:
+    if not settings.multiuser:
+        return
+    try:
+        user = registry.tenancy.user_by_subject(subject)
+        if user is None:
+            return
+        now = time.monotonic()
+        if now - _presence_last.get(user.id, 0.0) < _PRESENCE_THROTTLE_S:
+            return
+        _presence_last[user.id] = now
+        tool = ""
+        try:
+            tool = sys._getframe(2).f_code.co_name  # noqa: SLF001 — best-effort label
+        except Exception:  # noqa: BLE001
+            tool = ""
+        if not tool.startswith("kb_"):
+            tool = ""
+        registry.presence.touch(user.id, tool=tool)
+    except Exception:  # noqa: BLE001 — presence must NEVER break a tool call
+        log.debug("presence touch failed", exc_info=True)
+
+
+def _presence_project(project: str) -> None:
+    """Explicit project attribution (called by kb_load / kb_attach_project)."""
+    if not settings.multiuser:
+        return
+    try:
+        user = current_user()
+        if user is not None and project:
+            registry.presence.touch(user.id, tool="kb_load", project=project)
+    except Exception:  # noqa: BLE001
+        log.debug("presence project set failed", exc_info=True)
 
 
 def current_user():
@@ -275,6 +323,7 @@ async def kb_load(project: str, lite: bool = False) -> dict[str, Any]:
     kb_notifications and kb_messages show them).
     """
     result = await (await current_store()).kb_load(project, lite)
+    _presence_project(project)
     if settings.multiuser:
         user = current_user()
         if user is not None:
@@ -1295,6 +1344,7 @@ async def kb_attach_project(project: str = "", description: str = "") -> dict[st
                            "new name + description), then call kb_attach_project again.",
         }
     result = await store.ensure_project(project, description)
+    _presence_project(project)
     return {
         **result,
         "pin_file": ".engram-project",
@@ -1615,6 +1665,370 @@ async def kb_asks() -> dict[str, Any]:
             for a in registry.discovery.list_asks_by(me.id)
         ],
     }
+
+
+# ---------------------------------------------------- rooms (v3 Wave 4: live joins across brains)
+# A room is where two+ people's Claudes converge live AND can reach back into the
+# async substrate mid-conversation (kb_room_search/kb_room_fetch over room-scoped
+# grants). Cross-user state, so rooms live in the neutral engram.db — never in a
+# git brain. Long-poll is the only waiting primitive; never client-side polling.
+
+from engram_server.teamwork import room_notify as _room_notify  # noqa: E402
+from engram_server.teamwork import room_wait as _room_wait  # noqa: E402
+
+
+def _require_room_user():
+    me = _require_user()
+    if me is None:
+        raise KBError(
+            "Rooms are a multi-user feature (live rooms between Engram accounts). "
+            "Same-brain session rendezvous still works via kb_thread_post/kb_thread_read."
+        )
+    return me
+
+
+def _room_of(name: str):
+    room = registry.rooms.room_by_name(name.strip().lower())
+    if room is None:
+        raise KBError(f"No room named '{name}'. kb_rooms() lists yours; kb_room_open starts one.")
+    return room
+
+
+def _room_scan(text: str, what: str) -> None:
+    findings = _scan_secrets(text)
+    if findings:
+        kinds = sorted({k for k, _ in findings})
+        raise KBError(
+            f"Refusing: this {what} contains what look like secrets ({', '.join(kinds)}). "
+            "Room content is visible to every member and lands in the shared DB."
+        )
+
+
+def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
+    handles = registry.tenancy_handle_map()
+    members = registry.rooms.members(room.id)
+    view = {
+        "name": room.name, "goal": room.goal, "exit_condition": room.exit_condition,
+        "status": room.status, "turn_budget": room.turn_budget, "hard_cap": room.hard_cap,
+        "creator": handles.get(room.creator_id, "?"),
+        "members": [handles.get(m["user_id"], "?") for m in members],
+        "created": room.created, "closed_at": room.closed_at, "outcome": room.outcome,
+        "grants": [
+            {"by": handles.get(g["grantor_id"], "?"), "path": g["path_prefix"]}
+            for g in registry.rooms.grants_for(room.id)
+        ],
+    }
+    return view
+
+
+def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:
+    return {"id": t.id, "author": handles.get(t.user_id, "?"), "kind": t.kind,
+            "body": t.body, "created": t.created}
+
+
+@mcp.tool()
+async def kb_room_open(
+    name: str,
+    goal: str,
+    exit_condition: str = "",
+    invite: str = "",
+    grant: str = "",
+    turn_budget: int = 40,
+    hard_cap: int = 200,
+) -> dict[str, Any]:
+    """Open a live ROOM — a shared space where your Claude and your teammates' Claudes
+    talk in real time AND can search each other's granted work mid-conversation. Use
+    when the user wants to work something out with specific people ("open a room with
+    riya about the deploy"), or when a discovery (kb_explore / kb_common_ground) is
+    worth a live conversation.
+
+    `goal` is REQUIRED and `exit_condition` strongly encouraged — rooms have a turn
+    budget precisely so agent conversations terminate instead of politely agreeing
+    forever. `invite`: comma-separated @handles — each gets a notification (Chrome
+    extension + email) with the room name. `grant`: comma-separated path prefixes of
+    YOUR brain (e.g. 'projects/slate') that other members' Claudes may search/read
+    WHILE THIS ROOM IS OPEN — auto-revoked on close, every access logged as a
+    visible turn. Never grant a whole brain; messages/inbox/workspace can never be
+    granted.
+
+    Then post with kb_room_post (wait_for_reply=True), and close with kb_room_close —
+    which offers the outcome back to the user for their brain.
+
+    Returns {room, invited: [...]}.
+    """
+    me = _require_room_user()
+    _room_scan(f"{goal}\n{exit_condition}", "room goal")
+    room = registry.rooms.open_room(
+        me.id, name, goal, exit_condition=exit_condition,
+        turn_budget=turn_budget, hard_cap=hard_cap,
+    )
+    invited: list[str] = []
+    for h in [x.strip().lstrip("@").lower() for x in invite.split(",") if x.strip()]:
+        other = registry.tenancy.user_by_handle(h)
+        if other is None or other.id == me.id:
+            continue
+        if registry.rooms.invite(room.id, me.id, other.id):
+            invited.append(h)
+            _push_notification(
+                other.id, "room_invite",
+                f"@{me.handle} invited you to room '{room.name}': {room.goal[:120]}",
+                ref=room.name,
+            )
+    for p in [x.strip() for x in grant.split(",") if x.strip()]:
+        registry.rooms.add_grant(room.id, me.id, p)
+    return {"room": _room_view(room), "invited": invited}
+
+
+@mcp.tool()
+async def kb_rooms(include_closed: bool = False) -> dict[str, Any]:
+    """List the rooms you are in — live first — with unread counts and budget state.
+    Call when the user asks what's happening, whether anyone needs them, or to find a
+    room by name. Returns {rooms: [{name, goal, status, members, unread, messages_used,
+    turn_budget, last_turn}]}."""
+    me = _require_room_user()
+    handles = registry.tenancy_handle_map()
+    rooms = []
+    for row in registry.rooms.list_rooms_for(me.id, include_closed=include_closed):
+        rooms.append({
+            "name": row["name"], "goal": row["goal"], "status": row["status"],
+            "members": [handles.get(uid, "?") for uid in row["member_ids"]],
+            "unread": row["unread"], "messages_used": row.get("messages_used", 0),
+            "turn_budget": row["turn_budget"], "hard_cap": row["hard_cap"],
+            "last_turn": row.get("last_turn"),
+        })
+    return {"rooms": rooms}
+
+
+@mcp.tool()
+async def kb_room_post(
+    room: str,
+    message: str,
+    wait_for_reply: bool = False,
+    wait_seconds: int = 25,
+) -> dict[str, Any]:
+    """Post a turn into a room. PREFER wait_for_reply=True (wait_seconds up to 120):
+    it long-polls SERVER-SIDE for someone else's next turn — free while idle — instead
+    of you polling. Never poll kb_room_read in a tight loop.
+
+    Respect the room's goal and exit condition: if the goal is met, say so and call
+    kb_room_close instead of another agreeable turn. Posts are refused past the turn
+    budget (extend with kb_room_extend only if genuinely converging) and absolutely
+    refused at the hard cap.
+
+    Returns {turn, replies: [...]} — replies filled when wait_for_reply caught turns.
+    """
+    me = _require_room_user()
+    r = _room_of(room)
+    _room_scan(message, "room message")
+    _rate_limit_post()
+    turn = registry.rooms.post_turn(r.id, me.id, message)
+    await _room_notify(r.id)
+    handles = registry.tenancy_handle_map()
+    replies: list[dict[str, Any]] = []
+    if wait_for_reply:
+        deadline = asyncio.get_event_loop().time() + max(1, min(120, wait_seconds))
+        while not replies and asyncio.get_event_loop().time() < deadline:
+            remaining = int(deadline - asyncio.get_event_loop().time()) or 1
+            await _room_wait(r.id, remaining)
+            fresh = registry.rooms.read_turns(r.id, me.id, since_id=turn.id)
+            replies = [_turn_view(t, handles) for t in fresh if t.user_id != me.id]
+    return {"turn": _turn_view(turn, handles), "replies": replies}
+
+
+@mcp.tool()
+async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict[str, Any]:
+    """Read a room's turns after cursor `since` (turn id). Pass wait_seconds (e.g. 25)
+    to long-poll server-side for the next turn instead of polling — free while idle.
+    Returns {room, turns: [...], cursor}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
+    if not turns and wait_seconds > 0 and r.status == "open":
+        await _room_wait(r.id, wait_seconds)
+        turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
+    handles = registry.tenancy_handle_map()
+    return {
+        "room": _room_view(r),
+        "turns": [_turn_view(t, handles) for t in turns],
+        "cursor": turns[-1].id if turns else since,
+    }
+
+
+@mcp.tool()
+async def kb_room_invite(room: str, handle: str) -> dict[str, Any]:
+    """Invite another Engram user into an open room you are in. They get a notification
+    (Chrome extension + email). Returns {invited: bool}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    other = registry.tenancy.user_by_handle(handle.lstrip("@").lower())
+    if other is None:
+        raise KBError(f"No Engram user @{handle.lstrip('@')}. kb_explore() lists people.")
+    added = registry.rooms.invite(r.id, me.id, other.id)
+    if added:
+        _push_notification(
+            other.id, "room_invite",
+            f"@{me.handle} invited you to room '{r.name}': {r.goal[:120]}",
+            ref=r.name,
+        )
+    return {"invited": added}
+
+
+@mcp.tool()
+async def kb_room_grant(room: str, path: str) -> dict[str, Any]:
+    """Grant the members of an open room read+search access to a PATH PREFIX of your
+    brain (e.g. 'projects/slate') for the life of the room. Auto-revoked on close;
+    every access is logged as a visible turn. Confirm with the user first — anything
+    read may be copied. Never grant broad prefixes like 'projects'.
+    Returns {granted: path}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    registry.rooms.add_grant(r.id, me.id, path)
+    handles = registry.tenancy_handle_map()
+    t = registry.rooms.post_turn(
+        r.id, me.id, f"granted room access to '{path}'", kind="system"
+    )
+    await _room_notify(r.id)
+    return {"granted": path, "turn": _turn_view(t, handles)}
+
+
+@mcp.tool()
+async def kb_room_search(room: str, owner: str, query: str) -> dict[str, Any]:
+    """Search a fellow room member's GRANTED slice of their brain — the live-join
+    superpower: mid-conversation, pull the exact decision out of their work instead of
+    asking them to remember it. Only paths they granted to THIS room are searchable;
+    the search is logged in the room as an audit turn. Read a specific hit with
+    kb_room_fetch. Returns {results: [...]}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    owner_user = registry.tenancy.user_by_handle(owner.lstrip("@").lower())
+    if owner_user is None:
+        raise KBError(f"No Engram user @{owner.lstrip('@')}.")
+    grants = [g for g in registry.rooms.grants_for(r.id) if g["grantor_id"] == owner_user.id]
+    if not grants:
+        raise KBError(
+            f"@{owner_user.handle} has granted nothing to this room. They can with "
+            "kb_room_grant('{room}', 'projects/<their-project>')."
+        )
+    store = await registry.store_for_handle(owner_user.handle)
+    raw = await store.kb_search(query, limit=20)
+    results = []
+    for hit in raw or []:
+        for g in grants:
+            try:
+                registry.rooms.assert_grant(r.id, owner_user.id, hit["path"])
+                results.append(hit)
+                break
+            except Exception:  # noqa: BLE001 — not covered by this grant, try next
+                continue
+    t = registry.rooms.post_turn(
+        r.id, me.id,
+        f"searched @{owner_user.handle}'s granted work for '{query[:80]}' ({len(results)} hits)",
+        kind="guest_read",
+    )
+    await _room_notify(r.id)
+    return {"results": results[:12], "turn": t.id}
+
+
+@mcp.tool()
+async def kb_room_fetch(room: str, owner: str, path: str) -> dict[str, Any]:
+    """Read ONE concept from a fellow room member's granted slice (path must sit under
+    a prefix they granted to this room). Logged as an audit turn. Returns the concept
+    like kb_read (no depth)."""
+    me = _require_room_user()
+    r = _room_of(room)
+    owner_user = registry.tenancy.user_by_handle(owner.lstrip("@").lower())
+    if owner_user is None:
+        raise KBError(f"No Engram user @{owner.lstrip('@')}.")
+    registry.rooms.assert_grant(r.id, owner_user.id, path)
+    store = await registry.store_for_handle(owner_user.handle)
+    got = await store.kb_read(path)
+    t = registry.rooms.post_turn(
+        r.id, me.id, f"read @{owner_user.handle}'s {path}", kind="guest_read"
+    )
+    await _room_notify(r.id)
+    return {**got, "owner": owner_user.handle, "turn": t.id}
+
+
+@mcp.tool()
+async def kb_room_extend(room: str, extra_turns: int = 20) -> dict[str, Any]:
+    """Raise an open room's turn budget (never past its hard cap). Only extend when the
+    conversation is genuinely converging on the goal — if it's circling, close instead.
+    Returns {turn_budget}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    updated = registry.rooms.extend_budget(r.id, me.id, extra_turns)
+    await _room_notify(r.id)
+    return {"turn_budget": updated.turn_budget, "hard_cap": updated.hard_cap}
+
+
+@mcp.tool()
+async def kb_room_close(room: str, outcome: str = "") -> dict[str, Any]:
+    """Close a room — and PRECIPITATE it. `outcome` should be a 3-10 line synthesis of
+    what was decided/learned (write it yourself from the transcript before calling).
+
+    The outcome is only STORED on the room and OFFERED back: present it to the user
+    and, if they accept, write it into THEIR brain with kb_write (type: decision or
+    note, body ending with 'From room <name>, closed <date>'). Never write it without
+    their yes — a room's conclusion is offered, not committed (quarantine principle).
+    Every other member's Claude gets the same offer via the close notification.
+
+    Returns {room, precipitate_instruction}.
+    """
+    me = _require_room_user()
+    r = _room_of(room)
+    _room_scan(outcome, "room outcome")
+    closed = registry.rooms.close_room(r.id, me.id, outcome=outcome)
+    await _room_notify(r.id)
+    handles = registry.tenancy_handle_map()
+    for m in registry.rooms.members(closed.id):
+        if m["user_id"] != me.id:
+            _push_notification(
+                m["user_id"], "room_closed",
+                f"Room '{closed.name}' closed by @{me.handle}"
+                + (f" — outcome: {outcome[:100]}" if outcome else ""),
+                ref=closed.name,
+            )
+    return {
+        "room": _room_view(closed),
+        "precipitate_instruction": (
+            "Offer this outcome to the user. If they accept, save it to their brain: "
+            "kb_write('projects/<relevant>/decisions/<date>-<slug>.md', ...) with the "
+            f"outcome as body and provenance line 'From room {closed.name}, closed "
+            f"{closed.closed_at}'. Do NOT write without their explicit yes."
+        ),
+    }
+
+
+def _team_state_payload() -> dict[str, Any]:
+    """Who's working right now (tool-call-derived presence). Shared by the widget
+    data plane, the dashboard, and the extension endpoint."""
+    users = {u.id: u for u in registry.tenancy.list_users()}
+    team = []
+    for row in registry.presence.roster(active_minutes=120):
+        u = users.get(row["user_id"])
+        if u is None or u.status != "active":
+            continue
+        team.append({
+            "handle": u.handle, "display_name": u.display_name or u.handle,
+            "avatar_url": u.avatar_url or "", "project": row["project"],
+            "tool": row["tool"], "minutes_ago": row["minutes_ago"],
+        })
+    return {"team": team}
+
+
+@mcp.tool()
+async def kb_team(invisible: bool | None = None) -> dict[str, Any]:
+    """Your team, live — who's working on what right now (presence is derived from
+    tool calls; project-level only, never content). Call when the user asks who's
+    around / what the team is doing. Pass invisible=True/False to toggle YOUR OWN
+    invisible mode (hidden from everyone's roster until turned off).
+    Returns {team: [...], me: {invisible}}."""
+    me = _require_room_user()
+    if invisible is not None:
+        registry.presence.set_invisible(me.id, invisible)
+    state = _team_state_payload()
+    mine = registry.presence.self_row(me.id) or {}
+    return {**state, "me": {"handle": me.handle, "invisible": bool(mine.get("invisible"))}}
 
 
 # ---------------------------------------------------- explore widget (app-only data plane)

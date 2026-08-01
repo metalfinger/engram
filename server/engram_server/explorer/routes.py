@@ -1615,6 +1615,36 @@ def _unfence_html(body: str) -> str:
     return text
 
 
+def _office_team(settings: Settings) -> list[dict]:
+    """Teammates for office.json — tool-call presence joined to accounts. Lazy imports
+    (registry/teamwork are outside the explorer layer); failure-soft: an office render
+    must never break because the neutral DB is missing (single-user, tests)."""
+    if not settings.multiuser:
+        return []
+    try:
+        from engram_server.registry import tenancy_db_path
+        from engram_server.teamwork import PresenceStore
+        from engram_server.tenancy import TenancyStore
+
+        db = tenancy_db_path(settings)
+        if not db.exists():
+            return []
+        users = {u.id: u for u in TenancyStore(db).list_users()}
+        team = []
+        for row in PresenceStore(db).roster(active_minutes=120):
+            u = users.get(row["user_id"])
+            if u is None or u.status != "active":
+                continue
+            team.append({
+                "handle": u.handle, "display_name": u.display_name or u.handle,
+                "avatar_url": u.avatar_url or "", "project": row["project"],
+                "tool": row["tool"], "minutes_ago": row["minutes_ago"],
+            })
+        return team
+    except Exception:  # noqa: BLE001 — presence is decoration, never a failure
+        return []
+
+
 def register(
     mcp: FastMCP,
     settings: Settings,
@@ -2445,7 +2475,11 @@ def register(
     @guard
     async def office_json(request: Request) -> Response:
         now = dt.datetime.now(dt.timezone.utc)
-        return JSONResponse(await to_thread.run_sync(office_payload, brain, now))
+        payload = await to_thread.run_sync(office_payload, brain, now)
+        # v3 Wave 3: teammates (tool-call-derived presence, neutral DB) ride along
+        # so every office consumer can render the team without a second endpoint.
+        payload["team"] = await to_thread.run_sync(_office_team, settings)
+        return JSONResponse(payload)
 
     @mcp.custom_route("/brain/api/session/{sid}", ["GET"])
     @guard

@@ -30,6 +30,7 @@ from .discovery import DiscoveryStore
 from .kbstore import KBStore
 from .provisioning import ensure_user_brain, user_settings
 from .social import SocialStore
+from .teamwork import PresenceStore, RoomStore
 from .tenancy import TenancyStore
 
 
@@ -51,6 +52,8 @@ class StoreRegistry:
         self._social: SocialStore | None = None
         self._capabilities: CapabilityStore | None = None
         self._discovery: DiscoveryStore | None = None
+        self._rooms: RoomStore | None = None
+        self._presence: PresenceStore | None = None
         self._owner_subjects = frozenset(
             s.strip() for s in settings.owner_subjects.split(",") if s.strip()
         )
@@ -86,6 +89,22 @@ class StoreRegistry:
             _ = self.tenancy
             self._discovery = DiscoveryStore(tenancy_db_path(self._settings))
         return self._discovery
+
+    @property
+    def rooms(self) -> RoomStore:
+        """Live rooms — joins across brains — over the SAME engram.db (v3 Wave 4)."""
+        if self._rooms is None:
+            _ = self.tenancy
+            self._rooms = RoomStore(tenancy_db_path(self._settings))
+        return self._rooms
+
+    @property
+    def presence(self) -> PresenceStore:
+        """Tool-call-derived team presence over the SAME engram.db (v3 Wave 3)."""
+        if self._presence is None:
+            _ = self.tenancy
+            self._presence = PresenceStore(tenancy_db_path(self._settings))
+        return self._presence
 
     def tenancy_handle_map(self) -> dict[int, str]:
         """{user_id: handle} for rendering social ids as @handles in tool output."""

@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-07-21.v2-discovery"
+SERVER_VERSION = "2026-08-01.v3-rooms"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -45,6 +45,11 @@ CURRENT_TOOLS = (
     "kb_follow", "kb_feed", "kb_ask", "kb_answer", "kb_asks",
     "kb_explore_card", "explore_state", "explore_profile",
     "explore_concept", "explore_follow", "explore_ask",
+    "kb_common_ground", "kb_team", "kb_app",
+    "kb_room_open", "kb_rooms", "kb_room_post", "kb_room_read",
+    "kb_room_invite", "kb_room_grant", "kb_room_search", "kb_room_fetch",
+    "kb_room_extend", "kb_room_close",
+    "rooms_state", "room_transcript", "room_reply", "team_state",
 )
 
 # A SHORT, human-readable list of what's new — one line each, surfaced in every kb_load so
@@ -69,6 +74,18 @@ CHANGES = (
     "signup is OPEN — anyone can create an Engram at /join (no invite needed)",
     "every session should anchor to a project: kb_attach_project (+ .engram-project pin)",
     "project FOLDERS: kb_move_project(project, folder) — real dirs, one project one place",
+    "v3 ROOMS: kb_room_open/post(wait_for_reply=True)/close — live rooms with teammates' "
+    "Claudes; room-scoped grants (kb_room_grant/search/fetch) auto-revoke on close; "
+    "close OFFERS the outcome for the user's brain (never auto-writes)",
+    "team search: kb_explore(query=...) is now SEMANTIC across the team's public work — "
+    "use it BEFORE solving a hard problem; kb_common_ground(handle) shows shared ground",
+    "team presence: automatic from tool calls (project-level only); kb_team lists who's "
+    "working; kb_team(invisible=True) hides you",
+    "morning briefing PUSH is retired — briefing is pull-only (ask for a briefing and "
+    "compose from live tools); no more daily artifacts/messages",
+    "ONE DOOR: brain.metalfinger.xyz is the human dashboard (same account as MCP + "
+    "extension); Cloudflare Access is gone",
+    "unified app: one widget (Home/Browse/People/Rooms/Office) replaces the five cards",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.
