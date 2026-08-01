@@ -82,6 +82,24 @@ EXPECTED_TOOLS = frozenset(
         "explore_concept",
         "explore_follow",
         "explore_ask",
+        # v3 (rooms + team + unified app)
+        "kb_common_ground",
+        "kb_team",
+        "kb_app",
+        "kb_room_open",
+        "kb_rooms",
+        "kb_room_post",
+        "kb_room_read",
+        "kb_room_invite",
+        "kb_room_grant",
+        "kb_room_search",
+        "kb_room_fetch",
+        "kb_room_extend",
+        "kb_room_close",
+        "rooms_state",
+        "room_transcript",
+        "room_reply",
+        "team_state",
     }
 )
 

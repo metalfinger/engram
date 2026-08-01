@@ -127,6 +127,7 @@ def register_office_widget(
     settings: "Settings",
     store: "KBStore",
     resolver: "Callable[[], Awaitable[KBStore]] | None" = None,
+    launcher_meta: dict | None = None,
 ) -> None:
     """Register the office resource (+ 3 floor-art sub-resources) and the
     kb_office/office_state tools when ``settings.widget`` is on; a no-op when off —
@@ -160,7 +161,7 @@ def register_office_widget(
     def office_manifest_resource() -> str:
         return (_FLOOR_DIR / "manifest.json").read_text(encoding="utf-8")
 
-    @mcp.tool(meta=office_tool_meta(True))
+    @mcp.tool(meta=launcher_meta if launcher_meta is not None else office_tool_meta(True))
     async def kb_office() -> dict[str, Any]:
         """Show Hiren his live office — call when he asks about the office, who's
         around, who's online, or what meetings are happening. Mounts the office
@@ -174,7 +175,8 @@ def register_office_widget(
         """
         now = dt.datetime.now(dt.timezone.utc)
         payload = await to_thread.run_sync(office_payload, await _brain(), now)
-        return office_summary(payload)
+        # "view" hint: under the unified app this launcher opens the Office tab.
+        return {"view": "office", **office_summary(payload)}
 
     @mcp.tool(meta=office_state_tool_meta(True))
     async def office_state() -> dict[str, Any]:

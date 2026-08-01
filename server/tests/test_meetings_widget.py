@@ -217,8 +217,10 @@ def test_app_flag_on_wires_meetings_tools_and_resource(monkeypatch) -> None:
     app_module = _reload_app(monkeypatch, widget=True)
     try:
         tools = {t.name: t for t in asyncio.run(app_module.mcp.list_tools())}
+        # v3: the launcher mounts the unified app (Rooms tab); the meetings
+        # resource itself stays registered for chats that mounted the old card.
         assert tools["kb_meetings"].meta == {
-            "ui": {"resourceUri": MEETINGS_URI, "visibility": ["model", "app"]}
+            "ui": {"resourceUri": "ui://engram/app", "visibility": ["model", "app"]}
         }
         for name in ("meetings_state", "meeting_transcript", "meeting_reply"):
             assert tools[name].meta == {"ui": {"visibility": ["app"]}}, name

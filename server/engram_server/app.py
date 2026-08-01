@@ -48,6 +48,11 @@ from engram_server.meetings_widget import (
     meetings_tool_meta,
     register_meetings_widget,
 )
+from engram_server.app_widget import (
+    app_launcher_meta,
+    app_only_meta,
+    register_app_widget,
+)
 from engram_server.navigator import navigator_tool_meta, register_navigator
 from engram_server.office_widget import register_office_widget
 from engram_server.social_widget import (
@@ -258,13 +263,19 @@ mcp = FastMCP(
 # Brain Navigator widget (SEP-1865): when ENGRAM_WIDGET is on, the three
 # navigation tools advertise the ui:// resource so a capable host mounts the
 # inline card. When off, _nav_meta is None and the tools stay plain.
-_nav_meta = navigator_tool_meta(settings.widget)
+# v3 unified app: EVERY launcher now mounts ui://engram/app (one widget, five
+# tabs). The old per-widget resources stay registered below so a card already
+# mounted in an existing chat keeps resolving — only NEW mounts get the app.
+_app_meta = app_launcher_meta(settings.widget)
+_app_only_meta = app_only_meta(settings.widget)
+_nav_meta = _app_meta
+_legacy_nav_meta = navigator_tool_meta(settings.widget)  # kept: stale-chat contract
 
 # Meeting widget (SEP-1865): kb_meetings mounts it (model+app visible, stays a
 # fully useful plain tool when no widget host is present); the other three are
 # APP-ONLY — the widget's own data plane, invisible to the model, zero context
 # cost, callable only from the widget's tools/call bridge.
-_meet_meta = meetings_tool_meta(settings.widget)
+_meet_meta = _app_meta  # v3: meetings mount the unified app's Rooms tab
 _meet_app_meta = meetings_app_tool_meta(settings.widget)
 
 
@@ -663,7 +674,8 @@ async def kb_meetings() -> dict[str, Any]:
 
     Mounts the meetings widget; keep your text to one short line after it mounts.
     """
-    return await meetings_payload(await current_store())
+    payload = await meetings_payload(await current_store())
+    return {"view": "rooms", **payload}  # unified app: opens the Rooms tab
 
 
 @mcp.tool(meta=_meet_app_meta)
@@ -1185,7 +1197,7 @@ async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
 # model, zero context). Each resolves the caller via current_user() exactly like the
 # conversational social tools, and the widget only ever reaches them over the bridge.
 
-_social_meta = social_tool_meta(settings.widget)
+_social_meta = _app_meta  # v3: the Messages card is the unified app's Rooms tab
 _social_app_meta = social_app_tool_meta(settings.widget)
 
 
@@ -1209,10 +1221,12 @@ async def kb_inbox_card() -> dict[str, Any]:
     """
     me = _require_user()
     if me is None:
-        return {"unread_dms": 0, "unread_notifications": 0, "contacts": 0, "note": "single-user mode"}
+        return {"view": "rooms", "unread_dms": 0, "unread_notifications": 0, "contacts": 0,
+                "note": "single-user mode"}
     counts = registry.social.unread_counts(me.id)
     graph = registry.social.list_contacts(me.id)
     return {
+        "view": "rooms",  # unified app: this launcher opens the Rooms tab
         "unread_dms": counts.get("dms", 0),
         "unread_notifications": counts.get("notifications", 0),
         "contacts": len(graph["accepted"]),
@@ -1999,6 +2013,88 @@ async def kb_room_close(room: str, outcome: str = "") -> dict[str, Any]:
     }
 
 
+@mcp.tool(meta=_app_meta)
+async def kb_app(view: str = "home") -> dict[str, Any]:
+    """Open the Engram app — the one card with everything: Home (projects), Browse
+    (search + artifacts), People (directory + presence), Rooms (live rooms + DMs +
+    notifications), Office (live floor). Call when the user says "open engram",
+    asks for their dashboard/overview in chat, or names a tab ("show the office").
+    Pass view to open a specific tab. After it mounts, say ONE short line and stop.
+
+    Returns a compact seed {view, projects, unread} — the app pulls its own data.
+    """
+    v = view if view in ("home", "browse", "people", "rooms", "office") else "home"
+    projects = await (await current_store()).kb_projects()
+    return {
+        "view": v,
+        "projects": len(projects),
+        "unread": sum(int(p.get("unread") or 0) for p in projects),
+    }
+
+
+def _rooms_state_payload(me) -> dict[str, Any]:
+    handles = registry.tenancy_handle_map()
+    rooms = []
+    for row in registry.rooms.list_rooms_for(me.id, include_closed=False):
+        last = row.get("last_turn")
+        rooms.append({
+            "id": row["id"], "name": row["name"], "goal": row["goal"],
+            "status": row["status"], "turn_budget": row["turn_budget"],
+            "hard_cap": row["hard_cap"], "messages_used": row.get("messages_used", 0),
+            "member_handles": [handles.get(uid, "?") for uid in row["member_ids"]],
+            "unread": row["unread"],
+            "last_turn": (
+                {"author": handles.get(last["author_id"], "?"), "body": last["body"],
+                 "created": last["created"]}
+                if last else None
+            ),
+        })
+    return {"me": me.handle, "rooms": rooms}
+
+
+@mcp.tool(meta=_app_only_meta)
+async def rooms_state() -> dict[str, Any]:
+    """App-only data plane for the unified app's Rooms tab. Never call directly —
+    use kb_rooms / kb_app."""
+    me = _require_room_user()
+    return _rooms_state_payload(me)
+
+
+@mcp.tool(meta=_app_only_meta)
+async def room_transcript(room: str) -> dict[str, Any]:
+    """App-only: one room's full transcript for the Rooms tab. Never call directly."""
+    me = _require_room_user()
+    r = _room_of(room)
+    turns = registry.rooms.read_turns(r.id, me.id, since_id=0)
+    handles = registry.tenancy_handle_map()
+    return {"room": _room_view(r), "turns": [_turn_view(t, handles) for t in turns]}
+
+
+@mcp.tool(meta=_app_only_meta)
+async def room_reply(room: str, message: str) -> dict[str, Any]:
+    """App-only: post a turn from the Rooms tab as the signed-in user. Never call
+    directly — the model posts with kb_room_post."""
+    me = _require_room_user()
+    r = _room_of(room)
+    _room_scan(message, "room message")
+    _rate_limit_post()
+    turn = registry.rooms.post_turn(r.id, me.id, message)
+    await _room_notify(r.id)
+    return {"ok": True, "turn": _turn_view(turn, registry.tenancy_handle_map())}
+
+
+@mcp.tool(meta=_app_only_meta)
+async def team_state() -> dict[str, Any]:
+    """App-only: the live team roster for the People tab's 'working now' strip.
+    Never call directly — the model uses kb_team."""
+    me = _require_user()
+    state = _team_state_payload()
+    if me is not None:
+        mine = registry.presence.self_row(me.id) or {}
+        state["me"] = {"handle": me.handle, "invisible": bool(mine.get("invisible"))}
+    return state
+
+
 def _team_state_payload() -> dict[str, Any]:
     """Who's working right now (tool-call-derived presence). Shared by the widget
     data plane, the dashboard, and the extension endpoint."""
@@ -2033,7 +2129,7 @@ async def kb_team(invisible: bool | None = None) -> dict[str, Any]:
 
 # ---------------------------------------------------- explore widget (app-only data plane)
 
-_explore_meta = explore_tool_meta(settings.widget)
+_explore_meta = _app_meta  # v3: Explore is the unified app's People tab
 _explore_app_meta = explore_app_tool_meta(settings.widget)
 
 
@@ -2051,6 +2147,7 @@ async def kb_explore_card() -> dict[str, Any]:
     directory = await kb_explore()
     feed = await kb_feed(limit=20)
     return {
+        "view": "people",  # unified app: this launcher opens the People tab
         "people": len(directory.get("people", [])),
         "following": len(registry.discovery.following(me.id)),
         "feed_items": len(feed.get("items", [])),
@@ -2461,9 +2558,10 @@ register_explorer(
     mcp, settings, store,
     share_resolver=_share_resolver if settings.multiuser else None,
 )
+register_app_widget(mcp, settings)  # v3: the ONE widget every launcher mounts
 register_navigator(mcp, settings.widget)
 register_meetings_widget(mcp, settings.widget)
-register_office_widget(mcp, settings, store, resolver=current_store)
+register_office_widget(mcp, settings, store, resolver=current_store, launcher_meta=_app_meta)
 register_social_widget(mcp, settings.widget)
 register_explore_widget(mcp, settings.widget)
 
