@@ -214,7 +214,10 @@ h1 { font-size:1.25rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .2r
 .card p { margin:0; font-size:.8rem; color:var(--muted); line-height:1.4; }
 .card-foot { margin-top:auto; padding-top:.15rem; display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; }
 .folder-label { margin:1rem 0 .1rem; }
-.needsrow { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:.5rem .65rem; background:var(--surface); border:1px solid var(--line); border-radius:10px; margin:.4rem 0; }
+.needsrow { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:.5rem .65rem; background:var(--surface); border:1px solid var(--line); border-radius:10px; margin:.4rem 0; width:100%; font:inherit; color:var(--fg); cursor:pointer; text-align:left; }
+.needsrow:hover { border-color:var(--accent-line); }
+.pmsg { background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:10px; padding:.6rem .75rem; margin:.4rem 0; }
+.pmsg .meta { font-size:.72rem; color:var(--muted); }
 
 /* concept tree (Browse) */
 .tree { margin:.5rem 0 0; }
@@ -590,8 +593,8 @@ function renderHome(){
   let needs="";
   if(needy.length || (state.asks&&state.asks.length)){
     needs+='<p class="section-label">Needs you</p>';
-    needy.forEach(p=>{ needs+='<div class="needsrow"><span>'+esc(p.title||p.id)+'</span><span class="badge unread">'+(p.unread_messages|0)+' unread</span></div>'; });
-    (state.asks||[]).forEach(a=>{ needs+='<div class="needsrow"><span>'+esc(a.title||a.path||"An open ask")+'</span><span class="badge">ask</span></div>'; });
+    needy.forEach(p=>{ needs+='<button class="needsrow" data-open-project="'+esc(p.id)+'"><span>'+esc(p.title||p.id)+'</span><span class="badge unread">'+(p.unread_messages|0)+' unread &rsaquo;</span></button>'; });
+    (state.asks||[]).forEach(a=>{ needs+='<button class="needsrow" data-answer-asks="1"><span>'+esc(a.title||a.path||"An open ask")+'</span><span class="badge">answer &rsaquo;</span></button>'; });
   }
   show('<div class="qcap"><input id="qc-input" class="qc-in" type="text" placeholder="Quick capture &mdash; remember anything&hellip;" autocomplete="off" aria-label="Quick capture to inbox">'
         +'<button class="qc-go" id="qc-go">Capture</button></div>'
@@ -639,10 +642,28 @@ function renderProjectTree(){
   state.view="browse"; state.browseSub="project"; setActiveTab();
   const L=state.load; if(!L){ state.browseSub="search"; return renderSearch(); }
   const tree=L.index_tree||{files:[],dirs:[]}; const title=tree.title||L.project;
+  // "Needs you" closes its loop HERE: unread inter-session messages render first,
+  // each with a mark-read action — click a needs-you row, see the actual asks.
+  let msgs="";
+  const unread=Array.isArray(L.unread_messages)?L.unread_messages:[];
+  if(unread.length){
+    msgs='<p class="section-label">Unread messages</p>'+unread.map(m=>{
+      const t=(m.meta&&(m.meta.title||m.meta.description))||m.title||m.path||"Message";
+      const body=(m.content!=null?stripFrontmatter(String(m.content)):String(m.body||"")).slice(0,600);
+      const p=m.path||"";
+      return '<div class="pmsg"><b>'+esc(String(t))+'</b>'
+        +(body?'<div class="md">'+renderMarkdown(body)+'</div>':"")
+        +'<div class="meta">'+esc(p)+(p?' &middot; <button class="act" data-mark-read="'+esc(p)+'">Mark read</button>':"")+'</div></div>';
+    }).join("");
+  }
   let ctx=""; if(L.context_md){ const body=stripFrontmatter(L.context_md).split("\n").slice(0,30).join("\n"); ctx='<div class="ctx"><div class="md">'+renderMarkdown(body)+'</div></div>'; }
   show('<div class="headrow"><button class="back" data-nav="browse-search">&lsaquo; Browse</button>'
         +'<span class="stamp">'+glyph("project")+'</span><h1 style="font-size:1.05rem">'+esc(title)+'</h1></div>'
-      +ctx+'<p class="section-label">Concepts</p><div class="tree">'+treeHtml(tree,0)+'</div>');
+      +msgs+ctx+'<p class="section-label">Concepts</p><div class="tree">'+treeHtml(tree,0)+'</div>');
+}
+async function markMsgRead(path){
+  try{ await callTool("kb_mark_read",{path:path}); if(state.projectId) openProject(state.projectId); }
+  catch(e){ /* leave the message visible */ }
 }
 async function openFile(path){
   if(busy) return; busy=true; state.readPath=path; show(skelRows(6));
@@ -1284,6 +1305,9 @@ document.addEventListener("click",(e)=>{
   const op=e.target.closest("[data-open-path]"); if(op){ e.preventDefault(); openFile(op.getAttribute("data-open-path")); return; }
   const ml=e.target.closest("a.mdlink"); if(ml){ e.preventDefault(); const t=resolveRel(dirOf(state.readPath||""), ml.getAttribute("data-rel")); if(t) openFile(t); return; }
   const pc=e.target.closest("[data-proj]"); if(pc){ openProject(pc.getAttribute("data-proj")); return; }
+  const np=e.target.closest("[data-open-project]"); if(np){ openProject(np.getAttribute("data-open-project")); return; }
+  const mr=e.target.closest("[data-mark-read]"); if(mr){ e.preventDefault(); markMsgRead(mr.getAttribute("data-mark-read")); return; }
+  const aa=e.target.closest("[data-answer-asks]"); if(aa){ askAgent("Show my open Engram questions (kb_asks) and help me answer each one."); return; }
   const bs=e.target.closest("[data-browsesub]"); if(bs){ setBrowseSub(bs.getAttribute("data-browsesub")); return; }
   const nav=e.target.closest("[data-nav]"); if(nav){ const w=nav.getAttribute("data-nav");
     if(w==="browse-search") setBrowseSub("search"); else if(w==="browse-artifacts") setBrowseSub("artifacts"); else if(w==="browse-project") renderProjectTree(); return; }

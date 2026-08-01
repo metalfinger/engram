@@ -1307,6 +1307,44 @@ class Dashboard:
             ".badge.vis-public{background:var(--accent);color:var(--accent-fg);font-weight:600}"
             ".badge.vis-contacts{background:var(--accent-soft);color:var(--accent-ink)}"
             ".badge.vis-private{background:var(--surface-2);color:var(--muted)}"
+            # --- v3 form layer: the explorer never had forms, so inputs/buttons fell
+            # back to raw browser defaults (white boxes on a dark theme). Everything
+            # interactive gets the house look here.
+            ".layout input[type=text],.layout input[type=search],.layout input:not([type])"
+            ",.layout textarea,.layout select{background:var(--inset);color:var(--fg);"
+            "border:1px solid var(--line-2);border-radius:8px;padding:.55rem .7rem;"
+            "font:inherit;width:100%;box-sizing:border-box;margin:.15rem 0 .2rem}"
+            ".layout input:focus,.layout textarea:focus{outline:2px solid var(--accent);"
+            "outline-offset:1px;border-color:var(--accent-line)}"
+            ".layout textarea{min-height:4.5rem;resize:vertical}"
+            ".layout button,.layout input[type=submit]{background:var(--accent);"
+            "color:var(--accent-fg);border:0;border-radius:8px;padding:.55rem 1.1rem;"
+            "font:inherit;font-weight:600;cursor:pointer}"
+            ".layout button:hover{filter:brightness(1.08)}"
+            ".layout form p{margin:.5rem 0;color:var(--muted);font-size:.85rem}"
+            ".notice{background:var(--accent-soft);color:var(--accent-ink);"
+            "border:1px solid var(--accent-line);border-radius:8px;padding:.6rem .9rem}"
+            ".error{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red);"
+            "border:1px solid var(--red);border-radius:8px;padding:.6rem .9rem}"
+            ".badge.unread{background:var(--accent);color:var(--accent-fg);border-radius:999px;"
+            "padding:.05rem .5rem;font-size:.72rem;font-weight:700;vertical-align:middle}"
+            # rooms: chat column + composer + list cards
+            ".thread-transcript{background:var(--surface);border:1px solid var(--line);"
+            "border-radius:12px;padding:1rem;display:flex;flex-direction:column;gap:.55rem;"
+            "margin:.4rem 0 .8rem}"
+            ".bubble{max-width:78%}.bubble.right{align-self:flex-end}.bubble.left{align-self:flex-start}"
+            ".composer{display:flex;gap:.5rem;align-items:flex-end}"
+            ".composer textarea{flex:1 1 auto;min-height:2.8rem;margin:0}"
+            ".composer button{flex:0 0 auto}"
+            ".closeform{display:flex;gap:.5rem;align-items:center;margin-top:.6rem}"
+            ".closeform input{flex:1 1 auto;margin:0}"
+            ".closeform button{flex:0 0 auto;background:var(--surface-2);color:var(--fg);"
+            "border:1px solid var(--line-2)}"
+            ".newroom{max-width:34rem}"
+            ".bigsearch{display:flex;gap:.5rem;max-width:38rem;margin:.4rem 0 1rem}"
+            ".bigsearch input{flex:1 1 auto;margin:0;font-size:1rem;padding:.7rem .9rem}"
+            ".bigsearch button{flex:0 0 auto}"
+            ".stat-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.3rem 0}"
             "</style></head><body>"
             "<input type=checkbox id=navcb class=navcb aria-hidden=true>"
             "<header class=topbar><div class=topbar-inner>"
@@ -1317,7 +1355,10 @@ class Dashboard:
             # The five-tab IA is the product surface; older deep links (Feed, Questions,
             # Graph, Activity, ...) still work — they're a quiet second row, not gone.
             f"<nav class=topnav>{primary}"
-            f"<span style='opacity:.3'>|</span>{secondary}</nav>"
+            f"<span style='opacity:.3'>|</span>{secondary}"
+            "<form method=post action='/dashboard/logout' style='display:inline;margin-left:.6rem'>"
+            "<button type=submit style='background:none;border:0;color:var(--muted);cursor:pointer;"
+            "font:inherit;font-size:.8rem;padding:0'>Sign out</button></form></nav>"
             "</div></header><div class=layout>"
             f"<aside class=sidebar aria-label='Bundle navigation'>{sidebar_html}</aside>"
             f"<main>{crumb_html}{body}</main></div></body></html>"
@@ -1485,8 +1526,16 @@ class Dashboard:
 
         parts = [f"<div class='page-head'><div><p class='eyebrow'>Search</p>"
                  f"<h1>{esc(q) if q else 'Search your brain'}</h1></div></div>"]
+        # The query box lives ON the page (the topbar box alone confused real users —
+        # 'no place to type the query'). Autofocus when empty, keep the value when not.
+        parts.append(
+            "<form method='get' action='/dashboard/search' class='bigsearch'>"
+            f"<input type='search' name='q' value='{esc(q)}' placeholder='Search your brain…' "
+            + ("autofocus " if not q else "")
+            + "aria-label='Search query'><button type='submit'>Search</button></form>"
+        )
         if not q:
-            parts.append("<p class='empty'>Type a query above.</p>")
+            parts.append("<p class='empty'>Hybrid semantic + text search across every concept in your brain.</p>")
         elif not results:
             parts.append("<p class='empty'>No matches.</p>")
         else:
@@ -1648,14 +1697,14 @@ class Dashboard:
             parts.append("<div class='cards'>" + "".join(self._render_room_card(r, handles) for r in rows) + "</div>")
         parts.append(
             "<p class='section-label'>New room</p>"
-            "<div class='card'><form method=post action='/dashboard/rooms'>"
+            "<div class='card newroom'><form method=post action='/dashboard/rooms'>"
             "<p>Name<br><input name=name pattern='[a-z0-9][a-z0-9-]{2,63}' required "
             "placeholder='design-review'></p>"
-            "<p>Goal<br><input name=goal required style='width:100%' "
+            "<p>Goal — rooms have a turn budget, so give it one<br><input name=goal required "
             "placeholder='What should this room accomplish?'></p>"
-            "<p>Exit condition (optional)<br><input name=exit_condition style='width:100%' "
+            "<p>Exit condition (optional)<br><input name=exit_condition "
             "placeholder='e.g. agreement on the API shape'></p>"
-            "<p>Invite (comma-separated handles)<br><input name=invite style='width:100%' "
+            "<p>Invite (comma-separated handles)<br><input name=invite "
             "placeholder='alice, bob'></p>"
             "<button type=submit>Open room</button></form></div>"
         )
@@ -1804,12 +1853,11 @@ class Dashboard:
         controls = ""
         if room.status == "open":
             controls = (
-                f"<form method='post' action='/dashboard/rooms/{esc(room.name)}/post'>"
+                f"<form class='composer' method='post' action='/dashboard/rooms/{esc(room.name)}/post'>"
                 "<textarea name='body' required placeholder='Message this room…'></textarea>"
                 "<button type=submit>Send</button></form>"
-                f"<form method='post' action='/dashboard/rooms/{esc(room.name)}/close' "
-                "style='margin-top:.5rem'>"
-                "<input name='outcome' placeholder='Outcome (optional)' style='width:60%'> "
+                f"<form class='closeform' method='post' action='/dashboard/rooms/{esc(room.name)}/close'>"
+                "<input name='outcome' placeholder='Outcome — what did this room decide? (optional)'>"
                 "<button type=submit>Close room</button></form>"
             )
         last_id = turns[-1].id if turns else 0
