@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Engram Tray</title>
+    <style>
+      body {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        font-family: -apple-system, "Segoe UI", sans-serif;
+        background: #111;
+        color: #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Engram Tray never shows this page. There is no window in v1: the app
+      lives entirely in the system tray, and every menu action opens the
+      real web UI in the user's default browser. This file exists only
+      because Tauri requires a frontendDist to point at.
+    -->
+    <p>Engram Tray — this window should never be visible.</p>
+  </body>
+</html>
