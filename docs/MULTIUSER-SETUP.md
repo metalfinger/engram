@@ -99,7 +99,8 @@ Then walk the whole loop yourself:
 - `/join?token=` — invite acceptance → sign in → claim handle → account + brain.
 - **Messages widget** (`kb_inbox_card` in claude.ai) — in-chat DMs/contacts/notifications.
 - **Chrome extension** (`clients/chrome-extension/`) — desktop push for new DMs.
-- The **explorer** (`brain.metalfinger.xyz`) stays yours, behind Cloudflare Access —
+- The **explorer** (`brain.metalfinger.xyz/brain/*`) stays yours — owner-only via the
+  dashboard session cookie since v3 (see the one-door section below) —
   it is NOT multi-tenant yet (per-user explorer is a future milestone). Tenants use
   their Claude + the dashboard, not the explorer.
 

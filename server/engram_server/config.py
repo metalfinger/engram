@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     # http
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 9210
-    public_url: str = "https://engram.metalfinger.xyz"  # MCP + OAuth issuer host
+    public_url: str = "https://engram.metalfinger.xyz"  # MCP + OAuth issuer host (machines)
     explorer_url: str = (
-        "https://brain.metalfinger.xyz"  # explorer host (Cloudflare Access)
+        "https://brain.metalfinger.xyz"  # the HUMAN hostname (dashboard + explorer; v3 one door)
     )
 
     # oauth (ProxyOAuthProvider -> upstream IdP)
@@ -79,8 +79,8 @@ class Settings(BaseSettings):
     rerank_enabled: bool = False
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
 
-    # in-process scheduler (nightly reconcile + morning briefing). ENGRAM_SCHEDULER=0
-    # kills both; times are local-clock HH:MM.
+    # in-process scheduler (nightly reconcile; presence-spool ingest; optional
+    # backup mirror). ENGRAM_SCHEDULER=0 kills all; times are local-clock HH:MM.
     scheduler_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices("ENGRAM_SCHEDULER", "ENGRAM_SCHEDULER_ENABLED"),

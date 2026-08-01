@@ -549,8 +549,10 @@ async function loadHome(force){
   loadAsksBestEffort();
 }
 async function loadAsksBestEffort(){
-  try{ const d=await callTool("explore_state",{}); if(d && Array.isArray(d.asks) && d.asks.length){ state.asks=d.asks; if(state.view==="home") renderHome(); } }
-  catch(e){ /* best-effort — "if available" */ }
+  // kb_asks -> {to_answer:[{path, question,...}]} — the questions WAITING ON this user.
+  try{ const d=await callTool("kb_asks",{}); const open=(d&&Array.isArray(d.to_answer))?d.to_answer.filter(a=>a.status!=="answered"):[];
+    if(open.length){ state.asks=open.map(a=>({title:(a.question||"").slice(0,80)||a.path, path:a.path})); if(state.view==="home") renderHome(); } }
+  catch(e){ /* best-effort — single-user servers have no asks */ }
 }
 function visBadge(v){
   const s=(v||"private"); const label = s==="public" ? "🌐 public" : (s==="contacts" ? "👥 contacts" : "🔒 private");
@@ -900,7 +902,7 @@ function convoRow(c){
 }
 function requestRow(handle){ return '<div class="req-row"><span class="person-handle" style="flex:1 1 auto">@'+esc(handle)+'</span><button class="accept-btn" data-accept="'+esc(handle)+'">Accept</button></div>'; }
 function notifRow(n){
-  const openBtn=(n.kind==="room_invite" && n.room) ? '<button class="act" data-open-room-invite="'+esc(n.room)+'">Open room</button>' : "";
+  const openBtn=(n.kind==="room_invite" && n.ref) ? '<button class="act" data-open-room-invite="'+esc(n.ref)+'">Open room</button>' : "";
   return '<div class="req-row"><span class="convo-preview" style="flex:1 1 auto">'+esc(n.body||"")+'</span>'+openBtn+(n.at?'<span class="when">'+esc(relTime(n.at))+'</span>':'')+'</div>';
 }
 function renderRoomsList(){

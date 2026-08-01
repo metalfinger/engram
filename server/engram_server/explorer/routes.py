@@ -1,8 +1,10 @@
 """Explorer routes: read-only, server-rendered transparency views over the brain checkout.
 
-Every route sits behind the Cloudflare Access guard, renders through the shared
-page shell (sticky topbar + persistent sidebar), and never leaves the checkout
-root (path-traversal and .git guards preserved verbatim from v1).
+Every route sits behind the one-door guard (the dashboard's session cookie,
+owner-only; see explorer/access.py — Cloudflare Access is only a fallback for
+secret-less single-user deployments), renders through the shared page shell
+(sticky topbar + persistent sidebar), and never leaves the checkout root
+(path-traversal and .git guards preserved verbatim from v1).
 """
 
 from __future__ import annotations

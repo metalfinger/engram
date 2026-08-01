@@ -135,8 +135,16 @@ def test_every_expected_tool_is_registered() -> None:
 def test_no_unexpected_tool_registered() -> None:
     # Catches a new tool that shipped without being added to the expected set (and
     # therefore without a deliberate docstring review of its when/how/what).
+    # kb_office/office_state register only under ENGRAM_WIDGET=1 (inside
+    # register_office_widget), so the guard tolerates them based on the app's
+    # actual settings — the suite must be green with the flag on OR off.
+    import engram_server.app as app_module
+
+    expected = set(EXPECTED_TOOLS)
+    if app_module.settings.widget:
+        expected |= {"kb_office", "office_state"}
     registered = _registered_tools()
-    unexpected = registered - EXPECTED_TOOLS
+    unexpected = registered - expected
     assert not unexpected, f"unregistered-in-guard tools present: {sorted(unexpected)}"
 
 

@@ -69,7 +69,7 @@ function buildTeamRow(member) {
 
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  if (member.avatar_url && /^https:\/\//.test(member.avatar_url)) {
+  if (member.avatar_url && /^(https:\/\/|data:image\/)/.test(member.avatar_url)) {
     const img = document.createElement("img");
     img.src = member.avatar_url;
     img.alt = "";

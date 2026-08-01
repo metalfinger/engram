@@ -3246,7 +3246,23 @@ class KBStore:
             return [rel]
 
         sha, pushed = await self._locked_commit(_mutate, f"kb: visibility {want} for {rel}")
-        applies = "project (its concepts inherit this default)" if posixpath.basename(rel) == "context.md" else "concept"
+        is_project = posixpath.basename(rel) == "context.md"
+        if is_project:
+            # A project-level flip changes the EFFECTIVE visibility of every concept
+            # that inherits it, but only context.md's bytes changed — so re-stamp the
+            # whole subtree's vector payloads now. Without this, an UNPUBLISH would
+            # keep the project's concepts surfacing in cross-user search (titles/
+            # descriptions) until the nightly reindex — a day-long leak window.
+            proj_dir = (self.root / rel).parent
+            subtree = [
+                p.relative_to(self.root).as_posix()
+                for p in proj_dir.rglob("*.md")
+                if ".git" not in p.parts
+            ]
+            self._schedule_index(upserts=subtree)
+        else:
+            self._schedule_index(upserts=[rel])
+        applies = "project (its concepts inherit this default)" if is_project else "concept"
         return {"path": rel, "visibility": want, "applies_to": applies, "sha": sha, "pushed": pushed}
 
     async def kb_move_project(self, project: str, folder: str = "") -> dict[str, Any]:

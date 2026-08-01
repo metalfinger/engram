@@ -1,4 +1,6 @@
-"""In-process daily scheduler for the nightly reconcile + morning briefing.
+"""In-process daily scheduler: nightly reconcile, presence-spool ingest, optional
+off-site backup. (The morning-briefing job is retired — briefing is pull-only;
+its code path remains only for a deliberately-set ENGRAM_BRIEFING_AT.)
 
 Runs a single daemon thread that wakes periodically, and when a job's local-clock
 time (HH:MM) comes due submits the corresponding coroutine to the SERVER's event

@@ -1,7 +1,8 @@
 """Dashboard + onboarding (v2 M1.4) — the browser front-of-house for multi-user Engram.
 
-Three surfaces, all on the MCP host, all with their OWN signed-cookie session
-(separate from the MCP bearer-token OAuth and from the explorer's Cloudflare Access):
+Three surfaces sharing ONE signed-cookie session (separate from the MCP
+bearer-token OAuth; since v3 "one door" the legacy explorer verifies this SAME
+cookie — there is no second identity system):
 
   /join?token=…   — an invitee clicks the emailed magic link, signs in with
                     GitHub/Google, claims a @handle; we create their account

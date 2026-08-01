@@ -672,7 +672,8 @@ async def kb_meetings() -> dict[str, Any]:
     Returns {threads: [{thread, topic, status, participants, turn_count,
     last_activity, last_turn: {sender, message, timestamp} | null, needs_hiren}]}.
 
-    Mounts the meetings widget; keep your text to one short line after it mounts.
+    Mounts the unified Engram app on its Rooms tab; keep your text to one short line
+    after it mounts.
     """
     payload = await meetings_payload(await current_store())
     return {"view": "rooms", **payload}  # unified app: opens the Rooms tab
@@ -1185,7 +1186,7 @@ async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
     if mark_read:
         registry.social.mark_notifications_read(me.id)
     return {
-        "unread": [{"kind": n.kind, "body": n.body, "at": n.created} for n in notes],
+        "unread": [{"kind": n.kind, "body": n.body, "at": n.created, "ref": n.ref} for n in notes],
         "counts": counts,
     }
 
@@ -1214,7 +1215,7 @@ def _profile_of(uid: int, umap: dict) -> dict[str, Any]:
 async def kb_inbox_card() -> dict[str, Any]:
     """Show the user their Engram messages — DMs, contacts, notifications — as a card.
     Call when they ask to see/open their messages, inbox, DMs, or notifications in a
-    claude.ai chat. Mounts the Messages widget; after it mounts, say one short line and
+    claude.ai chat. Mounts the unified Engram app on its Rooms tab; after it mounts, say one short line and
     let them use it.
 
     Returns a compact summary {unread_dms, unread_notifications, contacts}.
@@ -1248,7 +1249,10 @@ async def social_state() -> dict[str, Any]:
         others = [o for o in c["members"] if o != me.id]
         p = _profile_of(others[0], umap) if len(others) == 1 else {"handle": c["title"] or "group"}
         last = c["last_message"]
-        convs.append({**p, "unread": c["unread"], "last": (last.body[:120] if last else None),
+        # "with" = who the conversation is with (kb_messages' convention; the widget
+        # keys its open-DM action on it). Profile fields ride along for rendering.
+        convs.append({**p, "with": p.get("handle"), "unread": c["unread"],
+                      "last": (last.body[:120] if last else None),
                       "at": (last.created if last else None)})
     return {
         "me": _profile_of(me.id, umap),
@@ -1256,7 +1260,9 @@ async def social_state() -> dict[str, Any]:
         "incoming": [_profile_of(i, umap) for i in graph["incoming"]],
         "outgoing": [_profile_of(i, umap) for i in graph["outgoing"]],
         "conversations": convs,
-        "notifications": [{"kind": n.kind, "body": n.body, "at": n.created}
+        # ref carries the deep-link target (a room name for room_invite/room_closed,
+        # a conv id for dm) — the widget's [Open room] action needs it.
+        "notifications": [{"kind": n.kind, "body": n.body, "at": n.created, "ref": n.ref}
                           for n in registry.social.list_notifications(me.id, unread_only=True)],
         "counts": registry.social.unread_counts(me.id),
     }
@@ -2135,7 +2141,7 @@ _explore_app_meta = explore_app_tool_meta(settings.widget)
 
 @mcp.tool(meta=_explore_meta)
 async def kb_explore_card() -> dict[str, Any]:
-    """Open the Explore card — discover people, browse their public work, follow them, and
+    """Open the People view — discover people, browse their public work, follow them, and
     ask questions, all inside the chat. Call when the user wants to explore/browse Engram,
     find people, or see what others published. After it mounts, say one short line.
 
@@ -2431,13 +2437,18 @@ async def kb_send(to_handle: str, path: str) -> dict[str, Any]:
 def daily_briefing() -> str:
     """Morning briefing across the whole brain: messages first, project states, today's focus."""
     return (
-        "Give me my Engram briefing. Call kb_projects first. Surface unread messages "
-        "FIRST: for every project with unread_messages > 0, kb_load it and present each "
-        "message (title, what it asks, priority; act or ask, then kb_mark_read). Then one "
-        "line per active project: current state + top open loop (use kb_projects data; "
-        "kb_load at most the 1-2 projects that look hot — navigate, never ingest). Flag "
-        "anything stale (last_session older than ~2 weeks). Close with a proposed top-3 "
-        "focus for today as a short list. Whole briefing under 20 lines."
+        "Give me my Engram briefing — composed LIVE (there is no scheduled briefing "
+        "artifact anymore). Call kb_projects first. Surface unread messages FIRST: for "
+        "every project with unread_messages > 0, kb_load it and present each message "
+        "(title, what it asks, priority; act or ask, then kb_mark_read). In multi-user, "
+        "add the TEAM layer next: kb_rooms() (open rooms needing a turn or a close), "
+        "kb_notifications() (invites, questions, answers), and kb_feed() (one line only "
+        "if a followed teammate shipped something relevant). Then one line per active "
+        "project: current state + top open loop (use kb_projects data; kb_load at most "
+        "the 1-2 projects that look hot — navigate, never ingest). Flag anything stale "
+        "(last_session older than ~2 weeks). Close with a proposed top-3 focus for today "
+        "as a short list. A short NARRATIVE, not a data dump — whole briefing under 20 "
+        "lines."
     )
 
 
