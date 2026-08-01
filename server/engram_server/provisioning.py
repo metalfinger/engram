@@ -99,24 +99,7 @@ def _skeleton(handle: str) -> dict[str, str]:
             "* [Inbox](inbox/index.md) - quick captures awaiting filing\n"
         ),
         "welcome.md": (
-            "---\ntype: reference\ntitle: Welcome to Engram\n"
-            f"description: What Engram is and what {handle} can do with it.\n---\n\n"
-            "# Welcome to Engram\n\n"
-            "This is **your brain** — a private, git-backed knowledge base your AI reads and\n"
-            "writes across every session and device. Nothing here is shared unless you say so.\n\n"
-            "## What you can do (just ask your Claude)\n\n"
-            "- **Remember things that outlive a chat.** Decisions, specs, notes, people — say\n"
-            "  \"save this\" and it's written as a concept you'll recall in any future session\n"
-            "  (`kb_write`); load a project's state anytime with `kb_load`.\n"
-            "- **Pick up where you left off.** Start a fresh session on any device and your\n"
-            "  Claude already knows your projects — context, open loops, decisions.\n"
-            "- **Connect with people.** `kb_add_contact(\"@handle\")` to connect, then\n"
-            "  `kb_dm(\"@handle\", \"…\")` to message them — their Claude delivers it.\n"
-            "- **Share knowledge access.** `kb_share_context(\"@handle\", [\"projects/x\"])` lets a\n"
-            "  contact's AI read that part of your brain directly — no copy-paste.\n"
-            "- **Get pinged.** Install the Engram Chrome extension (Sign in with Engram) for a\n"
-            "  desktop alert when someone messages you.\n\n"
-            "Delete this note whenever you like — your brain is yours to shape.\n"
+            f"---\ntype: reference\ntitle: Welcome — your first session\ndescription: \"Claude: read this once and walk {handle} through their first session.\"\n---\n\n# Welcome to Engram\n\nThis is **your brain** — private, git-backed, read and written by your AI across\nevery session and device.\n\n## Claude: run this first session WITH the user (5 minutes, conversational)\n\nWork through these together — one step at a time, asking, never assuming:\n\n1. **First project.** Ask what they're working on right now. Create it:\n   `kb_attach_project(\"<id>\", \"one-line description\")` — then write their first\n   context as they describe it.\n2. **Bring their history (optional).** If they have ChatGPT/Claude exports,\n   `kb_import` backfills them — everything imported lands PRIVATE, always.\n3. **Meet the team.** `kb_team()` shows who's working right now; `kb_explore()`\n   lists people and their public work. Offer: `kb_add_contact(\"@handle\")`.\n4. **Say hello, live.** Offer to open a room with a teammate:\n   `kb_room_open(\"hello-<name>\", \"introductions\", invite=\"@handle\")` — their\n   Claude and this one can then talk in real time (`kb_room_post` with\n   `wait_for_reply=True`; never poll in a loop).\n5. **Desktop pings.** Point them at the Setup page (avatar menu → Setup) for the\n   tray app + Chrome extension — room invites reach their desktop in ~2s.\n6. **Visibility, honestly.** Explain this server's default (ask `kb_public()` to\n   audit anytime): on a team server new work may be team-visible by default —\n   anything can be flipped private with `kb_publish(path, \"private\")`, imports\n   and messages are never shared, and secrets are refused at write time.\n\nFrom then on: search the TEAM before solving hard problems\n(`kb_explore(query=...)`) — someone may have already paid for that lesson.\n\nDelete this note whenever — the brain is yours to shape.\n"
         ),
         "projects/index.md": "# Projects\n\nNothing here yet.\n",
         "inbox/index.md": "# Inbox\n\nNothing here yet.\n",

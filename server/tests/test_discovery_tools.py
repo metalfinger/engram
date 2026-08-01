@@ -182,3 +182,54 @@ async def test_only_the_owner_can_answer(mu, monkeypatch):
     # bob (the asker, not the owner) may not answer his own question
     with pytest.raises(KBError):
         await app_module.kb_answer(asked["ask_id"], "I'll answer myself")
+
+
+# -- v3 adoption levers ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_public_read_is_counted_for_the_team_test(mu, monkeypatch):
+    """PRD metric #2 becomes measurable: a cross-user kb_read_public logs one row;
+    reading yourself doesn't count."""
+    await _alice_publishes(monkeypatch)
+    _login(monkeypatch, "bob@example.com")
+    await app_module.kb_read_public("alice", "projects/openwork/pub.md")
+    counts = mu.discovery.public_read_counts()
+    assert counts["total"] == 1 and counts["distinct_readers"] == 1
+    # alice reading her own public work is not adoption
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_read_public("alice", "projects/openwork/pub.md")
+    assert mu.discovery.public_read_counts()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_private_decision_write_nudges_publish(mu, monkeypatch):
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_write("projects/nudge/context.md", _doc("nudge project"), "seed")
+    res = await app_module.kb_write(
+        "projects/nudge/decisions/pick-db.md",
+        "---\ntype: decision\ndescription: db choice\n---\n\n# D\n\nWe pick sqlite.\n"
+        "See [ctx](../context.md).\n",
+        "decide",
+    )
+    assert any("kb_publish" in w for w in res["warnings"])
+    # already-public decisions don't nag
+    await app_module.kb_publish("projects/nudge/decisions/pick-db.md", "public")
+    res2 = await app_module.kb_write(
+        "projects/nudge/decisions/pick-db.md",
+        "---\ntype: decision\ndescription: db choice\nvisibility: public\n---\n\n# D\n\n"
+        "We pick sqlite, confirmed.\nSee [ctx](../context.md).\n",
+        "confirm",
+    )
+    assert not any("kb_publish" in w for w in res2["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_fresh_brain_returns_the_welcome_breadcrumb(mu, monkeypatch):
+    """AI-led onboarding: an empty brain's kb_projects points Claude at welcome.md."""
+    _login(monkeypatch, "bob@example.com")
+    projects = await app_module.kb_projects()
+    assert len(projects) == 1 and projects[0]["id"] == "welcome"
+    got = await app_module.kb_read("welcome.md")
+    assert "first session" in got["content"].lower()
+    assert "kb_attach_project" in got["content"]

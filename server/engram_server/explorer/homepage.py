@@ -324,8 +324,9 @@ def homepage_html(settings: Settings) -> str:
   <section class="wrap" id="connect">
     <h2>How to connect</h2>
     <p class="section-lede">
-      Same brain, any client &mdash; connect once per app, then every new session on that
-      app can reach it.
+      Connect once &mdash; then just tell your AI <em>&ldquo;set up my Engram&rdquo;</em>.
+      It walks you through your first project, importing your history, meeting the team,
+      and opening your first room. The AI is the interface; there is nothing else to learn.
     </p>
     <div class="clients">{clients}</div>
   </section>

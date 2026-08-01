@@ -305,9 +305,23 @@ async def kb_projects() -> list[dict[str, Any]]:
 
     Returns [{id, title, description, status, last_session, unread_messages}].
 
+    A FRESH brain (no projects yet) returns a single 'welcome' entry — kb_read it and
+    run the guided first session it contains WITH the user, step by step.
+
     When the Navigator widget mounts from this call, say one short line and let the user drive it.
     """
-    return await (await current_store()).kb_projects()
+    projects = await (await current_store()).kb_projects()
+    if not projects:
+        # AI-led onboarding: the connector is the only thing a new user installs;
+        # their Claude does the rest. This pseudo-entry is the breadcrumb that
+        # works on EVERY client — skill or no skill, claude.ai or Code.
+        return [{
+            "id": "welcome", "title": "Welcome — run your first session",
+            "description": "Fresh brain. kb_read('welcome.md') and walk the user "
+                           "through the 6-step first session it contains.",
+            "status": "active", "folder": "", "unread_messages": 0, "last_session": None,
+        }]
+    return projects
 
 
 @mcp.tool(meta=_nav_meta)
@@ -1541,6 +1555,14 @@ async def kb_read_public(handle: str, path: str) -> dict[str, Any]:
         )
     concept = await store.kb_read(path, depth=0)  # depth 0: never expand into unpublished neighbours
     meta = concept.get("meta") or {}
+    # Team-test metric #2 ("did anyone READ someone else's work?") — one row per
+    # cross-user read, surfaced on /dashboard/ops. Best-effort, never blocks a read.
+    try:
+        me = current_user()
+        if me is not None:
+            registry.discovery.log_public_read(me.id, owner.id, concept["path"])
+    except Exception:  # noqa: BLE001
+        log.debug("public-read metric failed", exc_info=True)
     return {
         "handle": owner.handle, "path": concept["path"],
         "title": str(meta.get("title") or ""), "type": str(meta.get("type") or ""),

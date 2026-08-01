@@ -1345,6 +1345,7 @@ class KBStore:
             normalized, meta, warnings = validate_concept(
                 content, rel_path=rel, description_arg=description
             )
+            state["type"] = str(meta.get("type") or "")  # for the publish-reflex nudge
             # Artifact provenance: stamp built_from = current HEAD when absent, so the
             # saved document records exactly which bundle state it was built against.
             # Also carry a live share token forward across updates the writer didn't
@@ -1454,6 +1455,21 @@ class KBStore:
             claim_warn = await to_thread.run_sync(lambda: self._claim_collision_warning(rel, session))
             if claim_warn:
                 state["warnings"].append(claim_warn)
+        # The publish reflex, server-side (v3): a settled DECISION that lands private
+        # on a team server is invisible to the one search that makes the team layer
+        # worth anything. Nudge — never auto-publish; the human decides.
+        if (
+            not state["no_change"]
+            and self.settings.multiuser
+            and str(state.get("type") or "").lower() in ("decision", "spec", "runbook")
+            and not _never_public(rel)
+        ):
+            vis = await to_thread.run_sync(lambda: self._visibility_sync(rel))
+            if vis == "private":
+                state["warnings"].append(
+                    f"This {state.get('type')} is PRIVATE — teammates' searches can't find "
+                    "it. If it's shareable, offer the user: kb_publish('" + rel + "', 'public')."
+                )
         return {
             "path": rel,
             "created": state["created"] and not state["no_change"],

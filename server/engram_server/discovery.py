@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS follows (
     created TEXT NOT NULL,
     UNIQUE(follower_id, followee_id)
 );
+CREATE TABLE IF NOT EXISTS public_reads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reader_id INTEGER NOT NULL REFERENCES users(id),
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    path TEXT NOT NULL,
+    created TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS asks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     asker_id INTEGER NOT NULL REFERENCES users(id),
@@ -282,3 +289,35 @@ class DiscoveryStore:
                 (user_id,),
             ).fetchone()["n"]
         return {"open_for_me": open_n}
+
+
+# --- v3 team-test metrics -------------------------------------------------
+def _install_read_metrics(cls):
+    """PRD §10 metric #2: 'did anyone READ someone else's work?' — unmeasurable
+    until now. One row per kb_read_public; ops renders the counts."""
+
+    def log_public_read(self, reader_id: int, owner_id: int, path: str) -> None:
+        if reader_id == owner_id:
+            return  # reading yourself isn't team adoption
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO public_reads (reader_id, owner_id, path, created) "
+                "VALUES (?, ?, ?, ?)",
+                (reader_id, owner_id, path, _now()),
+            )
+            self._conn.commit()
+
+    def public_read_counts(self) -> dict:
+        with self._lock:
+            total = self._conn.execute("SELECT COUNT(*) FROM public_reads").fetchone()[0]
+            readers = self._conn.execute(
+                "SELECT COUNT(DISTINCT reader_id) FROM public_reads"
+            ).fetchone()[0]
+        return {"total": int(total), "distinct_readers": int(readers)}
+
+    cls.log_public_read = log_public_read
+    cls.public_read_counts = public_read_counts
+    return cls
+
+
+_install_read_metrics(DiscoveryStore)

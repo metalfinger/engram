@@ -2306,12 +2306,16 @@ class Dashboard:
                     asks_answered += 1
             unread_notifs += self.registry.social.unread_counts(u.id)["notifications"]
         active_users = sum(1 for u in users if u.status == "active")
+        # PRD §10 — the numbers that decide the team test at two weeks.
+        reads = self.registry.discovery.public_read_counts()
         counts_html = (
             "<table><tbody>"
             f"<tr><td>Users (total/active)</td><td>{len(users)}/{active_users}</td></tr>"
             f"<tr><td>Presence-active (24h)</td><td>{len(active_24h)}</td></tr>"
             f"<tr><td>Rooms (open/closed)</td><td>{open_rooms}/{closed_rooms}</td></tr>"
             f"<tr><td>Asks (open/answered)</td><td>{asks_open}/{asks_answered}</td></tr>"
+            f"<tr><td>Cross-user reads (total / distinct readers)</td>"
+            f"<td>{reads['total']}/{reads['distinct_readers']}</td></tr>"
             f"<tr><td>Unread notifications</td><td>{unread_notifs}</td></tr>"
             "</tbody></table>"
         )
