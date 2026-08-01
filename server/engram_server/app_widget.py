@@ -150,6 +150,10 @@ button { font:inherit; } :focus-visible { outline:2px solid var(--accent); outli
 .section-label { font-size:.66rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin:1rem 0 .35rem; }
 h1 { font-size:1.25rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .2rem; font-weight:700; }
 .lede { color:var(--muted); font-size:.85rem; margin:.15rem 0 0; }
+.rhead { display:flex; gap:.6rem; flex-wrap:wrap; margin:.3rem 0 0; }
+.rmeta { color:var(--muted); font-size:.72rem; }
+.rgrants { display:flex; gap:.35rem; flex-wrap:wrap; margin:.3rem 0 0; }
+.rgrants .badge code { font-size:.68rem; }
 .headrow { display:flex; align-items:center; gap:.5rem; }
 .headrow h1 { flex:1 1 auto; min-width:0; margin:0; }
 
@@ -978,8 +982,19 @@ function updateRoomComposerState(){
 function renderRoomTx(skeleton){
   state.view="rooms"; state.roomsSub="room"; stopAllPolling(); setActiveTab();
   const r=state.roomTx||{name:state.openRoom, goal:""};
+  // Header facts a member must see at a glance: who's here, the turn budget
+  // (the anti-money-fire meter), and — the TRUST line — exactly what context is
+  // granted to this room right now.
+  const members=Array.isArray(r.members)?r.members:[];
+  const memHtml=members.length?'<span class="rmeta">'+members.map(m=>esc("@"+m)).join(" · ")+'</span>':"";
+  const budget=(r.turn_budget?'<span class="rmeta">'+Number(r.messages_used||0)+"/"+Number(r.turn_budget)+' turns</span>':"");
+  const grants=Array.isArray(r.grants)?r.grants:[];
+  const grantHtml=grants.length
+    ?'<div class="rgrants">'+grants.map(g=>'<span class="badge">🔑 @'+esc(g.by||"?")+' shared <code>'+esc(g.path||"")+'</code></span>').join(" ")+'</div>'
+    :"";
   show('<button class="back" id="rt-back">&lsaquo; Rooms</button><h1>'+esc(r.name||state.openRoom)+'</h1>'
     +(r.goal?'<p class="lede">'+esc(r.goal)+'</p>':'')
+    +'<p class="rhead">'+memHtml+budget+(r.status==="closed"?'<span class="rmeta">closed</span>':"")+'</p>'+grantHtml
     +(skeleton?skelRows(2):'<div class="log" id="rlog"></div>')
     +'<div class="composer"><textarea id="rinput" class="taxt" rows="1" placeholder="Message the room…"></textarea><button class="csend" id="rsend">&#10148;</button></div><p class="cerr" id="rerr" hidden></p>');
   $("rt-back").onclick=()=>{ state.roomsSub="list"; renderRoomsList(); };

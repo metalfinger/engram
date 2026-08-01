@@ -2087,7 +2087,9 @@ async def room_transcript(room: str) -> dict[str, Any]:
     r = _room_of(room)
     turns = registry.rooms.read_turns(r.id, me.id, since_id=0)
     handles = registry.tenancy_handle_map()
-    return {"room": _room_view(r), "turns": [_turn_view(t, handles) for t in turns]}
+    view = _room_view(r)
+    view["messages_used"] = sum(1 for t in turns if t.kind == "message")
+    return {"room": view, "turns": [_turn_view(t, handles) for t in turns]}
 
 
 @mcp.tool(meta=_app_only_meta)
