@@ -155,6 +155,10 @@ h1 { font-size:1.25rem; line-height:1.15; letter-spacing:-0.02em; margin:0 0 .2r
 .rgrants { display:flex; gap:.35rem; flex-wrap:wrap; margin:.3rem 0 0; }
 .rgrants .badge code { font-size:.68rem; }
 .viachip { font-size:.6rem; margin-left:.3rem; opacity:.7; }
+.filebtn { margin-left:auto; opacity:.35; cursor:pointer; font-size:.8rem; }
+.filebtn:hover { opacity:1; }
+.filer { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:10px; padding:.5rem .7rem; margin:0 0 .7rem; font-size:.85rem; }
+.filer input { background:var(--surface); color:var(--fg); border:1px solid var(--line-2); border-radius:7px; padding:.3rem .5rem; font:inherit; }
 .headrow { display:flex; align-items:center; gap:.5rem; }
 .headrow h1 { flex:1 1 auto; min-width:0; margin:0; }
 
@@ -572,7 +576,29 @@ function projCard(p){
     +'<div class="card-head"><span class="dot '+statusDot(p.status)+'"></span><h3>'+esc(p.title||p.id)+'</h3></div>'
     +(p.description?'<p>'+esc(p.description)+'</p>':'')
     +'<div class="card-foot">'+visBadge(p.visibility)+(unread>0?'<span class="badge unread">'+unread+' unread</span>':'')
-      +(p.last_session?'<span class="when">'+esc(relTime(p.last_session))+'</span>':'')+'</div></button>';
+      +(p.last_session?'<span class="when">'+esc(relTime(p.last_session))+'</span>':'')
+      +'<span class="filebtn" data-file-project="'+esc(p.id)+'" title="Move to a folder">📁</span></div></button>';
+}
+function filerBar(){
+  if(!state.filing) return "";
+  const ps=state.projects||[];
+  const opts=Array.from(new Set(ps.map(p=>p.folder||"").filter(Boolean))).sort()
+    .map(f=>'<option value="'+esc(f)+'">').join("");
+  return '<div class="filer">Move <b>'+esc(state.filing)+'</b> to folder: '
+    +'<input id="filer-input" list="filer-folders" placeholder="e.g. personal — empty = none">'
+    +'<datalist id="filer-folders">'+opts+'</datalist>'
+    +'<button class="act" data-file-go="1">Move</button>'
+    +'<button class="act" data-file-cancel="1">Cancel</button>'
+    +'<span class="meta" id="filer-err"></span></div>';
+}
+async function doFileProject(){
+  const inp=document.getElementById("filer-input"); if(!inp||!state.filing) return;
+  const folder=inp.value.trim();
+  try{
+    const r=await callTool("kb_move_project",{project:state.filing, folder:folder});
+    if(r&&r.error) throw new Error(r.error);
+    state.filing=null; loadProjects();
+  }catch(e){ const el=document.getElementById("filer-err"); if(el) el.textContent=String(e.message||e).slice(0,120); }
 }
 function renderHome(){
   state.view="home"; stopAllPolling();
@@ -588,7 +614,7 @@ function renderHome(){
     named.forEach(f=>chunks.push('<p class="eyebrow folder-label">📁 '+esc(f)+'</p><div class="cards">'+folders[f].map(projCard).join("")+'</div>'));
     if(folders[""]){ if(named.length) chunks.push('<p class="eyebrow folder-label">Not in a folder</p>');
       chunks.push('<div class="cards">'+folders[""].map(projCard).join("")+'</div>'); }
-    body=chunks.join("");
+    body=filerBar()+chunks.join("");
   }
   const needy=ps.filter(p=>(p.unread_messages|0)>0);
   let needs="";
@@ -1306,6 +1332,9 @@ document.addEventListener("click",(e)=>{
   const xa=e.target.closest('a[target="_blank"]'); if(xa && xa.href){ e.preventDefault(); viewLink(xa.href); return; }
   const op=e.target.closest("[data-open-path]"); if(op){ e.preventDefault(); openFile(op.getAttribute("data-open-path")); return; }
   const ml=e.target.closest("a.mdlink"); if(ml){ e.preventDefault(); const t=resolveRel(dirOf(state.readPath||""), ml.getAttribute("data-rel")); if(t) openFile(t); return; }
+  const fb=e.target.closest("[data-file-project]"); if(fb){ e.preventDefault(); e.stopPropagation(); state.filing=fb.getAttribute("data-file-project"); renderHome(); const i=document.getElementById("filer-input"); if(i) i.focus(); return; }
+  const fg=e.target.closest("[data-file-go]"); if(fg){ doFileProject(); return; }
+  const fc=e.target.closest("[data-file-cancel]"); if(fc){ state.filing=null; renderHome(); return; }
   const pc=e.target.closest("[data-proj]"); if(pc){ openProject(pc.getAttribute("data-proj")); return; }
   const np=e.target.closest("[data-open-project]"); if(np){ openProject(np.getAttribute("data-open-project")); return; }
   const mr=e.target.closest("[data-mark-read]"); if(mr){ e.preventDefault(); markMsgRead(mr.getAttribute("data-mark-read")); return; }

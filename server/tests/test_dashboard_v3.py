@@ -307,3 +307,21 @@ def test_notifications_longpoll_parks_then_times_out_on_stale_cursor(env):
     took = time.monotonic() - t0
     assert r.status_code == 200
     assert took >= 0.9, f"should have parked ~1s on an up-to-date cursor ({took:.2f}s)"
+
+
+# -- folder filing on the web -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_move_project_to_folder_from_the_web(env):
+    store = await env.registry.store_for_handle("alice")
+    await store.kb_write("projects/webmove/context.md",
+                         "---\ntype: project\ndescription: wm\n---\n\n# About\n\nX.\n", "seed")
+    r = env.client.post("/dashboard/p/webmove/move", cookies=_ck(env, "alice"),
+                        data={"folder": "personal"}, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/dashboard/p/webmove"
+    assert (store.root / "projects/personal/webmove/context.md").is_file()
+    # the project PAGE resolves at its new foldered home (regression: used to 404)
+    page = env.client.get("/dashboard/p/webmove", cookies=_ck(env, "alice"), follow_redirects=False)
+    assert page.status_code == 200
+    assert "personal" in page.text  # folder shown in the filing control

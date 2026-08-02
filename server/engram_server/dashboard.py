@@ -257,13 +257,42 @@ class Dashboard:
         project = str(request.path_params.get("project", ""))
         if store is None:
             return HTMLResponse(self._page("No account", "<p>No brain to browse.</p>"), status_code=403)
-        rel = "metalfinger" if project == "metalfinger" else f"projects/{project}"
-        if not re.fullmatch(r"[a-z0-9-]+", project) or not (store.root / rel).is_dir():
+        # Folder-aware resolution: 'engram' may live at projects/personal/engram —
+        # the store's own resolver knows; hand-building 'projects/<id>' 404'd every
+        # foldered project on the web.
+        rel = None
+        if re.fullmatch(r"[a-z0-9-]+", project):
+            if project == "metalfinger":
+                rel = "metalfinger"
+            else:
+                try:
+                    rel = store._project_rel(project)
+                except KBError:
+                    rel = None
+        if rel is None or not (store.root / rel).is_dir():
             return HTMLResponse(self._brain_shell("Not found",
                 "<p class='empty'>No such project.</p>", [("home", "/dashboard")],
                 self._brain_sidebar(await self._user_projects(session))), status_code=404)
         projects = await self._user_projects(session)
         return HTMLResponse(self._render_project(store, project, rel, projects))
+
+    async def move_project_action(self, request: "Request") -> "Response":
+        from urllib.parse import quote
+
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        store = await self._user_store(session)
+        project = str(request.path_params.get("project", ""))
+        if store is None or not re.fullmatch(r"[a-z0-9-]+", project):
+            return RedirectResponse("/dashboard", status_code=302)
+        form = await request.form()
+        folder = str(form.get("folder", "")).strip()
+        try:
+            await store.kb_move_project(project, folder)
+        except KBError as exc:
+            return RedirectResponse(f"/dashboard/p/{project}?error={quote(str(exc))}", status_code=302)
+        return RedirectResponse(f"/dashboard/p/{project}", status_code=302)
 
     async def browse_concept(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -1590,6 +1619,21 @@ class Dashboard:
                 parts.append(self._dash_links(sec))
         except Exception:  # noqa: BLE001 — section rendering is best-effort
             pass
+        # Folder filing (folders are audiences): move this project into any folder —
+        # existing ones offered via datalist, a new name creates the folder.
+        current_folder = rel.split("/")[1] if rel.startswith("projects/") and rel.count("/") == 2 else ""
+        folder_opts = "".join(
+            f"<option value='{esc(f)}'>"
+            for f in sorted({str(p.get('folder') or '') for p in projects} - {""})
+        )
+        parts.append(
+            "<p class='section-label'>Folder</p>"
+            f"<form class='closeform' method='post' action='/dashboard/p/{esc(project)}/move'>"
+            f"<input name='folder' list='folders' value='{esc(current_folder)}' "
+            "placeholder='e.g. personal — empty = no folder'>"
+            f"<datalist id='folders'>{folder_opts}</datalist>"
+            "<button type='submit'>Move</button></form>"
+        )
         crumbs = [("home", "/dashboard"), (project, f"/dashboard/p/{project}")]
         return self._brain_shell(title, "\n".join(parts), crumbs, self._brain_sidebar(projects, active=project),
                                  active_tab="home")
@@ -2395,6 +2439,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/logout", ["POST"])(csrf(dash.logout))
     mcp.custom_route("/dashboard/profile", ["POST"])(csrf(dash.save_profile))
     mcp.custom_route("/dashboard/p/{project}", ["GET"])(dash.browse_project)
+    mcp.custom_route("/dashboard/p/{project}/move", ["POST"])(csrf(dash.move_project_action))
     mcp.custom_route("/dashboard/f/{path:path}", ["GET"])(dash.browse_concept)
     mcp.custom_route("/dashboard/people", ["GET"])(dash.people_view)
     mcp.custom_route("/dashboard/feed", ["GET"])(dash.feed_view)
