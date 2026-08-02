@@ -166,3 +166,47 @@ async def test_kb_public_audit_lists_both_tiers(store):
     assert "projects/vis-a/pub.md" in pub
     assert "projects/vis-a/contacts-tier.md" in con
     assert not any("priv.md" in p for p in pub | con)
+
+
+# -- folders are audiences (purpose-rethink build) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_folder_visibility_default_and_precedence(store):
+    """Chain: concept > project context.md > folder marker > server default."""
+    await store.kb_write("projects/aud/context.md", _concept("aud project"), "seed")
+    await store.kb_move_project("aud", "personal")
+    # folder default: private, even if the server policy says public
+    store.settings = store.settings.model_copy(update={"default_visibility": "public"})
+    res = await store.kb_publish("projects/personal", "private")
+    assert res["applies_to"].startswith("folder")
+    await store.kb_write("projects/personal/aud/notes/n1.md",
+                         _concept("a note"), "seed")
+    assert await store.effective_visibility("projects/personal/aud/notes/n1.md") == "private"
+    # project context.md beats the folder
+    await store.kb_publish("projects/personal/aud/context.md", "contacts")
+    assert await store.effective_visibility("projects/personal/aud/notes/n1.md") == "contacts"
+    # concept's own frontmatter beats everything
+    await store.kb_publish("projects/personal/aud/notes/n1.md", "public")
+    assert await store.effective_visibility("projects/personal/aud/notes/n1.md") == "public"
+
+
+@pytest.mark.asyncio
+async def test_foldered_project_context_default_applies(store):
+    """Latent bug fixed: project-level context.md visibility was silently ignored
+    for projects INSIDE a folder (the legacy root helper stopped at the folder)."""
+    await store.kb_write("projects/fp/context.md", _concept("fp"), "seed")
+    await store.kb_move_project("fp", "work")
+    await store.kb_publish("projects/work/fp/context.md", "public")
+    await store.kb_write("projects/work/fp/decisions/d.md", _concept("d"), "seed")
+    assert await store.effective_visibility("projects/work/fp/decisions/d.md") == "public"
+
+
+@pytest.mark.asyncio
+async def test_folder_marker_survives_and_is_not_a_concept(store):
+    await store.kb_write("projects/mk/context.md", _concept("mk"), "seed")
+    await store.kb_move_project("mk", "quiet")
+    await store.kb_publish("projects/quiet", "private")
+    assert (store.root / "projects/quiet/.visibility").read_text().strip() == "private"
+    # the checkout stays clean (marker was committed) and search never surfaces it
+    assert store.repo.is_dirty() == []

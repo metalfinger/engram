@@ -1446,6 +1446,10 @@ async def kb_publish(path: str, visibility: str = "public") -> dict[str, Any]:
     `visibility`: 'public' (any signed-in Engram user can read + discover it), 'contacts'
     (only accepted contacts), or 'private' (the default — unpublishes). Pass a project's
     context.md to set the DEFAULT for that whole project; individual concepts override it.
+    Pass a FOLDER path ('projects/personal') to set the default for every project inside —
+    folders are audiences: e.g. kb_publish('projects/personal', 'private') keeps personal
+    work private while the team folder stays shared. Specific always beats general:
+    concept > project > folder > server default.
     Publishing is one-way in practice — anyone who could read it may have copied it — so
     confirm with the user before publishing anything sensitive. The body is secret-scanned
     and publishing is REFUSED if it looks like it contains credentials. Session mail,
@@ -2511,6 +2515,24 @@ def daily_briefing() -> str:
         "(last_session older than ~2 weeks). Close with a proposed top-3 focus for today "
         "as a short list. A short NARRATIVE, not a data dump — whole briefing under 20 "
         "lines."
+    )
+
+
+@mcp.prompt()
+def garden_brain() -> str:
+    """Monthly brain gardening — tend the rot the nightly reconcile only reports."""
+    return (
+        "Let's garden my brain — a maintenance session, ~10 minutes, decisions are mine. "
+        "Method: (1) kb_read('library/reports/brain-health.md') — the nightly reconcile's "
+        "findings. (2) ORPHANS: for each orphan concept, propose ONE of: link it from the "
+        "concept it obviously relates to (kb_edit a 'Related' line there), fold its content "
+        "into a better home, or delete it — ask me per item, batch my answers. (3) STALE "
+        "PROJECTS (no session in 30+ days): propose archive vs revive; archiving = note in "
+        "its context.md + status:archived. (4) INBOX DEBT: kb_inbox items older than a "
+        "week — file each into a project or drop it. (5) VISIBILITY AUDIT: kb_public() — "
+        "anything exposed that shouldn't be? (6) Close with kb_append_log to the engram "
+        "project: one line on what was tended. Keep it moving — this is weeding, not "
+        "replanting."
     )
 
 

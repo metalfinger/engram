@@ -106,6 +106,7 @@ EXPECTED_TOOLS = frozenset(
 EXPECTED_PROMPTS = frozenset(
     {
         "daily_briefing",
+        "garden_brain",
         "close_session",
         "build_artifact",
         "rebuild_artifact",

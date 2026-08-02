@@ -3192,7 +3192,29 @@ class KBStore:
         _abs, rel = self._resolve(path)
         return await to_thread.run_sync(self._visibility_sync, rel)
 
+    def _project_and_folder(self, rel: str) -> tuple[str, str | None]:
+        """(project_root_rel, folder_rel|None) — FOLDER-AWARE, unlike the legacy
+        _project_root_rel: 'projects/personal/engram/x.md' -> ('projects/personal/engram',
+        'projects/personal') when engram/context.md exists inside the personal folder."""
+        parts = [p for p in rel.split("/") if p]
+        if not parts:
+            return "", None
+        if parts[0] != "projects":
+            return parts[0], None
+        if len(parts) >= 3 and (self.root / "projects" / parts[1] / parts[2] / "context.md").is_file():
+            return f"projects/{parts[1]}/{parts[2]}", f"projects/{parts[1]}"
+        if len(parts) >= 2:
+            # Unfoldered project — or the concept IS directly inside a folder dir.
+            proot = f"projects/{parts[1]}"
+            folder = proot if self._is_folder_dir(self.root / "projects" / parts[1]) else None
+            return ("" if folder else proot), folder
+        return "", None
+
     def _visibility_sync(self, rel: str) -> str:
+        """Effective visibility, resolved most-specific-first (folders are AUDIENCES —
+        the purpose-rethink reconciliation of one brain serving personal + team):
+        concept frontmatter -> project context.md -> folder .visibility marker ->
+        the operator's policy default. _never_public segments short-circuit private."""
         if _never_public(rel):
             return "private"
         abs_path = self.root / rel
@@ -3200,14 +3222,22 @@ class KBStore:
             own = str(read_meta(abs_path).get("visibility") or "").strip().lower()
             if own in VISIBILITY_VALUES:
                 return own
-        # Inherit the project's default (the project root is the first 1-2 segments).
-        proot = self._project_root_rel(rel)
+        proot, folder = self._project_and_folder(rel)
         if proot:
             ctx = self.root / proot / "context.md"
             if ctx.is_file():
                 default = str(read_meta(ctx).get("visibility") or "").strip().lower()
                 if default in VISIBILITY_VALUES:
                     return default
+        if folder:
+            marker = self.root / folder / ".visibility"
+            if marker.is_file():
+                try:
+                    fv = marker.read_text(encoding="utf-8").strip().lower()
+                except OSError:
+                    fv = ""
+                if fv in VISIBILITY_VALUES:
+                    return fv
         # Nothing marked anywhere -> the operator's policy default (v3 team test:
         # ENGRAM_DEFAULT_VISIBILITY=public for one consenting team). Never applies
         # to _never_public segments — those returned 'private' above.
@@ -3240,6 +3270,33 @@ class KBStore:
                 f"'{rel}' can never be published — session mail, threads, workspace and inbox "
                 "are private by nature, even inside a public project."
             )
+
+        # FOLDERS ARE AUDIENCES: publishing a folder ('projects/personal') writes a
+        # .visibility marker every project inside inherits (concept and project-level
+        # settings still override). This replaces reaching for the server-global knob
+        # when the real intent is "everything personal stays private".
+        if abs_path.is_dir() and self._is_folder_dir(abs_path):
+            def _mutate_folder() -> list[str]:
+                marker = abs_path / ".visibility"
+                current = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+                if current == want:
+                    return []
+                marker.write_text(want + "\n", encoding="utf-8")
+                return [f"{rel}/.visibility"]
+
+            sha, pushed = await self._locked_commit(
+                _mutate_folder, f"kb: folder visibility {want} for {rel}"
+            )
+            subtree = [
+                p.relative_to(self.root).as_posix()
+                for p in abs_path.rglob("*.md")
+                if ".git" not in p.parts
+            ]
+            self._schedule_index(upserts=subtree)
+            return {"path": rel, "visibility": want,
+                    "applies_to": "folder (every project inside inherits this default)",
+                    "sha": sha, "pushed": pushed}
+
         if not abs_path.is_file():
             raise KBError(f"No such concept: '{rel}'.")
 

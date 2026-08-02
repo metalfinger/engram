@@ -5,6 +5,8 @@
 > exactly where the last one left off. Multi-user: invite people, share scoped access to
 > parts of your brain, and let their AI read it directly.
 
+**Purpose in one line:** work becomes memory; memory becomes leverage — first for you, then for anyone you choose. Intelligence got cheap; memory stayed scarce. Engram makes intelligence compound.
+
 Engram is **data + coordination, not an AI.** It stores markdown, does git, computes local
 embeddings for search, and coordinates people. All the intelligence runs on *your own*
 Claude/ChatGPT through the MCP tools — nothing is sent to a server-side model. Your memory
@@ -25,6 +27,8 @@ is a git repo you own, portable across model vendors.
   revocable public share links.
 - **A web explorer** — browse projects, concepts, an interactive concept graph, activity,
   and a live multi-session "office."
+- **Gardening, pull-only** — the nightly reconcile reports rot (orphans, stale projects,
+  inbox debt); the `garden_brain` prompt walks you through tending it, ~monthly.
 
 **Multi-user (v2, opt-in behind `ENGRAM_MULTIUSER`):**
 - **Open signup** — anyone can create their own Engram at `/join`: OAuth only
@@ -54,6 +58,9 @@ is a git repo you own, portable across model vendors.
   transcript). Rooms carry a goal + turn budget so agent conversations terminate. Closing
   a room *offers* its outcome back for a human to accept into their brain — never
   auto-written.
+- **Folders are audiences** — `kb_publish('projects/personal', 'private')` sets a
+  visibility default for every project in a folder: one brain serves your private life
+  and your team without per-file ceremony (concept > project > folder > server default).
 - **Ambient team presence** — derived from tool calls, zero setup: who's working in which
   project (never content), in the widget, the dashboard, and the extension; one-click
   invisible mode.
