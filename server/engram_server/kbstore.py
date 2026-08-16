@@ -1764,15 +1764,58 @@ class KBStore:
             "pushed": pushed,
         }
 
-    async def kb_append_log(self, project: str, entry: str) -> dict[str, Any]:
+    _SHIPPING_CLAIMS = (
+        "shipped", "pushed", "committed", "deployed", "merged", "released", "fixed",
+        "built", "landed",
+    )
+
+    @staticmethod
+    def _proof_line(commits: list[str] | None, repo: str) -> str:
+        """Render commit references as markdown links — a log entry that CLAIMS
+        something shipped is worth more when the claim is checkable. Accepts bare
+        shas (needs `repo` as owner/name), `owner/name@sha`, or full URLs."""
+        links: list[str] = []
+        default = (repo or "").strip().removeprefix("https://github.com/").removesuffix(".git").strip("/")
+        for raw in commits or []:
+            ref = str(raw).strip()
+            if not ref:
+                continue
+            if ref.startswith("http://") or ref.startswith("https://"):
+                label = ref.rstrip("/").rsplit("/", 1)[-1][:8]
+                links.append(f"[{label}]({ref})")
+                continue
+            slug, _, sha = ref.rpartition("@")
+            slug = slug or default
+            if not slug or not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
+                continue
+            links.append(f"[{sha[:8]}](https://github.com/{slug}/commit/{sha})")
+        return " · ".join(links)
+
+    async def kb_append_log(
+        self, project: str, entry: str, commits: list[str] | None = None, repo: str = ""
+    ) -> dict[str, Any]:
         """Prepend a dated entry to the project's log.md (newest first; history never edited).
-        Returns {ok, path, sha, date, pushed}."""
+        Returns {ok, path, sha, date, pushed, warnings}."""
         if not entry or not entry.strip():
             raise KBError("Empty log entry — describe what happened this session.")
         proot_rel = self._project_rel(project)
         pid = proot_rel.split("/")[-1]
         rel = f"{proot_rel}/log.md"
         today = _utcnow().strftime("%Y-%m-%d")
+
+        proof = self._proof_line(commits, repo)
+        if proof:
+            entry = f"{entry.rstrip()}\n  Proof: {proof}"
+        log_warnings: list[str] = []
+        if not proof:
+            lowered = entry.lower()
+            if any(word in lowered for word in self._SHIPPING_CLAIMS):
+                log_warnings.append(
+                    "This entry claims work shipped but carries no proof. Pass "
+                    "commits=['<sha>'] (+ repo='owner/name') and the log records "
+                    "checkable GitHub links instead of an assertion — a future session "
+                    "reading 'shipped X' can then verify it in one click."
+                )
         bullet = _entry_to_bullet(entry)
 
         def _mutate() -> list[str]:
@@ -1787,7 +1830,11 @@ class KBStore:
         sha, pushed = await self._locked_commit(_mutate, f"log: {pid} {today}")
         self._log_mutation("kb_append_log", [rel], sha, pushed)
         self._schedule_index(upserts=[rel])
-        return {"ok": True, "path": rel, "sha": sha, "date": today, "pushed": pushed}
+        out: dict[str, Any] = {"ok": True, "path": rel, "sha": sha, "date": today,
+                               "pushed": pushed}
+        if log_warnings:
+            out["warnings"] = log_warnings
+        return out
 
     async def kb_leave_message(
         self,
@@ -3669,16 +3716,24 @@ class KBStore:
         lean: list[dict[str, Any]] = []
         for p in ranked:
             desc = str(p.get("description") or "")
+            # A project whose context.md carries no title gets the filename —
+            # a shortlist full of "Context" tells the caller nothing.
+            title = str(p.get("title") or "").strip()
+            pid = str(p.get("id") or "")
+            if not title or title.lower() == "context":
+                title = pid.replace("-", " ").title()
             lean.append({
                 "id": p.get("id"),
-                "title": p.get("title"),
+                "title": title,
                 "description": desc[:120] + ("…" if len(desc) > 120 else ""),
                 "folder": p.get("folder") or "",
                 "last_session": p.get("last_session"),
             })
         return lean
 
-    async def kb_realign(self, project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
+    async def kb_realign(
+        self, project: str = "", repo: str = "", cwd: str = "", pin: str = ""
+    ) -> dict[str, Any]:
         """Resolve → load → surface → pin, in one call. See the kb_realign tool."""
         await self._refresh()
         projects = await self.kb_projects()
@@ -3703,14 +3758,26 @@ class KBStore:
                         "instruction": "Ask ONE question naming your best candidate.",
                     }
 
-        # 2 · The learned routing table (self-maintaining, from presence history).
+        # 2 · The PIN — `.engram-project` at the repo root, read by the caller and
+        #     passed in. A pin is a DECLARATION (someone deliberately wrote it,
+        #     and it commits with the repo so it survives a fresh clone on any
+        #     machine), where a route is an inference — so it outranks one. The
+        #     server can't read the caller's disk, which is why this arrives as an
+        #     argument rather than being discovered here.
+        routes: dict[str, str] = {}
+        if not resolved and pin:
+            pid = pin.strip().lower()
+            if pid in known:
+                resolved, how = pid, "pin (.engram-project)"
+
+        # 3 · The learned routing table (self-maintaining, from presence history).
         if not resolved and (repo or cwd):
             routes = await to_thread.run_sync(self._learned_routes_sync)
             hit, why = self._match_route(routes, repo, cwd)
             if hit and hit in known:
                 resolved, how = hit, f"learned route ({why})"
 
-        # 3 · Weakest signal, still usually right: a directory on the path is
+        # 4 · Weakest signal, still usually right: a directory on the path is
         #     named after the project. Walks UP like the route match does —
         #     sessions sit in subdirectories (`<repo>/server`) far more often
         #     than at the repo root, and only checking the last segment made
@@ -3729,9 +3796,47 @@ class KBStore:
                 key = key.rsplit("/", 1)[0]
 
         if not resolved:
+            if not routes and (repo or cwd):
+                routes = await to_thread.run_sync(self._learned_routes_sync)
+            # An EMPTY table and a table with no match look identical to a caller
+            # unless we say so — and "no presence has ever been recorded here" is
+            # a setup problem (hooks not installed on this machine), not a
+            # resolution failure. Cost a session 20 minutes of diagnosis once.
+            if routes:
+                diagnosis = f"{len(routes)} known routes, none matching this location."
+            else:
+                # Two very different empty-table causes, and the second is the one
+                # that actually bites: hooks CAN be installed and recording
+                # repo/cwd faithfully while every record carries project:'' —
+                # because the hook reads the project from `.engram-project`, and
+                # most repos have never been pinned. Distinguish them, or the
+                # operator chases the wrong thing (observed).
+                records = await to_thread.run_sync(lambda: self._presence_records_sync(None))
+                located = [r for r in records if (r.get("repo_remote") or r.get("cwd"))]
+                if not records:
+                    diagnosis = (
+                        "The routing table is EMPTY and no presence has EVER been recorded "
+                        "in this brain — the Claude Code presence hooks are probably not "
+                        "installed on this machine (hooks/README.md in the code repo)."
+                    )
+                elif not any(str(r.get("project") or "").strip() for r in located):
+                    diagnosis = (
+                        f"The routing table is EMPTY even though {len(located)} presence "
+                        "record(s) carry a repo/cwd — every one has an empty `project`. The "
+                        "hook reads the project from `.engram-project`, so this means the "
+                        "repos have never been PINNED. Resolve once, then write "
+                        "`.engram-project` at the repo root: that single file teaches the "
+                        "route for every future session on every machine."
+                    )
+                else:
+                    diagnosis = (
+                        "No route matched this location yet. Pin this repo "
+                        "(`.engram-project`) and it will resolve cold next time."
+                    )
             return {
                 "resolved": False,
-                "reason": "no project named, no learned route for this location",
+                "reason": "no project named, no pin passed, no learned route for this location",
+                "routing": {"routes_known": len(routes), "diagnosis": diagnosis},
                 # Ranked by recency and capped: the caller is told to offer ONE
                 # candidate, so shipping all ~20 projects is both a token cost
                 # and an invitation to do the thing the instruction forbids.
@@ -3768,6 +3873,17 @@ class KBStore:
             sequence = sections.get("open loops", "")
             sequence_path = ctx_path if sequence else ""
 
+        sequence_truncated = len(sequence) > 4000
+        if sequence_truncated:
+            cut = sequence[:4000]
+            # Break on the last newline so we never end mid-word, and mark it —
+            # a session must be able to SEE that the list was cut.
+            nl = cut.rfind("\n")
+            sequence_shown = (cut[:nl] if nl > 0 else cut)
+            sequence_shown += "\n\n[... truncated — read the full list at sequence_path]"
+        else:
+            sequence_shown = sequence
+
         log_path = self.root / proot / "log.md"
         log_entries = _parse_log_entries(_read_text_retry(log_path)) if log_path.is_file() else []
         unread = self._unread_messages(proot)
@@ -3782,8 +3898,18 @@ class KBStore:
             "phase": sections.get("current phase", ""),
             "open_loops": sections.get("open loops", ""),
             "next_actions": sections.get("next actions", ""),
+            # Which of the expected headings this project actually has. An empty
+            # `open_loops` is ambiguous — no loops, or no heading? — and a session
+            # reading "" as "nothing outstanding" is worse than knowing nothing.
+            "missing_sections": [
+                name for name in ("current phase", "open loops", "next actions")
+                if name not in sections
+            ],
             "sequence_path": sequence_path,
-            "sequence": sequence[:4000],
+            "sequence": sequence_shown,
+            # A cut list looks exactly like a finished one, so say it plainly —
+            # a session must never act on a partial sequence believing it's whole.
+            "sequence_truncated": sequence_truncated,
             "context_path": ctx_path,
             "map_path": f"{proot}/map.md" if has_map else "",
             "last_session": log_entries[0] if log_entries else None,

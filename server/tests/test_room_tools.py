@@ -287,3 +287,30 @@ async def test_turns_carry_refs_so_documents_travel_as_pointers(mu, monkeypatch)
     # a turn with nothing attached doesn't carry an empty key
     system = next(t for t in turns if t["kind"] == "system")
     assert "refs" not in system
+
+
+@pytest.mark.asyncio
+async def test_long_turn_posts_but_nudges_toward_refs(mu, monkeypatch):
+    """The cap is a backstop; the NUDGE is the mechanism. A long turn still posts
+    (never block the human's intent) but the result teaches the better shape."""
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_room_open("verbose", "test verbosity")
+    res = await app_module.kb_room_post("verbose", "x " * 900)
+    assert res["turn"]["id"]  # it posted
+    assert any("refs" in w for w in res.get("warnings", []))
+    # a turn that already carries refs is doing the right thing — no nagging
+    await app_module.kb_write("projects/v/context.md", _doc("v"), "seed")
+    ok = await app_module.kb_room_post(
+        "verbose", "y " * 900, refs=["projects/v/context.md"]
+    )
+    assert "warnings" not in ok
+
+
+@pytest.mark.asyncio
+async def test_over_cap_refusal_teaches_the_right_move(mu, monkeypatch):
+    """Refusing with 'too long' taught splitting into two long turns. Refuse with
+    the alternative instead."""
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_room_open("capped", "test the cap")
+    with pytest.raises(KBError, match="refs"):
+        await app_module.kb_room_post("capped", "z" * 4100)

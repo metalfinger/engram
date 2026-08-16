@@ -34,6 +34,9 @@ from pathlib import Path
 from .errors import KBError
 
 _MAX_TURN_LEN = 4000
+# Above this a turn still posts, but the result carries a nudge toward `refs`.
+# The soft limit is the real mechanism — the hard cap only catches runaways.
+_LONG_TURN_CHARS = 1200
 _MAX_PATH_LEN = 200
 _MAX_HARD_CAP = 500
 _MAX_EXTEND = 100
@@ -340,7 +343,15 @@ class RoomStore:
         if not body:
             raise TeamworkError("Turn body cannot be empty.")
         if len(body) > _MAX_TURN_LEN:
-            raise TeamworkError(f"Turn body exceeds {_MAX_TURN_LEN} characters.")
+            # The cap is a backstop, not the lesson. Refusing with "too long"
+            # teaches splitting into two long turns (observed); refusing with the
+            # right move teaches the shape we actually want.
+            raise TeamworkError(
+                f"Turn body is {len(body)} chars, over the {_MAX_TURN_LEN} cap. Don't "
+                "split it into two long turns — that costs every member twice. Write it "
+                "as a concept (kb_write) and post a one-line summary with its path in "
+                "`refs`: shared that way it's versioned, searchable and read on demand."
+            )
         with self._lock:
             room = self._room_locked(room_id)
             if room is None:

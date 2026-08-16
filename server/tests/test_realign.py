@@ -306,3 +306,133 @@ async def test_a_rare_name_match_beats_two_common_org_words(store):
     assert out["candidates"][0]["id"] == "formthefuture-ux", [
         c["id"] for c in out["candidates"]
     ]
+
+
+# -- the pin rung (a declaration outranks an inference) ----------------------
+
+
+@pytest.mark.asyncio
+async def test_pin_resolves_cold_with_no_history(store):
+    """`.engram-project` commits with the repo, so it works on a machine that has
+    never run a session — the case the learned table cannot serve."""
+    await _seed(store, "vibechk", "engram")
+    out = await store.kb_realign(
+        pin="vibechk",
+        repo="https://github.com/Alt-AI-Inc/formthefuture-v2.git",
+        cwd="/Users/hirenk/code/alt.inc/formthefuture-v2",
+    )
+    assert out["resolved"] and out["project"] == "vibechk"
+    assert out["resolved_by"] == "pin (.engram-project)"
+    assert out["guess"] is False
+
+
+@pytest.mark.asyncio
+async def test_pin_outranks_a_stale_learned_route(store):
+    """A deliberate declaration beats an inference from history."""
+    await _seed(store, "old-thing", "new-thing")
+    await store.kb_presence(session="s1", project="old-thing", cwd="C:/code/shared")
+    out = await store.kb_realign(pin="new-thing", cwd="C:/code/shared")
+    assert out["project"] == "new-thing"
+
+
+@pytest.mark.asyncio
+async def test_a_bogus_pin_falls_through_rather_than_failing(store):
+    """A pin naming a project that no longer exists must not dead-end the call."""
+    await _seed(store, "engram")
+    await store.kb_presence(session="s1", project="engram", cwd="C:/code/engram")
+    out = await store.kb_realign(pin="deleted-project", cwd="C:/code/engram")
+    assert out["resolved"] and out["project"] == "engram"
+
+
+# -- silence must be explainable --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_routing_table_says_it_is_unwired(store):
+    """An empty table and a table with no match look identical to a caller — and
+    the first is a setup problem, not a resolution failure. Cost a session 20
+    minutes of diagnosis once."""
+    await _seed(store, "engram")
+    out = await store.kb_realign(cwd="D:/somewhere/unknown")
+    assert out["routing"]["routes_known"] == 0
+    assert "hooks" in out["routing"]["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_unpinned_repos_are_diagnosed_differently_from_missing_hooks(store):
+    """THE root cause, found live: hooks installed and faithfully recording
+    repo/cwd, but every record has project:'' because the repo was never pinned.
+    That is a different fix from 'install the hooks' and must say so."""
+    await _seed(store, "engram")
+    await store.kb_presence(session="pc1", cwd="C:/code/engram",
+                            repo_remote="https://github.com/x/engram.git")  # no project
+    out = await store.kb_realign(cwd="D:/elsewhere/unknown")
+    assert out["routing"]["routes_known"] == 0
+    assert "PINNED" in out["routing"]["diagnosis"]
+    assert "hooks are probably not" not in out["routing"]["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_missing_headings_are_named_not_silently_empty(store):
+    """An absent '## Open loops' must not read as 'nothing outstanding'."""
+    await store.kb_write(
+        "projects/bare/context.md",
+        "---\ntype: project\ndescription: bare\n---\n\n# About\n\nNothing structured.\n",
+        "seed",
+    )
+    out = await store.kb_realign(project="bare")
+    assert out["open_loops"] == ""
+    assert set(out["missing_sections"]) == {"current phase", "open loops", "next actions"}
+
+
+@pytest.mark.asyncio
+async def test_a_cut_sequence_announces_itself(store):
+    await _seed(store, "big")
+    await store.kb_write(
+        "projects/big/backlog.md",
+        "---\ntype: note\ndescription: long\n---\n\n# Backlog\n\n"
+        + "\n".join(f"- item number {i} with enough words to add length" for i in range(200)),
+        "seed",
+    )
+    out = await store.kb_realign(project="big")
+    assert out["sequence_truncated"] is True
+    assert out["sequence"].rstrip().endswith("]")
+    assert not out["sequence"].rstrip().endswith("leng")  # never mid-word
+
+
+# -- proof, not assertion ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_log_entries_can_carry_commit_proof(store):
+    """A log saying 'shipped X' is a claim; a commit link is evidence."""
+    await _seed(store, "engram")
+    res = await store.kb_append_log(
+        "engram", "shipped the realign verb",
+        commits=["b36a9a4c", "https://github.com/metalfinger/engram/commit/f4c37af0"],
+        repo="metalfinger/engram",
+    )
+    assert "warnings" not in res
+    log = (store.root / "projects/engram/log.md").read_text(encoding="utf-8")
+    assert "https://github.com/metalfinger/engram/commit/b36a9a4c" in log
+    assert "[f4c37af0]" in log
+
+
+@pytest.mark.asyncio
+async def test_a_shipping_claim_without_proof_is_nudged(store):
+    await _seed(store, "engram")
+    res = await store.kb_append_log("engram", "shipped the whole thing today")
+    assert any("proof" in w.lower() for w in res.get("warnings", []))
+    # a plain narrative entry isn't nagged
+    quiet = await store.kb_append_log("engram", "explored options, decided nothing yet")
+    assert "warnings" not in quiet
+
+
+@pytest.mark.asyncio
+async def test_bad_commit_refs_are_dropped_not_rendered(store):
+    await _seed(store, "engram")
+    await store.kb_append_log(
+        "engram", "shipped it", commits=["not-a-sha", "deadbeef"], repo="metalfinger/engram"
+    )
+    log = (store.root / "projects/engram/log.md").read_text(encoding="utf-8")
+    assert "deadbeef" in log and "not-a-sha" not in log

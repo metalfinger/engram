@@ -500,7 +500,9 @@ async def kb_move(old_path: str, new_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def kb_append_log(project: str, entry: str) -> dict[str, Any]:
+async def kb_append_log(
+    project: str, entry: str, commits: list[str] | None = None, repo: str = ""
+) -> dict[str, Any]:
     """Append a dated entry to the project's session log (prepends under the H1,
     newest first; history is never edited). This is the session-close tool — when the
     user says 'close session' or the work clearly wraps up, run the checklist:
@@ -513,9 +515,15 @@ async def kb_append_log(project: str, entry: str) -> dict[str, Any]:
     auto-formatted as scannable bullets ('* **title** — body') under a bare ISO date
     heading, so pass a first line that works as a title with the detail after it.
 
-    Returns {ok, path, sha, date, pushed}.
+    PROOF, not assertion: when the session shipped code, pass commits=['<sha>', ...]
+    with repo='owner/name' (or full commit URLs, or 'owner/name@sha'). The entry then
+    records clickable GitHub links, so a future session reading "shipped X" can verify
+    it in one click instead of taking a past session's word for it. An entry that claims
+    shipping with no proof comes back with a warning saying so.
+
+    Returns {ok, path, sha, date, pushed, warnings}.
     """
-    return await (await current_store()).kb_append_log(project, entry)
+    return await (await current_store()).kb_append_log(project, entry, commits, repo)
 
 
 @mcp.tool()
@@ -934,7 +942,9 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def kb_realign(project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
+async def kb_realign(
+    project: str = "", repo: str = "", cwd: str = "", pin: str = ""
+) -> dict[str, Any]:
     """ORIENT THIS SESSION. Call this the moment the user says "realign" (or "realign on
     <project>", "where are we", "what should I be working on") — and at the start of any
     session that doesn't already know which project it belongs to.
@@ -942,18 +952,27 @@ async def kb_realign(project: str = "", repo: str = "", cwd: str = "") -> dict[s
     One call replaces four: it resolves WHICH project this is, loads it, surfaces unread
     inter-session messages, and hands you the pin. Resolution order — first answer wins:
       1. `project` if the user named one (loose match: 'vibechk' finds vibechk-brand).
-      2. The LEARNED ROUTING TABLE — pass `repo` (git remote or repo name) and `cwd` and
+      2. `pin` — the contents of `.engram-project` at the repo root. READ THAT FILE
+         YOURSELF and pass it: a pin is a DECLARATION someone deliberately wrote, and it
+         commits with the repo, so it resolves correctly on a machine with no history at
+         all. It outranks any inference below.
+      3. The LEARNED ROUTING TABLE — pass `repo` (git remote or repo name) and `cwd` and
          it maps them to a project from presence history. This table maintains itself:
          every session that attaches to a project from a repo teaches it that route.
-      3. A guess from the directory name (returned with guess=true — confirm it).
-      4. Nothing matched → resolved=false plus candidates; ask ONE question naming your
-         best candidate. Never make the user read the whole list, and if the work has no
-         project yet say so and offer kb_attach_project rather than filing it under a
-         neighbour.
+      4. A guess from the directory name (returned with guess=true — confirm it).
+      5. Nothing matched → resolved=false plus a scored shortlist; ask ONE question naming
+         your best candidate. Never make the user read the whole list, and if the work has
+         no project yet say so and offer kb_attach_project rather than filing it under a
+         neighbour. The `routing` block says whether the table is empty (hooks not
+         installed on this machine) or simply had no match — a real difference.
 
-    ALWAYS pass repo and cwd when you can see them (Claude Code: your working directory
-    and `git remote get-url origin`) — that is what makes resolution reliable and what
-    teaches the table for next time.
+    ALWAYS pass pin, repo and cwd when you can see them (Claude Code: read
+    `.engram-project`, your working directory, and `git remote get-url origin`). The pin
+    makes resolution exact; repo/cwd make it reliable and teach the table for next time.
+
+    Read `missing_sections` before trusting an empty `open_loops`/`next_actions` — an
+    absent heading is not the same as nothing outstanding. If `sequence_truncated` is
+    true, the list was cut: read `sequence_path` before acting on it as complete.
 
     Then do exactly this, in order:
       · Surface `unread_messages` FIRST — they are instructions from other sessions.
@@ -971,7 +990,7 @@ async def kb_realign(project: str = "", repo: str = "", cwd: str = "") -> dict[s
     sequence_path, context_path, map_path, last_session, unread_messages, pin_file,
     pin_content, instruction} — or {resolved: false, candidates, instruction}.
     """
-    result = await (await current_store()).kb_realign(project=project, repo=repo, cwd=cwd)
+    result = await (await current_store()).kb_realign(project=project, repo=repo, cwd=cwd, pin=pin)
     if result.get("resolved"):
         _presence_project(str(result.get("project") or ""))
     return result
@@ -1964,6 +1983,19 @@ async def kb_room_post(
     turn = registry.rooms.post_turn(r.id, me.id, message, session="claude", refs=refs)
     await _room_notify(r.id)
     handles = registry.tenancy_handle_map()
+    # The soft limit is where behaviour actually changes: a long turn still
+    # posts (never block the human's intent), but the result teaches the better
+    # shape — same nudge pattern as the publish reflex.
+    from engram_server.teamwork import _LONG_TURN_CHARS
+
+    warnings: list[str] = []
+    if len(message) > _LONG_TURN_CHARS and not refs:
+        warnings.append(
+            f"That turn was {len(message)} chars. Every member pays for every word, and a "
+            "long turn is read once and lost. Next time, kb_write the substance as a "
+            "concept and post a one-line summary with its path in `refs` — versioned, "
+            "searchable, re-readable, and cheap to skip."
+        )
     replies: list[dict[str, Any]] = []
     if wait_for_reply:
         deadline = asyncio.get_event_loop().time() + max(1, min(120, wait_seconds))
@@ -1972,7 +2004,10 @@ async def kb_room_post(
             await _room_wait(r.id, remaining)
             fresh = registry.rooms.read_turns(r.id, me.id, since_id=turn.id)
             replies = [_turn_view(t, handles) for t in fresh if t.user_id != me.id]
-    return {"turn": _turn_view(turn, handles), "replies": replies}
+    out: dict[str, Any] = {"turn": _turn_view(turn, handles), "replies": replies}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 @mcp.tool()
