@@ -2163,10 +2163,19 @@ async def kb_room_post(
         # amount of waiting on our side — so the only honest move is to reach the
         # human, whose tray/extension is still live. Parked → instant; rested →
         # notified; nobody polls in either case.
-        for other in floor["others"]:
+        # One notification per PERSON, not per session. Several sessions of one
+        # user are one human with one tray, so notifying per speaker pinged Hiren
+        # twice for a single turn in a three-session room — and would scale with
+        # however many sessions he happens to have open, which is exactly the
+        # noise that trains someone to ignore the thing.
+        for uid in dict.fromkeys(int(o["user_id"]) for o in floor["others"]):
+            asleep = [
+                o["name"] for o in floor["others"] if int(o["user_id"]) == uid
+            ]
             _push_notification(
-                int(other["user_id"]), "room_turn",
-                f"Room '{r.name}' — {other['name']} has a turn waiting: {message[:120]}",
+                uid, "room_turn",
+                f"Room '{r.name}' — a turn is waiting for {', '.join(asleep)}: "
+                f"{message[:120]}",
                 ref=r.name,
             )
     replies: list[dict[str, Any]] = []

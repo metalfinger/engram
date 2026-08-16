@@ -201,6 +201,28 @@ async def test_a_turn_nobody_is_parked_on_reaches_the_human(mu, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_one_person_gets_one_notification_however_many_sessions(mu, monkeypatch):
+    """Several sessions of one user are one human with one tray. Notifying per
+    speaker pinged Hiren twice for a single turn in a three-session room, and
+    would scale with however many sessions he had open — the sort of noise that
+    trains someone to ignore notifications entirely."""
+    _login(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        app_module, "_push_notification",
+        lambda uid, kind, body, ref=None: sent.append(uid),
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("crowded", "three sessions, one person")
+    for s, n in (("sess-b", "mac-a"), ("sess-c", "mac-b")):
+        _as_session(monkeypatch, s)
+        await app_module.kb_room_read("crowded", speaker=n)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_post("crowded", "nobody is parked", speaker="windows")
+    assert len(sent) == 1, f"one tray, one ping — got {len(sent)}"
+
+
+@pytest.mark.asyncio
 async def test_a_listening_session_is_not_notified(mu, monkeypatch):
     """A parked session already gets the turn instantly; notifying as well would
     make every busy room spam the user's tray."""
