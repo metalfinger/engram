@@ -31,11 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import html as _html
+import logging
 import re
 import secrets
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
+
+log = logging.getLogger("engram.dashboard")
 from urllib.parse import urlsplit
 
 import httpx
@@ -360,6 +363,61 @@ class Dashboard:
                 + f"<br><span style='font-size:11px'>{esc(row.get('tool') or '')}</span></p></div></div>"
             )
         return "<p class='section-label'>Working now</p><div class='cards'>" + "".join(cards) + "</div>"
+
+    async def _render_working_on(self, handle: str) -> str:
+        """"Working on" — which PATHS are being worked, by whom, right now.
+
+        Sessions have had this in their `floor` block since the coordination wave;
+        Hiren has had no view of it at all short of asking one of them. He is the
+        one person who cannot be handed a tool result, so the surface he actually
+        opens has to carry it.
+
+        Claims are stated intent, activity is observed writes; the distinction is
+        shown rather than flattened, because "I'm taking this" and "they have been
+        editing this" warrant different reactions."""
+        from engram_server.explorer.html import esc
+
+        rows: list[str] = []
+        try:
+            claims = await (await self.registry.store_for_handle(handle)).kb_claims()
+        except Exception:  # noqa: BLE001 — a panel must never break the page
+            log.debug("claims unavailable for the working-on panel", exc_info=True)
+            claims = []
+        claimed: set[str] = set()
+        for c in claims:
+            if c.get("stale"):
+                continue
+            path = str(c.get("path") or "")
+            claimed.add(path)
+            note = str(c.get("note") or "")
+            rows.append(
+                "<tr><td><code>" + esc(path) + "</code></td>"
+                f"<td>{esc(str(c.get('session') or ''))}</td>"
+                "<td><span class='badge'>claimed</span></td>"
+                f"<td class='meta'>{esc(note)}</td>"
+                f"<td class='meta'>{int(c.get('age_min') or 0)}m ago</td></tr>"
+            )
+        try:
+            for a in self.registry.rooms.recent_activity():
+                if a["path"] in claimed:
+                    continue
+                rows.append(
+                    "<tr><td><code>" + esc(str(a["path"])) + "</code></td>"
+                    f"<td>{esc(str(a['session']))}</td>"
+                    "<td><span class='badge'>writing</span></td>"
+                    "<td class='meta'></td>"
+                    f"<td class='meta'>{esc(str(a['at']))}</td></tr>"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        if not rows:
+            return ""
+        return (
+            "<p class='section-label'>Working on</p>"
+            "<table class='rows'><thead><tr><th>path</th><th>session</th>"
+            "<th>state</th><th>note</th><th>when</th></tr></thead><tbody>"
+            + "".join(rows[:20]) + "</tbody></table>"
+        )
 
     async def people_view(self, request: "Request") -> "Response":
         session = self._session(request)
@@ -2198,7 +2256,13 @@ class Dashboard:
         handles = self.registry.tenancy_handle_map()
         rooms_html = "<p class='empty'>No open rooms.</p>"
         if me is not None:
-            rows = self.registry.rooms.list_rooms_for(me.id)
+            # Shadow rooms carry thread floor state and are plumbing, not
+            # conversations — listing them would show a phantom room beside every
+            # thread. Same filter the MCP kb_rooms applies.
+            rows = [
+                r for r in self.registry.rooms.list_rooms_for(me.id)
+                if not str(r["name"]).startswith("thread--")
+            ]
             if rows:
                 rooms_html = "<div class='cards'>" + "".join(
                     self._render_room_card(r, handles) for r in rows) + "</div>"
@@ -2210,6 +2274,7 @@ class Dashboard:
         body = (
             "<div class='page-head'><div><p class='eyebrow'>Team</p><h1>Office</h1></div></div>"
             + (self._render_working_strip() or "<p class='empty'>No one online right now.</p>")
+            + (await self._render_working_on(me.handle) if me is not None else "")
             + "<p class='section-label'>Open rooms</p>" + rooms_html
             + owner_link
         )
