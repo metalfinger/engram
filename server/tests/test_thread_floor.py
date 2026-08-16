@@ -242,3 +242,60 @@ async def test_relaying_to_nothing_is_refused(mu, monkeypatch):
     _as_session(monkeypatch, "sess-a")
     with pytest.raises(KBError, match="No room or thread"):
         await app_module.kb_room_relay_answer("does-not-exist-anywhere", "hi")
+
+
+@pytest.mark.asyncio
+async def test_a_thread_turn_for_a_gone_session_reaches_the_tray(mu, monkeypatch):
+    """The delivered verdict existed on rooms only — so the surface a single user
+    with several machines actually uses was the one that stayed silent when a
+    handoff landed for a session that had gone home."""
+    _login(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        app_module, "_push_notification",
+        lambda uid, kind, body, ref=None: sent.append((kind, body)),
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("handover", "windows", "opening")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("handover", sender="mac")
+    fid = app_module._thread_floor_id("handover")  # noqa: SLF001
+    with mu.rooms._lock:  # noqa: SLF001 — mac goes home
+        mu.rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND name = 'mac'", (fid,),
+        )
+        mu.rooms._conn.commit()
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("handover", "windows", "here's the handoff")
+    assert [b for k, b in sent if k == "room_turn"], "nothing else could deliver it"
+
+
+@pytest.mark.asyncio
+async def test_a_live_thread_session_is_not_notified(mu, monkeypatch):
+    """A quiet channel is the feature — an active exchange must not ping the tray."""
+    _login(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        app_module, "_push_notification",
+        lambda uid, kind, body, ref=None: sent.append(kind),
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("chatty", "windows", "opening")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("chatty", sender="mac")
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("chatty", "windows", "still going")
+    assert "room_turn" not in sent
+
+
+@pytest.mark.asyncio
+async def test_closing_a_thread_offers_a_precipitate(mu, monkeypatch):
+    """A transcript is not knowledge — the next session should not have to re-read
+    the whole exchange to learn what was decided."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("wrap", "windows", "opening")
+    out = await app_module.kb_thread_post("wrap", "windows", "done", close=True)
+    assert "precipitate_instruction" in out
+    assert "only on their explicit yes" in out["precipitate_instruction"]

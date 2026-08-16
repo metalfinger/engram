@@ -735,6 +735,21 @@ async def kb_thread_post(
     )
     if fid is not None:
         out["floor"] = registry.rooms.floor_state(fid, key)
+        # THE DELIVERED VERDICT, on threads too. A session that has gone cannot be
+        # woken by any amount of waiting, so the person's tray is the only route
+        # left. This existed on rooms only — which meant the surface a single user
+        # with several machines will actually use was the one that stayed silent.
+        # Threshold is GONE, not "not parked right now", and one ping per person.
+        gone = [o for o in out["floor"]["others"]
+                if not o["live"] and not o["listening"]]
+        for uid in dict.fromkeys(int(o["user_id"]) for o in gone):
+            asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
+            _push_notification(
+                uid, "room_turn",
+                f"Thread '{thread}' — a turn is waiting for {', '.join(asleep)}: "
+                f"{message[:120]}",
+                ref=thread,
+            )
     if missed:
         out["missed"] = missed
         out.setdefault("warnings", []).append(
@@ -762,6 +777,20 @@ async def kb_thread_post(
             f"{seq} turns in. If the point is settled, say so and close the thread "
             "(close=True) rather than posting another agreeable turn — agent "
             "conversations end because someone ends them."
+        )
+    if close:
+        # CLOSING SHOULD PRECIPITATE. A room drafts its outcome on close; a thread
+        # just stopped, leaving a transcript nobody distils. The transcript is in
+        # git either way, but a transcript is not knowledge — the next session has
+        # to re-read the whole exchange to learn what was decided. Offered, never
+        # written: a conclusion belongs to the user, same rule as rooms.
+        out["precipitate_instruction"] = (
+            "This thread is closed. Write 3-10 lines of what was actually decided "
+            "or learned — not a summary of the conversation, the part a session "
+            "reading it in three months needs. Offer that to the user, and only "
+            "on their explicit yes save it with kb_write (type decision or note), "
+            f"ending the body 'From thread {thread}, closed <date>'. Never write "
+            "it unasked."
         )
     out["server_ms"] = int((time.monotonic() - started) * 1000)
     return out
