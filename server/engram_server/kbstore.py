@@ -2098,6 +2098,8 @@ class KBStore:
         message: str,
         close: bool = False,
         topic: str = "",
+        goal: str = "",
+        exit_condition: str = "",
         refs: list[str] | None = None,
         allow_secrets: bool = False,
         wait_for_reply: bool = False,
@@ -2169,6 +2171,12 @@ class KBStore:
                     "title": f"Thread: {topic.strip() or tid}",
                     "description": (topic.strip() or f"Cross-session thread {tid}")[:_SLUG_MAX * 3],
                     "topic": topic.strip(),
+                    # Set once, at creation, and never rewritten: a goal that can
+                    # be edited mid-conversation is a goal that gets adjusted to
+                    # whatever the conversation drifted into. Rooms treat theirs
+                    # the same way, and for the same reason.
+                    "goal": goal.strip(),
+                    "exit_condition": exit_condition.strip(),
                     "status": "open",
                     "participants": [],
                     "created": timestamp,
@@ -2230,6 +2238,8 @@ class KBStore:
             state["seq"] = seq
             state["status"] = str(tmeta["status"])
             state["participants"] = participants
+            state["goal"] = str(tmeta.get("goal") or "")
+            state["exit_condition"] = str(tmeta.get("exit_condition") or "")
             return paths
 
         verb = "close" if close else "post"
@@ -2244,6 +2254,11 @@ class KBStore:
             "posted": timestamp,
             "pushed": pushed,
             "warnings": warnings,
+            # Carried back so the turn-cap nudge can quote what the thread is FOR.
+            # "40 turns in" is a scold; "40 turns in, and the goal was X" is a
+            # question the reader can actually answer.
+            "goal": state.get("goal", ""),
+            "exit_condition": state.get("exit_condition", ""),
         }
         # Post-and-await: hold the same call open for the other session's reply. A closed
         # thread (we just closed it, or it already was) can't receive a reply, so skip.
@@ -2321,6 +2336,8 @@ class KBStore:
                 "thread": tid,
                 "status": str(tmeta.get("status") or "open"),
                 "topic": str(tmeta.get("topic") or ""),
+                "goal": str(tmeta.get("goal") or ""),
+                "exit_condition": str(tmeta.get("exit_condition") or ""),
                 "participants": list(tmeta.get("participants") or []),
                 "turns": shown,
                 "cursor": newest,
@@ -2368,6 +2385,8 @@ class KBStore:
                     "thread": tdir.name,
                     "status": str(meta.get("status") or "open"),
                     "topic": str(meta.get("topic") or ""),
+                    "goal": str(meta.get("goal") or ""),
+                    "exit_condition": str(meta.get("exit_condition") or ""),
                     "participants": list(meta.get("participants") or []),
                     "turn_count": len(turns),
                     "last_activity": str(meta.get("last_activity") or meta.get("timestamp") or ""),

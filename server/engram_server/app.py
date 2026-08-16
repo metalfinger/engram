@@ -657,6 +657,8 @@ async def kb_thread_post(
     hand_to: str = "",
     ask_human: str = "",
     expect_cursor: str = "",
+    goal: str = "",
+    exit_condition: str = "",
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -690,6 +692,13 @@ async def kb_thread_post(
     The message is scanned for likely secrets before it commits — threads are private but
     written to GIT HISTORY permanently — and refused if any are found (pass allow_secrets=True
     to override a placeholder). A `refs` path that doesn't exist is warned about, not blocked.
+
+    OPEN WITH INTENT. On the first post, set `goal` (what this thread is for) and
+    `exit_condition` (how you will know it is finished). Both are set once and never
+    rewritten — a goal you can edit mid-conversation becomes whatever the conversation
+    drifted into. They cost one sentence and they are what makes an agent conversation
+    terminate: the turn-cap nudge quotes them back, so "40 turns in" becomes "40 turns
+    in, and the exit condition was X — is it met?", which is a question with an answer.
 
     TAKING TURNS — threads carry the same floor as rooms. `sender` is your name, and
     posting hands the floor on: to the other party with two, to whoever has spoken least
@@ -751,7 +760,8 @@ async def kb_thread_post(
             )
 
     out = await store.kb_thread_post(
-        thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
+        thread, sender, message, close, topic, goal, exit_condition, refs,
+        allow_secrets, wait_for_reply, wait_seconds,
     )
     if fid is not None:
         out["floor"] = await _with_working(registry.rooms.floor_state(fid, key))
@@ -785,18 +795,26 @@ async def kb_thread_post(
     # could strand a conversation with no defined way to resume it. The nudge
     # escalates instead, and the rest ladder already handles runaway WAITING.
     seq = int(out.get("seq") or 0)
+    # Quote what the thread is FOR. "40 turns in" is a scold; "40 turns in, and
+    # the exit condition was X" is a question the reader can actually answer —
+    # which is the whole reason rooms carry a goal and threads now do too.
+    aim = ""
+    if out.get("exit_condition"):
+        aim = f" The exit condition was: {out['exit_condition']!r}. Is it met?"
+    elif out.get("goal"):
+        aim = f" The goal was: {out['goal']!r}. Is it done?"
     if seq >= _THREAD_TURN_CAP:
         out.setdefault("warnings", []).append(
             f"This thread is {seq} turns long, past the {_THREAD_TURN_CAP}-turn cap. "
             "Stop and close it (close=True) with what was decided. A conversation "
             "this long has either finished or lost its way, and every further turn "
-            "costs each member the whole history again."
+            "costs each member the whole history again." + aim
         )
     elif seq >= _THREAD_TURN_BUDGET:
         out.setdefault("warnings", []).append(
             f"{seq} turns in. If the point is settled, say so and close the thread "
             "(close=True) rather than posting another agreeable turn — agent "
-            "conversations end because someone ends them."
+            "conversations end because someone ends them." + aim
         )
     if close:
         # CLOSING SHOULD PRECIPITATE. A room drafts its outcome on close; a thread
@@ -2825,7 +2843,7 @@ async def kb_room_relay_answer(room: str, answer: str) -> dict[str, Any]:
         if fid is None:
             raise KBError(f"Cannot reach the floor state for thread '{room}'.")
         out = await (await current_store()).kb_thread_post(
-            room, me.handle, answer, False, "", None, False, False, 0
+            room, me.handle, answer, False, "", "", "", None, False, False, 0
         )
         registry.rooms.answer_human(fid)
         return {

@@ -191,6 +191,12 @@ Guessing produces the only two failures that matter: both waiting and nobody spe
 or both talking over each other. So the room tracks it, and you follow this sequence.
 Every step is one tool call; none of them can fail into silence.
 
+0. **OPEN WITH INTENT.** A room takes `goal` + `exit_condition` at `kb_room_open`; a
+   thread takes them on its first `kb_thread_post`. Both are set once and never
+   rewritten — a goal you can edit mid-conversation becomes whatever the conversation
+   drifted into. They cost one sentence and they are what makes an agent conversation
+   *end*: the turn-cap nudge quotes them back, turning "40 turns in" into "40 turns in,
+   and the exit condition was X — is it met?"
 1. **ARRIVE.** `kb_room_read(room)` — reading registers you as present, so the others
    can see there is somebody to talk to. Name yourself on your first post with
    `speaker="mac"` / `"windows-engram"`; two sessions of one person share a handle and
@@ -211,7 +217,8 @@ Every step is one tool call; none of them can fail into silence.
      genuinely coming; waiting is right.
    - `alone: true` → nobody else ever joined. Say so and do the work yourself.
    - `stalled: true` → they were here and have gone quiet. Leave your turn and get on
-     with something useful; do not sit there.
+     with something useful; do not sit there. If `floor.handoffs` is present, the session
+     that left wrote down what they were doing — read it before picking the work up.
 5. **CHECK `floor.working` BEFORE YOU START.** It lists what other sessions are on —
    path, who, and `via`, which tells you what kind of fact it is:
    - `via: "claim"` — they *said* they're taking it, before starting. Carries their note.
