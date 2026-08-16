@@ -40,7 +40,7 @@ CURRENT_TOOLS = (
     "kb_shared_with_me", "kb_guest_read", "kb_guest_search", "kb_send",
     "kb_inbox_card", "social_state", "social_conversation",
     "social_send", "social_accept", "social_mark_read",
-    "kb_move_project", "kb_project_status", "kb_attach_project",
+    "kb_move_project", "kb_project_status", "kb_attach_project", "kb_realign",
     "kb_publish", "kb_public", "kb_explore", "kb_read_public",
     "kb_follow", "kb_feed", "kb_ask", "kb_answer", "kb_asks",
     "kb_explore_card", "explore_state", "explore_profile",
@@ -85,6 +85,8 @@ CHANGES = (
     "compose from live tools); no more daily artifacts/messages",
     "ONE DOMAIN: engram.metalfinger.xyz is everything — connector, dashboard, and "
     "extension; Cloudflare Access is gone",
+    "REALIGN: kb_realign(project?, repo, cwd) — one call orients a session (resolve "
+    "project -> load -> unread -> pin); say 'realign' any time, mid-session too",
     "unified app: one widget (Home/Browse/People/Rooms/Office) replaces the five cards",
 )
 

@@ -933,6 +933,50 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
     return await (await current_store()).kb_rename_project(old_id, new_id)
 
 
+@mcp.tool()
+async def kb_realign(project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
+    """ORIENT THIS SESSION. Call this the moment the user says "realign" (or "realign on
+    <project>", "where are we", "what should I be working on") — and at the start of any
+    session that doesn't already know which project it belongs to.
+
+    One call replaces four: it resolves WHICH project this is, loads it, surfaces unread
+    inter-session messages, and hands you the pin. Resolution order — first answer wins:
+      1. `project` if the user named one (loose match: 'vibechk' finds vibechk-brand).
+      2. The LEARNED ROUTING TABLE — pass `repo` (git remote or repo name) and `cwd` and
+         it maps them to a project from presence history. This table maintains itself:
+         every session that attaches to a project from a repo teaches it that route.
+      3. A guess from the directory name (returned with guess=true — confirm it).
+      4. Nothing matched → resolved=false plus candidates; ask ONE question naming your
+         best candidate. Never make the user read the whole list, and if the work has no
+         project yet say so and offer kb_attach_project rather than filing it under a
+         neighbour.
+
+    ALWAYS pass repo and cwd when you can see them (Claude Code: your working directory
+    and `git remote get-url origin`) — that is what makes resolution reliable and what
+    teaches the table for next time.
+
+    Then do exactly this, in order:
+      · Surface `unread_messages` FIRST — they are instructions from other sessions.
+        Act or ask, then kb_mark_read. Expired ones: mention in passing, archive, don't act.
+      · Write `pin_content` into `.engram-project` at the repo root if it's not there yet.
+      · Report in ONE line: where you are · phase · top open loop · what he asked for.
+        Do NOT recite the context back — he wrote it. One line, then start work.
+
+    MID-SESSION realign is a DRIFT CHECK, not a reload: compare what you have actually
+    been doing against `sequence`, then say plainly what you've been working on, whether
+    it is still the priority, and what's next. If you drifted, SAY SO — the drift is the
+    information. Don't quietly reconcile it.
+
+    Returns {resolved, project, resolved_by, phase, open_loops, next_actions, sequence,
+    sequence_path, context_path, map_path, last_session, unread_messages, pin_file,
+    pin_content, instruction} — or {resolved: false, candidates, instruction}.
+    """
+    result = await (await current_store()).kb_realign(project=project, repo=repo, cwd=cwd)
+    if result.get("resolved"):
+        _presence_project(str(result.get("project") or ""))
+    return result
+
+
 @mcp.tool(meta=_nav_meta)
 async def kb_artifacts(project: str | None = None) -> list[dict[str, Any]]:
     """List the saved artifacts in Hiren's knowledge base with their provenance and

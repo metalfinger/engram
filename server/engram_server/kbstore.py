@@ -3512,6 +3512,206 @@ class KBStore:
             "status": str(meta_now.get("status") or "active"), "sha": sha, "pushed": pushed,
         }
 
+    # ------------------------------------------------------------------ realign
+    # "Realign" is the one-word orientation verb (library/runbooks/realign.md):
+    # a session works out which project it belongs to, loads it, pins itself and
+    # reports in ONE line. Native here rather than a runbook someone has to find,
+    # and ONE call instead of four a session must remember to make in order.
+
+    _SEQUENCE_FILENAMES = ("backlog.md", "todos.md", "todo.md", "sequence.md")
+
+    @staticmethod
+    def _route_key(value: str) -> str:
+        """Normalize a location for route matching: lowercase, forward slashes, no
+        trailing slash or .git suffix, and git remotes reduced to `owner/repo` so
+        the ssh and https forms of one remote agree."""
+        v = value.strip().replace("\\", "/").rstrip("/").lower()
+        if v.endswith(".git"):
+            v = v[:-4]
+        if v.startswith("git@") and ":" in v:
+            v = v.split(":", 1)[1]
+        elif "://" in v:
+            rest = v.split("://", 1)[1]
+            v = rest.split("/", 1)[1] if "/" in rest else rest
+        return v.strip("/")
+
+    def _learned_routes_sync(self) -> dict[str, str]:
+        """The routing table, DERIVED rather than maintained by hand.
+
+        Every presence record carrying both a location (repo_remote / repo / cwd)
+        and a project is a vote for that route; newest record wins. Claude Code's
+        hooks write presence from the repo's own `.engram-project` pin, so the
+        table maintains itself as projects come and go — there is no list to edit
+        when a project is added, renamed or retired."""
+        routes: dict[str, str] = {}
+        # Oldest first so the newest record overwrites — a repo that changed
+        # projects routes to where it is NOW. `updated` is second-granular, so
+        # sort on (updated, session) to stay deterministic when two sessions
+        # land in the same second; an exact tie is arbitrary by nature.
+        records = sorted(
+            self._presence_records_sync(None),
+            key=lambda r: (str(r.get("updated") or ""), str(r.get("session") or "")),
+        )
+        for rec in records:
+            project = str(rec.get("project") or "").strip().lower()
+            if not project:
+                continue
+            for field in ("repo_remote", "repo", "cwd"):
+                value = str(rec.get(field) or "").strip()
+                if value:
+                    routes[self._route_key(value)] = project
+        return routes
+
+    def _match_route(self, routes: dict[str, str], repo: str, cwd: str) -> tuple[str, str]:
+        """(project, why) from the learned table. Remotes match first (portable
+        across machines), then the working directory, then its parents — so a
+        session sitting in `<repo>/server` still routes like the repo root."""
+        if repo:
+            hit = routes.get(self._route_key(repo))
+            if hit:
+                return hit, f"repo {repo}"
+        if cwd:
+            key = self._route_key(cwd)
+            while key:
+                hit = routes.get(key)
+                if hit:
+                    return hit, f"cwd {cwd}"
+                if "/" not in key:
+                    break
+                key = key.rsplit("/", 1)[0]
+        return "", ""
+
+    @staticmethod
+    def _sections_of(md: str, wanted: tuple[str, ...]) -> dict[str, str]:
+        """Pull named markdown sections (any heading level) out of a body — used to
+        lift 'Current Phase' / 'Open Loops' / 'Next Actions' without shipping the
+        whole context back to the session."""
+        out: dict[str, str] = {}
+        current: str | None = None
+        buf: list[str] = []
+        for line in md.splitlines():
+            if line.lstrip().startswith("#"):
+                if current and buf:
+                    out[current] = "\n".join(buf).strip()
+                buf = []
+                heading = line.lstrip("#").strip().lower()
+                current = next((w for w in wanted if w in heading), None)
+                continue
+            if current:
+                buf.append(line)
+        if current and buf:
+            out[current] = "\n".join(buf).strip()
+        return {k: v for k, v in out.items() if v}
+
+    async def kb_realign(self, project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
+        """Resolve → load → surface → pin, in one call. See the kb_realign tool."""
+        await self._refresh()
+        projects = await self.kb_projects()
+        known = {str(p["id"]): p for p in projects}
+        resolved, how = "", ""
+
+        # 1 · He named it (loose match — 'the form thing' is the caller's job to
+        #     turn into a word, but 'vibechk-brand' vs 'vibechk' we can bridge).
+        if project:
+            pid = project.strip().lower().replace(" ", "-")
+            if pid in known:
+                resolved, how = pid, "named"
+            else:
+                near = [i for i in known if pid in i or i in pid]
+                if len(near) == 1:
+                    resolved, how = near[0], f"named ({project!r} → {near[0]})"
+                elif near:
+                    return {
+                        "resolved": False,
+                        "reason": f"{project!r} matches several projects",
+                        "candidates": [known[i] for i in sorted(near)],
+                        "instruction": "Ask ONE question naming your best candidate.",
+                    }
+
+        # 2 · The learned routing table (self-maintaining, from presence history).
+        if not resolved and (repo or cwd):
+            routes = await to_thread.run_sync(self._learned_routes_sync)
+            hit, why = self._match_route(routes, repo, cwd)
+            if hit and hit in known:
+                resolved, how = hit, f"learned route ({why})"
+
+        # 3 · Weakest signal, still usually right: the directory is named after
+        #     the project. Flagged as a guess so the caller can confirm.
+        guess = False
+        if not resolved and cwd:
+            base = self._route_key(cwd).rsplit("/", 1)[-1]
+            if base in known:
+                resolved, how, guess = base, f"guess (directory named {base!r})", True
+
+        if not resolved:
+            return {
+                "resolved": False,
+                "reason": "no project named, no learned route for this location",
+                "candidates": projects,
+                "instruction": (
+                    "Ask ONE question offering your best candidate — never make the user "
+                    "read the whole list. If this work has no project yet, say so and offer "
+                    "to create one (kb_attach_project) rather than filing it under a neighbour."
+                ),
+            }
+
+        # -- load, compactly -------------------------------------------------
+        proot = self._project_rel(resolved)
+        _p, folder = self._project_and_folder(f"{proot}/context.md")
+        ctx_path = f"{proot}/context.md"
+        ctx_abs = self.root / ctx_path
+        context_md = _read_text_retry(ctx_abs) if ctx_abs.is_file() else ""
+        doc = split(context_md) if context_md else None
+        body = doc.body if doc is not None else context_md
+        sections = self._sections_of(body, ("current phase", "open loops", "next actions"))
+
+        # The sequence file, whatever this project calls it (the runbook's rule:
+        # backlog / todos / else the Open Loops section of context).
+        sequence_path, sequence = "", ""
+        for name in self._SEQUENCE_FILENAMES:
+            cand = self.root / proot / name
+            if cand.is_file():
+                sequence_path = f"{proot}/{name}"
+                raw = _read_text_retry(cand)
+                sdoc = split(raw)
+                sequence = (sdoc.body if sdoc is not None else raw).strip()
+                break
+        if not sequence:
+            sequence = sections.get("open loops", "")
+            sequence_path = ctx_path if sequence else ""
+
+        log_path = self.root / proot / "log.md"
+        log_entries = _parse_log_entries(_read_text_retry(log_path)) if log_path.is_file() else []
+        unread = self._unread_messages(proot)
+        has_map = (self.root / proot / "map.md").is_file()
+
+        return {
+            "resolved": True,
+            "project": resolved,
+            "resolved_by": how,
+            "guess": guess,
+            "folder": (folder or "").split("/")[-1] if folder else "",
+            "phase": sections.get("current phase", ""),
+            "open_loops": sections.get("open loops", ""),
+            "next_actions": sections.get("next actions", ""),
+            "sequence_path": sequence_path,
+            "sequence": sequence[:4000],
+            "context_path": ctx_path,
+            "map_path": f"{proot}/map.md" if has_map else "",
+            "last_session": log_entries[0] if log_entries else None,
+            "unread_messages": unread,
+            "pin_file": ".engram-project",
+            "pin_content": resolved,
+            "instruction": (
+                "1) Surface the unread messages FIRST (act or ask, then kb_mark_read). "
+                "2) Write pin_content into .engram-project at the repo root if it isn't "
+                "already there. 3) Report in ONE line — where you are · phase · top open "
+                "loop · what he asked for — then start. Do NOT recite the context back; he "
+                "wrote it. If this is a MID-SESSION realign, first compare what you have "
+                "been doing against `sequence` and say plainly whether you drifted."
+            ),
+        }
+
     async def ensure_project(self, project: str, description: str) -> dict[str, Any]:
         """Create a project's scaffold (context.md) if it doesn't exist yet. Idempotent —
         an existing project is returned untouched. Returns {project, created}."""

@@ -14,16 +14,23 @@ If the kb_* tools are missing in a Claude Code session: do NOT search the filesy
 
 Never try to load everything. Orient from indexes, fetch files one at a time as the conversation actually needs them. `kb_load` gives you the map (context + index tree + messages); `kb_read` gives you one territory at a time. A good session on a large brain touches ~5 files.
 
-## Session start
+## Session start — "realign"
 
-1. If no project is identified yet and work is beginning, call `kb_projects()` and ask Hiren which one (or infer from what he's discussing — he often just starts talking about a client).
-2. On "load X" or clear project context: `kb_load(project)` — but if this session already knows the project (resuming, or context was compacted), use `kb_load(project, lite=True)` (context + messages headline only, ~70% fewer tokens). Full load only on first genuine touch.
-3. **Every session must be anchored to a project — no floating sessions.** If the repo has no `.engram-project` file at its root, resolve it BEFORE doing project work: call `kb_attach_project()` with no arguments to get the list, ASK Hiren which project this session is on (or a new name + one-line description), then call `kb_attach_project(project, description)` — it creates the project if it's new — and write the returned `pin_content` to `.engram-project` at the repo root. That pins this repo for this and every future session, so he's asked exactly once per repo. Ask rather than guess; only skip when the conversation is clearly not project work at all (a one-off question, not a work session).
-4. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, if you're in Claude Code). Act on them or ask, then `kb_mark_read`.
-5. `kb_load` returns a `server` block listing the tools this server currently offers. If any tool it names is missing from your available tools, this chat is running a STALE tool list (opened before the last update) — tell Hiren to start a fresh chat to use the newer tools; his writes here are still safe. Only mention this when there's a real gap.
-6. Confirm state in ONE line (current phase + top open loop). Do not recite the whole context back.
+**The verb.** Hiren says **"realign"**, optionally with a project — *"realign on vibechk"*. Also triggered by "where are we", "what should I be working on", or any session beginning work without knowing its project. One word is the whole interface, and it works for a fresh session AND one that has been running for hours.
 
-Independent/non-project questions need no loading — not every conversation is a KB session. Load only when work on a known project begins.
+**Call `kb_realign(project, repo, cwd)`** — one call resolves the project, loads it, surfaces unread messages and hands you the pin. **Always pass `repo` and `cwd`** when you can see them (Claude Code: your working directory and `git remote get-url origin`) — that is what makes resolution reliable, and it teaches the routing table for next time.
+
+1. **Resolution order** — first answer wins: he named it (loose match) → the learned routing table (repo/cwd → project, derived from presence history, self-maintaining) → a guess from the directory name (returned `guess: true` — confirm it) → nothing matched, so `resolved: false` + candidates: ask **ONE** question naming your best candidate, never make him read the list. If the work genuinely has no project yet, say so and offer `kb_attach_project` — never file it under the nearest neighbour.
+2. **Read order** — the tool hands you `phase`, `open_loops`/`next_actions` and `sequence` (the project's backlog/todos file, else its Open Loops). If it returns a `map_path`, note it exists; don't read it until you need a topic. Navigate, never ingest: a good realign touches ~3 files.
+3. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, in Claude Code). Act or ask, then `kb_mark_read`. Expired ones: mention in passing, archive, don't act.
+4. **Pin yourself** — write the returned `pin_content` into `.engram-project` at the repo root if it isn't there. That pins the repo for every future session, so he's asked exactly once per repo, and it feeds the routing table.
+5. **Report in ONE line** — where you are · phase · top open loop · what he asked for. **Do not recite the context back** — he wrote it. One line, then start.
+
+**Mid-session realign is a DRIFT CHECK, not a reload.** When a running session is told to realign, compare what you have actually been doing against `sequence`, then say plainly in a sentence or two: what you've been working on, whether it's still the priority, and what the backlog says is next. **If you drifted, say so** — the drift itself is information. Never quietly reconcile it.
+
+Already loaded this session and just need a refresh? `kb_load(project, lite=True)` is the cheap resume (~70% fewer tokens). `kb_load` also returns a `server` block listing the tools this server offers — if any is missing from your available tools this chat has a STALE tool list; tell Hiren to start a fresh chat (his writes here are still safe). Only mention it when there's a real gap.
+
+Independent/non-project questions need no loading — not every conversation is a KB session.
 
 ## During work
 
@@ -42,12 +49,12 @@ Independent/non-project questions need no loading — not every conversation is 
 - **Concept file format (validator enforces):** YAML frontmatter — `type` (required; one of: project, client, person, decision, spec, runbook, idea, meeting, video, snippet, reference, message — or a new type if none fit), `title`, `description`, `tags`, `timestamp` (ISO 8601 UTC), plus `status`/`project`/`confidence` where useful. Then a markdown body. Standard relative markdown links only — never wikilinks. Filenames: kebab-case; decisions as `YYYY-MM-slug.md`.
 - Never write files named `index.md` or `log.md` as concepts — reserved by OKF. The server maintains indexes; in Claude Code, update the parent index.md yourself when adding a concept.
 
-## Session close
+## Session close — the mirror of realign
 
-When Hiren says "close session" or the work clearly wraps up, run the checklist:
+When Hiren says "close session" or the work clearly wraps up, run the checklist (realigning orients you; closing out leaves the place tidy for whoever realigns next):
 
 1. Draft a log entry — date, what happened, decisions made (linked), open threads. **Show it to Hiren before** `kb_append_log(project, entry)`.
-2. Update the project's `context.md` — Current Phase, Open Loops, Next Actions — via `kb_write`.
+2. Update the project's sequence — its `backlog.md`/`todos.md` if it has one, and `context.md`'s Current Phase, Open Loops, Next Actions — via `kb_write`/`kb_edit`. That sequence is exactly what the next realign reads.
 3. Ask: "anything the next session should be told directly?" → `kb_leave_message` if yes.
 4. Confirm in one line what was committed.
 

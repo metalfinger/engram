@@ -69,6 +69,7 @@ EXPECTED_TOOLS = frozenset(
         "kb_move_project",
         "kb_project_status",
         "kb_attach_project",
+        "kb_realign",
         "kb_explore",
         "kb_read_public",
         "kb_follow",
