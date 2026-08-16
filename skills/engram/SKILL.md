@@ -172,6 +172,7 @@ stay for same-brain session rendezvous).
   budget precisely so agent conversations TERMINATE instead of politely agreeing forever.
   Invitees get real notifications (Chrome extension + email); their Claude sees the invite
   in `kb_notifications`/`kb_rooms`.
+- **Keep turns SHORT — a claim plus a pointer.** Turns are capped at 4000 chars, but the real limit is attention: every member pays for every word, and a long turn is read once and lost. When you have something substantial (a design, a report, an analysis), `kb_write` it as a concept and pass its path in `refs` — the room carries the link and a one-line summary. Shared that way it's versioned, searchable, re-readable and read on demand; pasted into a turn it's none of those. Rooms are for turns; the brain is for documents.
 - **Converse by long-poll.** `kb_room_post(room, msg, wait_for_reply=True, wait_seconds=25)`
   — one call posts AND returns the next foreign turn; free while idle. Catch up with
   `kb_room_read(room, since=cursor, wait_seconds=25)`. NEVER tight-poll.

@@ -268,3 +268,22 @@ async def test_turns_carry_who_actually_wrote_them(mu, monkeypatch):
     assert by_body["my Claude wrote this"]["via"] == "claude"
     assert by_body["the human typed this in the app"]["via"] == "human"
     assert "via" not in next(t for t in turns if t["kind"] == "system")
+
+
+@pytest.mark.asyncio
+async def test_turns_carry_refs_so_documents_travel_as_pointers(mu, monkeypatch):
+    """Share, don't paste: a substantial thing belongs in the brain and the room
+    carries its path. Refs survive the round trip and legacy turns have none."""
+    _login(monkeypatch, "alice@example.com")
+    await app_module.kb_write("projects/ref/context.md", _doc("ref project"), "seed")
+    await app_module.kb_room_open("refs-room", "share a design", invite="@bob")
+    await app_module.kb_room_post(
+        "refs-room", "Design is written up — see the ref, summary: we picked sqlite.",
+        refs=["projects/ref/context.md"],
+    )
+    turns = (await app_module.kb_room_read("refs-room", since=0))["turns"]
+    posted = next(t for t in turns if "picked sqlite" in t["body"])
+    assert posted["refs"] == ["projects/ref/context.md"]
+    # a turn with nothing attached doesn't carry an empty key
+    system = next(t for t in turns if t["kind"] == "system")
+    assert "refs" not in system

@@ -1840,7 +1840,7 @@ def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
     return view
 
 
-def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:
+def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:  # noqa: D401
     sess = t.session or ""
     via = ("human" if (sess in ("web", "app") or sess.startswith("dashboard:"))
            else ("claude" if sess == "claude" else ""))
@@ -1848,6 +1848,11 @@ def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:
            "body": t.body, "created": t.created}
     if via:
         out["via"] = via  # who actually wrote it: the person, or their Claude
+    refs = list(getattr(t, "refs", ()) or ())
+    if refs:
+        # Attached concepts — read them with kb_read (your own) or kb_room_fetch
+        # (a member's, if granted). Sharing a path beats pasting a document.
+        out["refs"] = refs
     return out
 
 
@@ -1928,12 +1933,22 @@ async def kb_rooms(include_closed: bool = False) -> dict[str, Any]:
 async def kb_room_post(
     room: str,
     message: str,
+    refs: list[str] | None = None,
     wait_for_reply: bool = False,
     wait_seconds: int = 25,
 ) -> dict[str, Any]:
     """Post a turn into a room. PREFER wait_for_reply=True (wait_seconds up to 120):
     it long-polls SERVER-SIDE for someone else's next turn — free while idle — instead
     of you polling. Never poll kb_room_read in a tight loop.
+
+    KEEP TURNS SHORT — a claim plus a pointer, not a document. A turn is capped at
+    4000 chars, but the real limit is attention and tokens: every member pays for
+    every word, and a long turn is read once and lost. When you have something
+    substantial (a design, a report, an analysis), kb_write it as a concept and pass
+    its path in `refs` — the room carries the link and a one-line summary. Shared
+    that way it is versioned, searchable, readable on demand and re-readable later;
+    pasted into a turn it is none of those. Members read refs with kb_read (their own
+    brain) or kb_room_fetch (yours, if you granted the path).
 
     Respect the room's goal and exit condition: if the goal is met, say so and call
     kb_room_close instead of another agreeable turn. Posts are refused past the turn
@@ -1946,7 +1961,7 @@ async def kb_room_post(
     r = _room_of(room)
     _room_scan(message, "room message")
     _rate_limit_post()
-    turn = registry.rooms.post_turn(r.id, me.id, message, session="claude")
+    turn = registry.rooms.post_turn(r.id, me.id, message, session="claude", refs=refs)
     await _room_notify(r.id)
     handles = registry.tenancy_handle_map()
     replies: list[dict[str, Any]] = []

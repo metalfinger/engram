@@ -3603,12 +3603,62 @@ class KBStore:
             out[current] = "\n".join(buf).strip()
         return {k: v for k, v in out.items() if v}
 
-    @staticmethod
-    def _rank_candidates(projects: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
-        """Most-recently-worked first, capped — the shortlist a session offers from."""
-        return sorted(
-            projects, key=lambda p: str(p.get("last_session") or ""), reverse=True
-        )[:limit]
+    # Path words that describe everyone's filesystem, not anyone's project.
+    _GENERIC_PATH_TOKENS = frozenset({
+        "users", "home", "documents", "document", "code", "src", "repos", "repo",
+        "projects", "project", "dev", "work", "git", "github", "gitlab", "com",
+        "www", "http", "https", "desktop", "downloads", "main", "master", "v1",
+        "v2", "v3", "app", "apps", "client", "server", "web",
+    })
+
+    @classmethod
+    def _location_tokens(cls, *values: str) -> set[str]:
+        out: set[str] = set()
+        for value in values:
+            for tok in re.split(r"[^a-z0-9]+", (value or "").lower()):
+                if len(tok) > 2 and tok not in cls._GENERIC_PATH_TOKENS:
+                    out.add(tok)
+        return out
+
+    @classmethod
+    def _rank_candidates(
+        cls, projects: list[dict[str, Any]], repo: str = "", cwd: str = "", limit: int = 8
+    ) -> list[dict[str, Any]]:
+        """The shortlist a session offers ONE candidate from — scored, then lean.
+
+        Ranking is RELEVANCE first, recency second. Two things learned the hard way:
+        a repo's name often shares nothing with its project id (`formthefuture-v2`
+        belongs to `vibechk`), so location words are matched against id/title/
+        description rather than the id alone; and a project with no log entry is
+        usually BRAND NEW — the most likely candidate — so an empty `last_session`
+        must not sort dead-last the way a plain string sort does.
+
+        Lean because the caller is told to name one candidate, not read a catalogue:
+        id, title, short description, folder, recency. Tags/visibility/status are
+        noise that made an already-unhelpful payload expensive too."""
+        wanted = cls._location_tokens(repo, cwd)
+
+        def score(p: dict[str, Any]) -> tuple[int, int, str]:
+            haystack = " ".join(
+                str(p.get(k) or "") for k in ("id", "title", "description", "folder")
+            ).lower()
+            hits = sum(1 for tok in wanted if tok in haystack)
+            # No log yet == freshly created == a live candidate, not a dead one.
+            never_logged = 0 if p.get("last_session") else 1
+            return (hits, never_logged, str(p.get("last_session") or ""))
+
+        ranked = sorted(projects, key=score, reverse=True)[:limit]
+        lean: list[dict[str, Any]] = []
+        for p in ranked:
+            desc = str(p.get("description") or "")
+            lean.append({
+                "id": p.get("id"),
+                "title": p.get("title"),
+                "description": desc[:120] + ("…" if len(desc) > 120 else ""),
+                "folder": p.get("folder") or "",
+                "last_session": p.get("last_session"),
+            })
+        return lean
 
     async def kb_realign(self, project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
         """Resolve → load → surface → pin, in one call. See the kb_realign tool."""
@@ -3631,7 +3681,7 @@ class KBStore:
                     return {
                         "resolved": False,
                         "reason": f"{project!r} matches several projects",
-                        "candidates": self._rank_candidates([known[i] for i in sorted(near)]),
+                        "candidates": self._rank_candidates([known[i] for i in sorted(near)], repo, cwd),
                         "instruction": "Ask ONE question naming your best candidate.",
                     }
 
@@ -3667,7 +3717,7 @@ class KBStore:
                 # Ranked by recency and capped: the caller is told to offer ONE
                 # candidate, so shipping all ~20 projects is both a token cost
                 # and an invitation to do the thing the instruction forbids.
-                "candidates": self._rank_candidates(projects),
+                "candidates": self._rank_candidates(projects, repo, cwd),
                 "instruction": (
                     "Ask ONE question offering your best candidate — never make the user "
                     "read the whole list. If this work has no project yet, say so and offer "

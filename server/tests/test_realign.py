@@ -221,3 +221,70 @@ async def test_candidates_are_a_shortlist_not_the_whole_brain(store):
     out = await store.kb_realign(cwd="D:/nowhere/unmatched")
     assert out["resolved"] is False
     assert 0 < len(out["candidates"]) <= 8
+
+
+@pytest.mark.asyncio
+async def test_repo_name_unrelated_to_project_name_does_not_guess_wrong(store):
+    """Requested by the session that asked for realign, from its own live case:
+    repo `formthefuture-v2` belongs to project `vibechk`. Nothing in the path
+    resembles the project, so the guess rung MUST stay silent rather than be
+    confidently wrong — resolution falls to the ask, with a usable shortlist."""
+    await _seed(store, "vibechk", "vibechk-brand", "engram")
+    out = await store.kb_realign(
+        repo="https://github.com/Alt-AI-Inc/formthefuture-v2.git",
+        cwd="/Users/hirenk/Documents/code/alt.inc/formthefuture-v2",
+    )
+    # The point: NO confidently-wrong answer. Nothing in the path resembles
+    # any project, so the guess rung stays silent and we fall to the ask.
+    assert out["resolved"] is False
+    assert out.get("guess") in (None, False)
+    assert out["candidates"], "an ask still needs a shortlist to offer from"
+
+
+@pytest.mark.asyncio
+async def test_a_pin_teaches_the_route_that_repo_naming_cannot(store):
+    """...and the fix for the case above: once ONE session attaches there, the
+    learned route carries it forever — no naming coincidence required."""
+    await _seed(store, "vibechk")
+    await store.kb_presence(
+        session="mac-cc", project="vibechk",
+        repo_remote="https://github.com/Alt-AI-Inc/formthefuture-v2.git",
+        cwd="/Users/hirenk/Documents/code/alt.inc/formthefuture-v2",
+    )
+    out = await store.kb_realign(
+        repo="git@github.com:Alt-AI-Inc/formthefuture-v2.git",  # different form, same remote
+        cwd="/Users/hirenk/Documents/code/alt.inc/formthefuture-v2",
+    )
+    assert out["resolved"] and out["project"] == "vibechk"
+    assert "learned route" in out["resolved_by"]
+
+
+@pytest.mark.asyncio
+async def test_candidates_are_lean(store):
+    """Payload discipline: enough to name one candidate, nothing more."""
+    await _seed(store, "a-proj", "b-proj")
+    out = await store.kb_realign(cwd="D:/no/match/here")
+    assert set(out["candidates"][0]) == {
+        "id", "title", "description", "folder", "last_session"
+    }
+
+
+@pytest.mark.asyncio
+async def test_shortlist_floats_the_relevant_project_over_the_recent_one(store):
+    """Relevance beats recency: a busy unrelated project must not crowd out the
+    one whose name is sitting in the path."""
+    await _seed(store, "pixelpuri", "slate")
+    await store.kb_append_log("slate", "worked on slate today")  # slate is 'recent'
+    out = await store.kb_realign(cwd="D:/work/pixelpuri-dataset/scripts")
+    ids = [p["id"] for p in out["candidates"]]
+    assert ids[0] == "pixelpuri", ids
+
+
+@pytest.mark.asyncio
+async def test_generic_path_words_do_not_score(store):
+    """`.../Documents/code/server/...` must not make a project called 'server'
+    or 'code' look relevant — those words describe every filesystem."""
+    await _seed(store, "server", "engram")
+    out = await store.kb_realign(cwd="C:/Users/Admin/Documents/code/unmatched-thing")
+    top = out["candidates"][0]["id"]
+    assert top != "server", out["candidates"]

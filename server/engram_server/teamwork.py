@@ -24,6 +24,7 @@ call from async code without a threadpool.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import sqlite3
 import threading
@@ -77,6 +78,10 @@ class RoomTurn:
     kind: str  # message | system | guest_read
     body: str
     created: str
+    # Concept paths attached to this turn — SHARE, don't paste. A room turn is a
+    # claim plus a pointer; the document belongs in the brain where it can be
+    # versioned, searched and read once instead of re-sent to every member.
+    refs: tuple[str, ...] = ()
 
 
 _ROOM_SCHEMA = """
@@ -137,6 +142,10 @@ class RoomStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_ROOM_SCHEMA)
+            # Turns predating `refs` (concept paths attached to a turn).
+            tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(room_turns)")}
+            if "refs" not in tcols:
+                self._conn.execute("ALTER TABLE room_turns ADD COLUMN refs TEXT")
             self._conn.commit()
 
     def close(self) -> None:
@@ -159,10 +168,22 @@ class RoomStore:
     def _turn(self, row: sqlite3.Row | None) -> RoomTurn | None:
         if row is None:
             return None
+        try:
+            raw = row["refs"]
+        except (IndexError, KeyError):
+            raw = None
+        refs: tuple[str, ...] = ()
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                if isinstance(loaded, list):
+                    refs = tuple(str(x) for x in loaded if str(x).strip())
+            except (ValueError, TypeError):
+                refs = ()
         return RoomTurn(
             id=row["id"], room_id=row["room_id"], user_id=row["user_id"],
             session=row["session"], kind=row["kind"], body=row["body"],
-            created=row["created"],
+            created=row["created"], refs=refs,
         )
 
     # -- internal (caller must hold self._lock) --------------------------------
@@ -185,14 +206,17 @@ class RoomStore:
             )
 
     def _write_turn_locked(
-        self, room_id: int, user_id: int, body: str, *, kind: str = "system", session: str = ""
+        self, room_id: int, user_id: int, body: str, *, kind: str = "system", session: str = "",
+        refs: list[str] | None = None,
     ) -> RoomTurn:
         """Internal, ungated turn insert — used for system turns and by post_turn
         once its checks have already passed. Caller must hold self._lock."""
+        clean = [r.strip() for r in (refs or []) if r and r.strip()][:20]
         cur = self._conn.execute(
-            "INSERT INTO room_turns (room_id, user_id, session, kind, body, created) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (room_id, user_id, session, kind, body, _now()),
+            "INSERT INTO room_turns (room_id, user_id, session, kind, body, created, refs) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (room_id, user_id, session, kind, body, _now(),
+             json.dumps(clean) if clean else None),
         )
         self._conn.commit()
         row = self._conn.execute(
@@ -309,7 +333,8 @@ class RoomStore:
         ]
 
     def post_turn(
-        self, room_id: int, user_id: int, body: str, *, session: str = "", kind: str = "message"
+        self, room_id: int, user_id: int, body: str, *, session: str = "",
+        kind: str = "message", refs: list[str] | None = None,
     ) -> RoomTurn:
         body = (body or "").strip()
         if not body:
@@ -341,7 +366,7 @@ class RoomStore:
                         + ". Call extend_budget() if the conversation genuinely needs more room, "
                         "or wrap up and close_room() with an outcome."
                     )
-            turn = self._write_turn_locked(room_id, user_id, body, kind=kind, session=session)
+            turn = self._write_turn_locked(room_id, user_id, body, kind=kind, session=session, refs=refs)
             self._touch_read_locked(room_id, user_id, turn.id)
             self._conn.commit()
             return turn
