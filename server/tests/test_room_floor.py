@@ -306,6 +306,26 @@ def test_a_human_answer_unblocks_and_returns_the_floor_to_the_asker(rooms, room)
     assert state["is_you"] is True, "the answer must reach whoever was waiting on it"
 
 
+def test_a_pending_question_follows_its_asker_through_a_reconnect(rooms, room):
+    """Caught on a live room waiting on Hiren, before it fired. The asker was
+    recorded as a key that a later reconnect had absorbed, so his answer would
+    have been handed to a speaker that no longer existed."""
+    rooms.ask_human(room.id, "Flag or hold?", asker="sess-a")
+    rooms.touch_speaker(room.id, "sess-a-reborn", 1, name="windows")
+    rooms.post_turn(room.id, 1, "yes, behind a flag", session="dashboard:web")
+    assert rooms.floor_state(room.id, "sess-a-reborn")["is_you"] is True
+
+
+def test_an_answer_to_a_vanished_asker_opens_the_floor(rooms, room):
+    """A phantom holder freezes the room for everyone: is_you false all round and
+    nobody able to claim it. An open floor is always recoverable."""
+    rooms.ask_human(room.id, "Flag or hold?", asker="sess-gone")
+    rooms.post_turn(room.id, 1, "yes", session="dashboard:web")
+    state = rooms.floor_state(room.id, "sess-a")
+    assert state["open"] is True
+    assert state["awaiting_human"] == ""
+
+
 def test_an_agent_turn_does_not_clear_a_human_block(rooms, room):
     """Otherwise one impatient agent cancels the question another agent asked."""
     rooms.ask_human(room.id, "Flag or not?", asker="sess-a")

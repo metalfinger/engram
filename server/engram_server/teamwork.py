@@ -405,6 +405,16 @@ class RoomStore:
         if room is not None and room.floor in held:
             # The floor belonged to a previous incarnation of this same session.
             self._set_floor_locked(room_id, speaker)
+        if room is not None and room.awaiting_human_for in held:
+            # So did the pending question. Miss this and the human's answer is
+            # handed to a speaker that no longer exists: the floor is held by
+            # nobody, is_you is false for everyone, and the room stays frozen
+            # exactly as if still blocked — with no way for any agent to claim
+            # it. Caught before it fired, on a room waiting on Hiren.
+            self._conn.execute(
+                "UPDATE rooms SET awaiting_human_for = ? WHERE id = ?",
+                (speaker, room_id),
+            )
 
     def _claim_open_floor_locked(self, room_id: int, speaker: str) -> None:
         """An arriving session picks up an OPEN floor if it owes the room a reply.
@@ -551,7 +561,17 @@ class RoomStore:
             "UPDATE rooms SET awaiting_human = '', awaiting_human_for = '' WHERE id = ?",
             (room_id,),
         )
-        self._set_floor_locked(room_id, room.awaiting_human_for or "")
+        # Hand the answer back to whoever asked — but only if they still exist.
+        # An asker that has gone (or was absorbed before we could rewrite it)
+        # would leave the floor held by nobody: is_you false for everyone, no way
+        # to claim it, and a room that stays frozen exactly as if still blocked.
+        # Opening the floor is always recoverable; a phantom holder is not.
+        asker = room.awaiting_human_for or ""
+        if asker and not any(
+            s["speaker"] == asker for s in self._speakers_locked(room_id)
+        ):
+            asker = ""
+        self._set_floor_locked(room_id, asker)
 
     def floor_state(self, room_id: int, me: str = "") -> dict[str, Any]:
         """Who holds the floor, who else is here, and whether anyone is listening.
