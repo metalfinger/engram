@@ -147,6 +147,47 @@ def test_speaking_ends_your_own_listen(rooms, room):
     assert rooms.floor_state(room.id, "sess-b")["anyone_listening"] is False
 
 
+# -- surviving a reconnect ----------------------------------------------------
+
+
+def test_reannouncing_a_name_absorbs_the_old_session(rooms, room):
+    """A reconnect — the server restarting is enough — hands a session a brand-new
+    key. Observed live: six speakers for three sessions after two restarts, with
+    rotation handing the floor to keys nobody held any more."""
+    rooms.post_turn(room.id, 1, "before the restart", speaker="sess-a")
+    rooms.touch_speaker(room.id, "sess-a-reborn", 1, name="windows")
+    names = [s["speaker"] for s in rooms.speakers(room.id)]
+    assert "sess-a" not in names, "the ghost must not linger as a second participant"
+    assert "sess-a-reborn" in names
+
+
+def test_the_absorbed_session_keeps_its_speaking_history(rooms, room):
+    """Otherwise a reconnect looks like a session that never spoke, and fair
+    rotation would hand it the floor straight back."""
+    rooms.post_turn(room.id, 1, "before the restart", speaker="sess-a")
+    rooms.touch_speaker(room.id, "sess-a-reborn", 1, name="windows")
+    reborn = next(s for s in rooms.speakers(room.id) if s["speaker"] == "sess-a-reborn")
+    assert reborn["last_spoke"], "spoke-at must carry across the reconnect"
+
+
+def test_the_floor_follows_a_session_through_a_reconnect(rooms, room):
+    """If the floor stayed with the dead key, the room would stall waiting on a
+    participant that no longer exists — while looking perfectly alive."""
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-b")  # floor -> sess-a
+    assert rooms.floor_state(room.id, "sess-a")["is_you"] is True
+    rooms.touch_speaker(room.id, "sess-a-reborn", 1, name="windows")
+    assert rooms.floor_state(room.id, "sess-a-reborn")["is_you"] is True
+
+
+def test_an_unnamed_session_is_left_alone(rooms, room):
+    """Only the NAME is stable identity. Sessions that never named themselves must
+    not be merged with each other just for being anonymous."""
+    rooms.touch_speaker(room.id, "anon-1", 1)
+    rooms.touch_speaker(room.id, "anon-2", 1)
+    names = [s["speaker"] for s in rooms.speakers(room.id)]
+    assert "anon-1" in names and "anon-2" in names
+
+
 # -- three or more, where guessing would be wrong -----------------------------
 
 

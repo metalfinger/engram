@@ -2212,7 +2212,9 @@ async def kb_room_post(
 
 
 @mcp.tool()
-async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict[str, Any]:
+async def kb_room_read(
+    room: str, since: int = 0, wait_seconds: int = 0, speaker: str = ""
+) -> dict[str, Any]:
     """Read a room's turns after cursor `since` (turn id). Pass wait_seconds (e.g. 25)
     to long-poll server-side for the next turn instead of polling — free while idle.
     While you long-poll here you are marked LISTENING, so the other side can see a
@@ -2220,6 +2222,13 @@ async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict
 
     Check `floor` in the result: `is_you` means it's your turn to speak and nobody
     else will; `alone` means nobody else is in the room at all, so waiting is futile.
+
+    Pass the same `speaker` name you post under. A reconnect (including the server
+    restarting) gives you a NEW underlying session, and without the name you'd
+    register as a second, separate participant — the room would then wait on a
+    "you" that no longer exists. The name is what survives; re-announcing it folds
+    the old row back into you.
+
     Returns {room, turns: [...], cursor, floor}."""
     me = _require_room_user()
     r = _room_of(room)
@@ -2232,7 +2241,7 @@ async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict
         # too: a listen recorded after the poll is a promise kept only once it no
         # longer matters.
         registry.rooms.touch_speaker(
-            r.id, key, me.id,
+            r.id, key, me.id, name=speaker,
             listening_seconds=(
                 _wait_window(wait_seconds) + _LISTEN_GRACE_S if wait_seconds > 0 else 0
             ),

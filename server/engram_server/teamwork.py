@@ -342,6 +342,7 @@ class RoomStore:
         if not speaker:
             return
         now = _now()
+        name = name.strip()
         until = ""
         if listening_seconds > 0:
             until = (
@@ -356,10 +357,54 @@ class RoomStore:
                 "name = CASE WHEN excluded.name != '' THEN excluded.name ELSE room_speakers.name END, "
                 "listening_until = CASE WHEN excluded.listening_until != '' "
                 "THEN excluded.listening_until ELSE room_speakers.listening_until END",
-                (room_id, speaker, user_id, name.strip(), now, now, until),
+                (room_id, speaker, user_id, name, now, now, until),
             )
+            if name:
+                self._absorb_duplicates_locked(room_id, speaker, name)
             self._claim_open_floor_locked(room_id, speaker)
             self._conn.commit()
+
+    def _absorb_duplicates_locked(self, room_id: int, speaker: str, name: str) -> None:
+        """Fold older rows carrying the same NAME into this one.
+
+        A reconnect gives a session a brand-new key — the server restarting is
+        enough — so one session accumulates a row per connection. Left alone,
+        rotation hands the floor to keys nobody holds any more, and the room
+        stalls behind a speaker that cannot answer while looking perfectly alive
+        (its last_seen is recent). Observed live: six speakers for three
+        sessions after two restarts.
+
+        The name an agent gives itself survives reconnects, so it is the real
+        identity; the key is only a fallback for sessions that never named
+        themselves. Re-announcing absorbs the ghosts, carrying forward the
+        speaking history so rotation stays fair, and rescues the floor if a
+        ghost was holding it."""
+        rows = self._conn.execute(
+            "SELECT speaker, last_spoke FROM room_speakers "
+            "WHERE room_id = ? AND name = ? AND speaker != ?",
+            (room_id, name, speaker),
+        ).fetchall()
+        if not rows:
+            return
+        newest = max((str(r["last_spoke"] or "") for r in rows), default="")
+        current = self._conn.execute(
+            "SELECT last_spoke FROM room_speakers WHERE room_id = ? AND speaker = ?",
+            (room_id, speaker),
+        ).fetchone()
+        if newest > str((current["last_spoke"] if current else "") or ""):
+            self._conn.execute(
+                "UPDATE room_speakers SET last_spoke = ? WHERE room_id = ? AND speaker = ?",
+                (newest, room_id, speaker),
+            )
+        room = self._room_locked(room_id)
+        held = {str(r["speaker"]) for r in rows}
+        self._conn.executemany(
+            "DELETE FROM room_speakers WHERE room_id = ? AND speaker = ?",
+            [(room_id, str(r["speaker"])) for r in rows],
+        )
+        if room is not None and room.floor in held:
+            # The floor belonged to a previous incarnation of this same session.
+            self._set_floor_locked(room_id, speaker)
 
     def _claim_open_floor_locked(self, room_id: int, speaker: str) -> None:
         """An arriving session picks up an OPEN floor if it owes the room a reply.
