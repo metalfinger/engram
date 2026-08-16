@@ -385,6 +385,25 @@ class RoomStore:
         if newest_other and newest_other > str(mine["last_spoke"]):
             self._set_floor_locked(room_id, speaker)
 
+    def stop_listening(self, room_id: int, speaker: str) -> None:
+        """End a listen the moment the poll is satisfied.
+
+        The window is stamped at poll ENTRY and sized to outlast the poll, so a
+        session looping its long-poll stays continuously 'listening' across the
+        1-3s gap between calls. But a poll that returns EARLY — because someone
+        spoke — leaves the rest of that window advertising a listener who has
+        gone off to act on what they read. The other side then waits on a reply
+        that nobody is composing, which is the precise false positive this signal
+        exists to eliminate."""
+        if not speaker:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE room_speakers SET listening_until = '' WHERE room_id = ? AND speaker = ?",
+                (room_id, speaker),
+            )
+            self._conn.commit()
+
     def _speakers_locked(self, room_id: int) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM room_speakers WHERE room_id = ? ORDER BY first_seen",

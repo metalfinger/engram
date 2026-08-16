@@ -1866,6 +1866,13 @@ def _wait_window(seconds: int) -> int:
     return max(1, min(_MAX_MCP_WAIT_S, seconds))
 
 
+# A listen is advertised for the poll's length PLUS this, so a session looping its
+# long-poll stays continuously "listening" across the 1-3s gap between calls
+# instead of flickering out and back. An early return clears the window
+# explicitly — the grace covers re-calls, never a session that has gone to act.
+_LISTEN_GRACE_S = 10
+
+
 def _speaker_key() -> str:
     """A stable identifier for THIS MCP session, for floor control.
 
@@ -2168,7 +2175,7 @@ async def kb_room_post(
         deadline = asyncio.get_event_loop().time() + window
         if key:
             registry.rooms.touch_speaker(
-                r.id, key, me.id, listening_seconds=window
+                r.id, key, me.id, listening_seconds=window + _LISTEN_GRACE_S
             )
         while not replies and asyncio.get_event_loop().time() < deadline:
             remaining = int(deadline - asyncio.get_event_loop().time()) or 1
@@ -2180,6 +2187,8 @@ async def kb_room_post(
             # of ONE person share a user_id, so every reply was discarded and the
             # wait always timed out empty. Guest-read audit rows aren't replies.
             replies = [_turn_view(t, handles) for t in fresh if t.kind != "guest_read"]
+        if replies and key:
+            registry.rooms.stop_listening(r.id, key)
         floor = registry.rooms.floor_state(r.id, key)
     out: dict[str, Any] = {
         "turn": _turn_view(turn, handles), "replies": replies, "floor": floor,
@@ -2224,12 +2233,17 @@ async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict
         # longer matters.
         registry.rooms.touch_speaker(
             r.id, key, me.id,
-            listening_seconds=(_wait_window(wait_seconds) if wait_seconds > 0 else 0),
+            listening_seconds=(
+                _wait_window(wait_seconds) + _LISTEN_GRACE_S if wait_seconds > 0 else 0
+            ),
         )
     turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
     if not turns and wait_seconds > 0 and r.status == "open":
         await _room_wait(r.id, _wait_window(wait_seconds))
         turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
+        if turns and key:
+            # Woken early: we're about to act on what we read, not keep waiting.
+            registry.rooms.stop_listening(r.id, key)
     handles = registry.tenancy_handle_map()
     return {
         "room": _room_view(r),

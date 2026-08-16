@@ -131,6 +131,16 @@ def test_an_expired_listen_does_not_count(rooms, room):
     assert rooms.floor_state(room.id, "sess-a")["anyone_listening"] is False
 
 
+def test_a_satisfied_poll_stops_advertising_a_listener(rooms, room):
+    """Found live: a 45s poll that returned after 4s left the window claiming a
+    listener for the other 41 seconds, while that session had gone off to act on
+    what it read. The other side then waits on a reply nobody is composing."""
+    rooms.touch_speaker(room.id, "sess-b", 1, listening_seconds=45)
+    assert rooms.floor_state(room.id, "sess-a")["anyone_listening"] is True
+    rooms.stop_listening(room.id, "sess-b")
+    assert rooms.floor_state(room.id, "sess-a")["anyone_listening"] is False
+
+
 def test_speaking_ends_your_own_listen(rooms, room):
     rooms.touch_speaker(room.id, "sess-a", 1, listening_seconds=60)
     rooms.post_turn(room.id, 1, "actually, here's the thing", speaker="sess-a")
