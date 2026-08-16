@@ -392,3 +392,26 @@ def test_holding_the_floor_beats_the_rest_advice(rooms, room):
     state = rooms.floor_state(room.id, "sess-b")
     assert state["is_you"] is True
     assert "Your turn" in state["do_next"]
+
+
+def test_do_next_never_credits_the_holder_with_someone_elses_listening(rooms, room):
+    """Reported by mac-b, who checked the sentence against the rows rather than
+    trusting it: do_next said 'X holds the floor and is listening right now' while
+    X's row read listening:false and a DIFFERENT session was parked. The assembly
+    error do_next exists to remove, reproduced inside do_next itself."""
+    rooms.touch_speaker(room.id, "sess-c", 2, name="third")
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")  # floor -> someone
+    holder = rooms.floor_state(room.id, "sess-a")["holder"]
+    other = next(s for s in ("sess-a", "sess-b", "sess-c") if s != holder)
+    rooms.touch_speaker(room.id, other, 1, listening_seconds=60)
+    advice = rooms.floor_state(room.id, "sess-a")["do_next"]
+    assert "is listening right now" not in advice or "NOT currently" in advice
+
+
+def test_do_next_does_credit_a_listening_holder(rooms, room):
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")
+    holder = rooms.floor_state(room.id, "sess-a")["holder"]
+    rooms.touch_speaker(room.id, holder, 1, listening_seconds=60)
+    advice = rooms.floor_state(room.id, "sess-a")["do_next"]
+    assert "is listening right now" in advice
+    assert "NOT currently" not in advice

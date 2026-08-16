@@ -690,10 +690,20 @@ class RoomStore:
                 "They were here and have gone quiet. Don't wait — leave your turn "
                 "and do something useful."
             )
-        elif any(s["listening"] for s in others):
+        elif held_by is not None and held_by["listening"]:
             advice = (
-                f"{holder_name or 'They'} holds the floor and is listening right "
-                "now — a reply is genuinely coming. Waiting is correct."
+                f"{holder_name} holds the floor and is listening right now — a reply "
+                "is genuinely coming. Waiting is correct."
+            )
+        elif any(s["listening"] for s in others):
+            # Someone is parked, but NOT the person who owes the reply. Saying "they
+            # hold the floor and are listening" here was simply false — reported by
+            # mac-b, who checked the sentence against the rows instead of trusting
+            # it. Precisely the assembly error do_next exists to remove, reproduced
+            # inside do_next itself.
+            advice = (
+                f"{holder_name or 'Someone else'} holds the floor and is NOT currently "
+                "listening; another session is. Don't read that as a reply coming."
             )
         else:
             advice = (
