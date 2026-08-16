@@ -235,3 +235,84 @@ async def test_recording_activity_never_breaks_a_write(mu, monkeypatch):
         "seed",
     )
     assert res["path"] == "projects/p/notes/safe.md"
+
+
+# -- Phase 3: the silent clobber ----------------------------------------------
+
+_DOC = "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n"
+
+
+@pytest.mark.asyncio
+async def test_overwriting_another_sessions_recent_write_is_flagged(mu, monkeypatch):
+    """base_hash works but is opt-in, so omitting it means last-write-wins in
+    silence — the one outcome nobody ever wants. We cannot refuse the write, so
+    we say it out loud."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write("projects/p/notes/hot.md", _DOC, "theirs")
+
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    res = await app_module.kb_write(
+        "projects/p/notes/hot.md", _DOC.replace("Body.", "Mine."), "mine"
+    )
+    assert any("base_hash" in w for w in res["warnings"])
+    assert any("may be gone" in w for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_passing_base_hash_suppresses_the_warning(mu, monkeypatch):
+    """They asked for the guard — it either held or already refused the write."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write("projects/p/notes/guarded.md", _DOC, "theirs")
+
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    read = await app_module.kb_read("projects/p/notes/guarded.md")
+    res = await app_module.kb_write(
+        "projects/p/notes/guarded.md", _DOC.replace("Body.", "Mine."), "mine",
+        base_hash=read["hash"],
+    )
+    assert not any("base_hash" in w for w in res.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_your_own_earlier_write_does_not_warn(mu, monkeypatch):
+    """A warning that fires on every write is wallpaper. Only a REAL other writer
+    is worth interrupting for."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write("projects/p/notes/solo.md", _DOC, "first")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    res = await app_module.kb_write(
+        "projects/p/notes/solo.md", _DOC.replace("Body.", "Again."), "second"
+    )
+    assert not any("base_hash" in w for w in res.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_path_does_not_warn(mu, monkeypatch):
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    res = await app_module.kb_write("projects/p/notes/fresh.md", _DOC, "new")
+    assert not any("base_hash" in w for w in res.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_kb_edit_flags_it_too(mu, monkeypatch):
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write("projects/p/notes/edited.md", _DOC, "theirs")
+
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    res = await app_module.kb_edit(
+        "projects/p/notes/edited.md", "append", content="One more line.\n"
+    )
+    assert any("also wrote to this path" in w for w in res["warnings"])

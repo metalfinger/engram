@@ -452,8 +452,16 @@ async def kb_write(
 
     Returns {path, created, no_change, sha, pushed, warnings, indexes_updated, superseded}.
     """
+    # Check BEFORE recording our own write, so the question is "was anyone else
+    # here" rather than "was I".
+    clobber = _clobber_warning(path, base_hash)
     _note_activity(path)
-    return await (await current_store()).kb_write(path, content, message, description, base_hash, session)
+    res = await (await current_store()).kb_write(
+        path, content, message, description, base_hash, session
+    )
+    if clobber and not res.get("no_change"):
+        res.setdefault("warnings", []).append(clobber)
+    return res
 
 
 @mcp.tool()
@@ -488,8 +496,17 @@ async def kb_edit(
 
     Returns {path, sha, pushed, operation, warnings}.
     """
+    # kb_edit has no base_hash: it is anchored, so a conflicting concurrent change
+    # usually breaks the anchor and refuses loudly. It can still land on content
+    # that moved under it, which is worth flagging.
+    clobber = _clobber_warning(path)
     _note_activity(path)
-    return await (await current_store()).kb_edit(path, operation, content, find, section, occurrence, session)
+    res = await (await current_store()).kb_edit(
+        path, operation, content, find, section, occurrence, session
+    )
+    if clobber:
+        res.setdefault("warnings", []).append(clobber)
+    return res
 
 
 @mcp.tool()
@@ -2078,6 +2095,40 @@ def _note_activity(path: str) -> None:
         registry.rooms.record_activity(me.id, key, path, label=_session_label(key))
     except Exception:  # noqa: BLE001 — never break a write over bookkeeping
         log.debug("activity note failed for %s", path, exc_info=True)
+
+
+def _clobber_warning(path: str, base_hash: str = "") -> str | None:
+    """Did another live session write here recently, and did we write blind?
+
+    `base_hash` is optimistic concurrency and it WORKS — but it is opt-in, so
+    omitting it means last-write-wins silently, which is the one outcome nobody
+    ever wants. LangGraph refuses a concurrent write to a field with no declared
+    merge policy rather than guessing a winner; we cannot refuse (nothing here
+    may block a write), so we do the next most useful thing and say it out loud.
+
+    Only fires when there is a REAL other writer, so it stays rare enough to be
+    worth reading. A warning that appears on every write is wallpaper."""
+    if base_hash:
+        return None  # they asked for the guard; it either held or already refused
+    try:
+        mine = _speaker_key()
+        recent = [
+            a for a in registry.rooms.recent_activity(exclude_session=mine)
+            if a["path"] == path
+        ]
+    except Exception:  # noqa: BLE001
+        return None
+    if not recent:
+        return None
+    who = ", ".join(sorted({str(a["session"]) for a in recent}))
+    return (
+        f"{who} also wrote to this path in the last "
+        f"{registry.rooms.ACTIVITY_TTL_MIN} minutes, and this write passed no "
+        "`base_hash`, so it overwrote whatever was there without checking. Their "
+        "change may be gone. Re-read the file to see what it says now, and pass "
+        "kb_read's `hash` as `base_hash` on the next write so a conflict is "
+        "refused instead of silently applied."
+    )
 
 
 async def _working_now() -> list[dict[str, Any]]:
