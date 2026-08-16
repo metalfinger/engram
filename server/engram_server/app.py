@@ -2231,6 +2231,7 @@ async def kb_room_read(
 
     Returns {room, turns: [...], cursor, floor}."""
     me = _require_room_user()
+    started = time.monotonic()
     r = _room_of(room)
     key = _speaker_key()
     if key and r.status == "open":
@@ -2259,6 +2260,13 @@ async def kb_room_read(
         "turns": [_turn_view(t, handles) for t in turns],
         "cursor": turns[-1].id if turns else since,
         "floor": registry.rooms.floor_state(r.id, key),
+        # How long the SERVER actually held this call. Two sessions independently
+        # timed a long-poll by bracketing it with `date` and concluded the server
+        # was sitting on turns it already had; a bracket like that spans their own
+        # model turn — inference, the call, then more inference — so it cannot
+        # separate server wait from client latency. Reporting it from inside the
+        # handler ends that argument with a number instead of an inference.
+        "server_ms": int((time.monotonic() - started) * 1000),
     }
 
 
