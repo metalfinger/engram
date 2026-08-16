@@ -185,6 +185,15 @@ CREATE TABLE IF NOT EXISTS room_speakers (
     empty_waits INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_id, speaker)
 );
+CREATE TABLE IF NOT EXISTS session_activity (
+    session TEXT NOT NULL,
+    path TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    label TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL,
+    PRIMARY KEY (session, path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_activity_at ON session_activity(at);
 CREATE TABLE IF NOT EXISTS room_grants (
     room_id INTEGER NOT NULL REFERENCES rooms(id),
     grantor_id INTEGER NOT NULL REFERENCES users(id),
@@ -489,6 +498,98 @@ class RoomStore:
                 (room_id, speaker),
             )
             self._conn.commit()
+
+    # DERIVED ACTIVITY — who has actually been writing where.
+    #
+    # A declared claim states intent BEFORE work; derived activity is evidence
+    # AFTER it. Both are worth having and neither replaces the other: a claim can
+    # be forgotten or left behind by a session that crashed, while activity is a
+    # side effect of doing the work and so is never stale in the way a forgotten
+    # claim is. It also costs the session nothing — no call, no discipline.
+    #
+    # Deliberately writes ONLY, not reads. Reading a file does not mean you are
+    # changing it, and recording reads would mark every index lookup, drowning the
+    # real signal in browsing noise.
+    #
+    # Lives in SQLite rather than the git brain: this updates far too often for a
+    # commit per write, and the brain has exactly one writer.
+    ACTIVITY_TTL_MIN = 15
+
+    def record_activity(
+        self, user_id: int, session: str, path: str, label: str = ""
+    ) -> None:
+        """Note that a session just wrote to a path. Upsert per (session, path)."""
+        session = (session or "").strip()
+        path = (path or "").strip()
+        if not session or not path:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO session_activity (session, path, user_id, label, at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(session, path) DO UPDATE SET at = excluded.at, "
+                "label = CASE WHEN excluded.label != '' THEN excluded.label "
+                "ELSE session_activity.label END",
+                (session, path, user_id, label.strip(), _now()),
+            )
+            # Self-maintaining: drop long-dead rows on the way past. The caller
+            # throttles to once a minute per path, and this is an indexed DELETE
+            # over a tiny table — cheaper than owning a scheduler dependency just
+            # to tidy up after ourselves.
+            cutoff = (
+                dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(minutes=self.ACTIVITY_TTL_MIN * 4)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self._conn.execute("DELETE FROM session_activity WHERE at < ?", (cutoff,))
+            self._conn.commit()
+
+    def recent_activity(self, exclude_session: str = "") -> list[dict[str, Any]]:
+        """Paths written recently, newest first, excluding your own session.
+
+        Excluding yourself is the point: you know what you are working on. What
+        you cannot see is everyone else."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session, path, label, at FROM session_activity "
+                "ORDER BY at DESC LIMIT 200"
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            if exclude_session and r["session"] == exclude_session:
+                continue
+            if not _is_fresh(str(r["at"]), minutes=self.ACTIVITY_TTL_MIN):
+                continue
+            out.append({
+                "session": r["label"] or r["session"],
+                "path": r["path"],
+                "at": r["at"],
+            })
+        return out
+
+    def speaker_label(self, speaker: str) -> str:
+        """The friendly name this session gave itself in any room or thread."""
+        if not speaker:
+            return ""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name FROM room_speakers WHERE speaker = ? AND name != '' "
+                "ORDER BY last_seen DESC LIMIT 1",
+                (speaker,),
+            ).fetchone()
+        return str(row["name"]) if row else ""
+
+    def prune_activity(self) -> int:
+        """Drop activity past its TTL. Cheap; called from the scheduler."""
+        cutoff = (
+            dt.datetime.now(dt.timezone.utc)
+            - dt.timedelta(minutes=self.ACTIVITY_TTL_MIN * 4)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM session_activity WHERE at < ?", (cutoff,)
+            )
+            self._conn.commit()
+        return cur.rowcount or 0
 
     def stop_listening(self, room_id: int, speaker: str) -> None:
         """End a listen the moment the poll is satisfied.

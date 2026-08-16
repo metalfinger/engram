@@ -136,3 +136,102 @@ async def test_the_list_is_capped(mu, monkeypatch):
     await app_module.kb_room_open("busy", "many claims")
     out = await app_module.kb_room_post("busy", "hello", speaker="windows")
     assert len(out["floor"]["working"]) == app_module._CLAIMS_IN_FLOOR
+
+
+# -- Phase 2: derived activity — working IS the announcement -------------------
+
+
+@pytest.mark.asyncio
+async def test_writing_announces_itself_without_a_claim(mu, monkeypatch):
+    """The point of derivation: a session that never calls kb_claim is still
+    visible, because the server already sees every write."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write(
+        "projects/p/notes/derived.md",
+        "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n",
+        "seed",
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("build", "parallel work")
+    out = await app_module.kb_room_post("build", "starting", speaker="windows")
+    working = out["floor"]["working"]
+    assert [w["path"] for w in working] == ["projects/p/notes/derived.md"]
+    assert working[0]["via"] == "activity", "evidence, not stated intent"
+
+
+@pytest.mark.asyncio
+async def test_your_own_writes_are_not_reported_back_to_you(mu, monkeypatch):
+    """You know what you are working on. What you cannot see is everyone else."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write(
+        "projects/p/notes/mine.md",
+        "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n",
+        "seed",
+    )
+    await app_module.kb_room_open("solo", "just me")
+    out = await app_module.kb_room_post("solo", "hello", speaker="windows")
+    assert "working" not in out["floor"]
+
+
+@pytest.mark.asyncio
+async def test_a_claim_beats_derived_activity_on_the_same_path(mu, monkeypatch):
+    """A claim carries the session's note, which says more than a write does."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_claim("mac-a", "projects/p/notes/both.md", "reskin")
+    await app_module.kb_write(
+        "projects/p/notes/both.md",
+        "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n",
+        "seed",
+    )
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_CLAIMS_CACHE", {"at": 0.0, "rows": []})
+    await app_module.kb_room_open("build", "parallel work")
+    out = await app_module.kb_room_post("build", "hi", speaker="windows")
+    rows = [w for w in out["floor"]["working"]
+            if w["path"] == "projects/p/notes/both.md"]
+    assert len(rows) == 1, "one path, one entry — not both a claim and an echo"
+    assert rows[0]["via"] == "claim"
+    assert rows[0]["note"] == "reskin"
+
+
+@pytest.mark.asyncio
+async def test_activity_shows_the_name_a_session_gave_itself(mu, monkeypatch):
+    """An opaque session key tells a reader nothing actionable."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_room_open("naming", "so sess-b has a name")
+    await app_module.kb_room_post("naming", "hello", speaker="mac-b")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+    await app_module.kb_write(
+        "projects/p/notes/named.md",
+        "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n",
+        "seed",
+    )
+    _as_session(monkeypatch, "sess-a")
+    out = await app_module.kb_room_post("naming", "and me", speaker="windows")
+    assert out["floor"]["working"][0]["session"] == "mac-b"
+
+
+@pytest.mark.asyncio
+async def test_recording_activity_never_breaks_a_write(mu, monkeypatch):
+    """Bookkeeping must not be able to fail the thing it is bookkeeping for."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_activity_last", {})
+
+    def _boom(*a, **k):
+        raise RuntimeError("activity store on fire")
+
+    monkeypatch.setattr(mu.rooms, "record_activity", _boom)
+    res = await app_module.kb_write(
+        "projects/p/notes/safe.md",
+        "---\ntype: note\ndescription: d\n---\n\n# T\n\nBody.\n",
+        "seed",
+    )
+    assert res["path"] == "projects/p/notes/safe.md"

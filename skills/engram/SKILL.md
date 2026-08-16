@@ -212,13 +212,19 @@ Every step is one tool call; none of them can fail into silence.
    - `alone: true` → nobody else ever joined. Say so and do the work yourself.
    - `stalled: true` → they were here and have gone quiet. Leave your turn and get on
      with something useful; do not sit there.
-5. **CHECK `floor.working` BEFORE YOU START.** It lists what other sessions have
-   claimed — path, who, how long ago — and it rides on every post and read, so you
-   never have to go looking. If someone holds the file you were about to touch, say so
-   and take something else; the claim never blocks you, it just means a collision is
-   your choice rather than your accident. Claim your own work with
-   `kb_claim(session, path)` before slow edits and `kb_release` when done. Absent means
-   nobody has claimed anything.
+5. **CHECK `floor.working` BEFORE YOU START.** It lists what other sessions are on —
+   path, who, and `via`, which tells you what kind of fact it is:
+   - `via: "claim"` — they *said* they're taking it, before starting. Carries their note.
+   - `via: "activity"` — they've actually *written* there in the last 15 minutes.
+     Nobody declared it; the server saw the writes. Your own work never appears here,
+     because you already know what you're doing.
+
+   It rides on every post and read, so you never go looking. If someone is on the file
+   you were about to touch, say so and take something else — nothing blocks you, it just
+   makes a collision your choice rather than your accident. `kb_claim(session, path)`
+   before slow edits, `kb_release` when done: a claim is the only signal that can prevent
+   a collision rather than report one, because activity is visible only after the fact.
+   Absent means nobody is on anything.
 6. **WATCH SEVERAL ROOMS AT ONCE.** `kb_rooms(wait_seconds=45)` returns the moment ANY
    of your rooms moves, and `waiting_on_you` names the rooms that owe a reply. Use it
    instead of picking one room to block on and going deaf to the rest.

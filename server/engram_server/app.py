@@ -452,6 +452,7 @@ async def kb_write(
 
     Returns {path, created, no_change, sha, pushed, warnings, indexes_updated, superseded}.
     """
+    _note_activity(path)
     return await (await current_store()).kb_write(path, content, message, description, base_hash, session)
 
 
@@ -487,6 +488,7 @@ async def kb_edit(
 
     Returns {path, sha, pushed, operation, warnings}.
     """
+    _note_activity(path)
     return await (await current_store()).kb_edit(path, operation, content, find, section, occurrence, session)
 
 
@@ -2040,6 +2042,44 @@ _CLAIMS_TTL_S = 10.0
 _CLAIMS_IN_FLOOR = 8
 
 
+_ACTIVITY_THROTTLE_S = 60.0
+_activity_last: dict[tuple[str, str], float] = {}
+
+
+def _session_label(key: str) -> str:
+    """The friendly name a session gave itself in any room or thread, so derived
+    activity reads as 'mac-a' rather than an opaque key."""
+    if not key:
+        return ""
+    try:
+        return registry.rooms.speaker_label(key) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _note_activity(path: str) -> None:
+    """Record that this session just wrote to `path`.
+
+    Derived, not declared: working IS the announcement. Throttled per
+    (session, path) because a burst of edits to one file is one fact, not twenty.
+    Failure-soft — coordination must never be able to break a write."""
+    key = _speaker_key()
+    if not key or not path:
+        return
+    try:
+        now = time.monotonic()
+        slot = (key, path)
+        if now - _activity_last.get(slot, 0.0) < _ACTIVITY_THROTTLE_S:
+            return
+        _activity_last[slot] = now
+        me = current_user()
+        if me is None:
+            return
+        registry.rooms.record_activity(me.id, key, path, label=_session_label(key))
+    except Exception:  # noqa: BLE001 — never break a write over bookkeeping
+        log.debug("activity note failed for %s", path, exc_info=True)
+
+
 async def _working_now() -> list[dict[str, Any]]:
     """Live advisory claims, compact, for the conversation state block. Never
     raises — coordination must not be able to break the conversation it serves."""
@@ -2060,6 +2100,7 @@ async def _working_now() -> list[dict[str, Any]]:
             "session": r.get("session"),
             "note": str(r.get("note") or "")[:80],
             "minutes_ago": int(r.get("age_min") or 0),
+            "via": "claim",  # stated intent, before the work
         })
         if len(out) >= _CLAIMS_IN_FLOOR:
             break
@@ -2069,9 +2110,34 @@ async def _working_now() -> list[dict[str, Any]]:
 
 
 async def _with_working(floor: dict[str, Any]) -> dict[str, Any]:
-    """Attach live claims to a floor block. Absent when nobody has claimed
-    anything, so a quiet workspace costs nothing."""
-    rows = await _working_now()
+    """Attach who is working where: declared claims AND derived activity.
+
+    Both, because they answer different questions. A claim is INTENT stated
+    before the work, which is the only thing that can prevent a collision rather
+    than report one — but it depends on someone remembering to make it. Activity
+    is EVIDENCE from the work itself, which needs no discipline but can only be
+    backward-looking. Marked `via` so a reader can tell a promise from a fact.
+
+    Claims win on conflict: if someone both claimed a path and wrote to it, the
+    claim carries their note, which says more than the write does.
+
+    Absent entirely when nothing is happening, so a quiet workspace costs nothing.
+    """
+    rows = list(await _working_now())
+    claimed = {str(r.get("path")) for r in rows}
+    try:
+        for a in registry.rooms.recent_activity(exclude_session=_speaker_key()):
+            if len(rows) >= _CLAIMS_IN_FLOOR:
+                break
+            if a["path"] in claimed:
+                continue
+            rows.append({
+                "path": a["path"],
+                "session": a["session"],
+                "via": "activity",  # observed writes, after the fact
+            })
+    except Exception:  # noqa: BLE001 — never break a turn over bookkeeping
+        log.debug("activity unavailable for floor", exc_info=True)
     if rows:
         floor["working"] = rows
     return floor
