@@ -181,8 +181,8 @@ async def test_kb_rooms_returns_immediately_when_there_is_unread(mu, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_a_turn_nobody_is_parked_on_reaches_the_human(mu, monkeypatch):
-    """Parked → instant off the bus. Rested → unreachable by any wait, so the only
+async def test_a_turn_for_a_session_that_has_gone_reaches_the_human(mu, monkeypatch):
+    """Parked → instant off the bus. GONE → unreachable by any wait, so the only
     honest move is to notify the person, whose tray is still live."""
     _login(monkeypatch)
     sent = []
@@ -193,12 +193,40 @@ async def test_a_turn_nobody_is_parked_on_reaches_the_human(mu, monkeypatch):
     _as_session(monkeypatch, "sess-a")
     await app_module.kb_room_open("pairing", "one side has gone home")
     _as_session(monkeypatch, "sess-b")
-    await app_module.kb_room_read("pairing")  # B joins, then stops listening
+    await app_module.kb_room_read("pairing", speaker="mac-a")
+    rid = mu.rooms.room_by_name("pairing").id
+    with mu.rooms._lock:  # noqa: SLF001 — age mac-a out of the live window
+        mu.rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND name = 'mac-a'", (rid,),
+        )
+        mu.rooms._conn.commit()
     _as_session(monkeypatch, "sess-a")
     await app_module.kb_room_post("pairing", "are you there?", speaker="windows")
     assert any(k == "room_turn" for k, _ in sent), (
-        "nobody was parked, so nothing would have delivered this turn"
+        "they are gone, so nothing on the server could ever deliver this"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_session_merely_between_polls_is_not_notified(mu, monkeypatch):
+    """Two agents mid-conversation are between polls most of the time. Notifying on
+    that produced 22 unread pings in one afternoon — five for a single turn — which
+    trains the user to ignore the only channel that reaches them when no session
+    can. A quiet channel IS the feature."""
+    _login(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        app_module, "_push_notification",
+        lambda uid, kind, body, ref=None: sent.append((kind, body)),
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("chatty", "an active conversation")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_room_read("chatty", speaker="mac-a")  # here, not parked
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_post("chatty", "still going", speaker="windows")
+    assert not [k for k, _ in sent if k == "room_turn"]
 
 
 @pytest.mark.asyncio
@@ -218,6 +246,13 @@ async def test_one_person_gets_one_notification_however_many_sessions(mu, monkey
     for s, n in (("sess-b", "mac-a"), ("sess-c", "mac-b")):
         _as_session(monkeypatch, s)
         await app_module.kb_room_read("crowded", speaker=n)
+    rid = mu.rooms.room_by_name("crowded").id
+    with mu.rooms._lock:  # noqa: SLF001 -- both of them have gone home
+        mu.rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND speaker != 'sess-a'", (rid,),
+        )
+        mu.rooms._conn.commit()
     _as_session(monkeypatch, "sess-a")
     await app_module.kb_room_post("crowded", "nobody is parked", speaker="windows")
     assert len(sent) == 1, f"one tray, one ping — got {len(sent)}"

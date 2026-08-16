@@ -2196,28 +2196,34 @@ async def kb_room_post(
         )
     if hopeless:
         warnings.append(hopeless)
-    elif not floor["anyone_listening"]:
-        # THE DELIVERED VERDICT (from the PARK pattern playbook in the brain). A
-        # parked session gets this turn instantly off the long-poll bus and needs
-        # nothing more. A session that has ENDED ITS TURN cannot be woken by any
-        # amount of waiting on our side — so the only honest move is to reach the
-        # human, whose tray/extension is still live. Parked → instant; rested →
-        # notified; nobody polls in either case.
-        # One notification per PERSON, not per session. Several sessions of one
-        # user are one human with one tray, so notifying per speaker pinged Hiren
-        # twice for a single turn in a three-session room — and would scale with
-        # however many sessions he happens to have open, which is exactly the
-        # noise that trains someone to ignore the thing.
-        for uid in dict.fromkeys(int(o["user_id"]) for o in floor["others"]):
-            asleep = [
-                o["name"] for o in floor["others"] if int(o["user_id"]) == uid
-            ]
-            _push_notification(
-                uid, "room_turn",
-                f"Room '{r.name}' — a turn is waiting for {', '.join(asleep)}: "
-                f"{message[:120]}",
-                ref=r.name,
-            )
+
+    # THE DELIVERED VERDICT (from the PARK pattern playbook in the brain). A parked
+    # session gets this turn instantly off the long-poll bus. A session that has
+    # GONE cannot be woken by any amount of waiting, so the only honest move is to
+    # reach the person, whose tray is still live.
+    #
+    # Deliberately NOT part of the `hopeless` if/else: telling the caller not to
+    # wait and telling the human they are needed are independent, and the case
+    # where BOTH apply — everyone has left — is exactly when the notification
+    # matters most. An earlier version chained them and so stayed silent in the
+    # one situation it was built for.
+    #
+    # The threshold is GONE, not "not parked at this instant". Two agents in a live
+    # conversation are between polls most of the time; notifying on that produced
+    # 22 unread pings in one afternoon, five of them for a single turn, which
+    # trains the user to ignore notifications and destroys the only channel that
+    # reaches them when no session can. A quiet channel is the feature.
+    #
+    # One notification per PERSON: several sessions of one user are one tray.
+    gone = [o for o in floor["others"] if not o["live"] and not o["listening"]]
+    for uid in dict.fromkeys(int(o["user_id"]) for o in gone):
+        asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
+        _push_notification(
+            uid, "room_turn",
+            f"Room '{r.name}' — a turn is waiting for {', '.join(asleep)}: "
+            f"{message[:120]}",
+            ref=r.name,
+        )
     replies: list[dict[str, Any]] = []
     if wait_for_reply and not hopeless:
         window = _wait_window(wait_seconds)
