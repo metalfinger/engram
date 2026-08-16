@@ -82,9 +82,19 @@ def _is_fresh(stamp: str, minutes: int = _SPEAKER_LIVE_MINUTES) -> bool:
 
 def _is_human_session(session: str) -> bool:
     """Did a PERSON write this turn, or their agent? The web composer and the
-    dashboard reply form are people; `claude`/`claude:<key>` is an agent."""
+    dashboard reply form are people; `claude`/`claude:<key>` is an agent.
+
+    `relay:<key>` is a person too — their words, typed to their own Claude in
+    whatever conversation they were already in, and passed through. It counts as
+    human because the content and the decision are theirs; it is kept DISTINCT
+    from `human` so the transcript never claims they were in the room when they
+    were not."""
     s = (session or "").strip()
-    return s in ("web", "app", "human") or s.startswith("dashboard:")
+    return (
+        s in ("web", "app", "human")
+        or s.startswith("dashboard:")
+        or s.startswith("relay:")
+    )
 
 
 @dataclass(frozen=True)
@@ -591,7 +601,38 @@ class RoomStore:
         holder_name = held_by["name"] if held_by else holder
         if holder == HUMAN_FLOOR:
             holder_name = "the human"
+        # ONE sentence saying what to do, because five booleans is four too many.
+        # Every session in the live test read the flags correctly and still had to
+        # reason its way to an action; the reasoning is identical every time, so
+        # the server should just do it. The flags stay for anyone who wants them.
+        me_holds = bool(holder) and holder == me
+        if room.awaiting_human:
+            advice = (
+                "Blocked on the PERSON, not on any agent. Put this question to the "
+                f"user in chat and relay their answer with kb_room_relay_answer: "
+                f"{room.awaiting_human!r}"
+            )
+        elif me_holds:
+            advice = "Your turn. Nobody else will speak until you do — answer."
+        elif not others:
+            advice = "Nobody else has ever joined. Don't wait; work alone and say so."
+        elif not [s for s in others if s["live"] or s["listening"]]:
+            advice = (
+                "They were here and have gone quiet. Don't wait — leave your turn "
+                "and do something useful."
+            )
+        elif any(s["listening"] for s in others):
+            advice = (
+                f"{holder_name or 'They'} holds the floor and is listening right "
+                "now — a reply is genuinely coming. Waiting is correct."
+            )
+        else:
+            advice = (
+                f"{holder_name or 'Someone else'} holds the floor. They know it's "
+                "their turn; don't re-post."
+            )
         return {
+            "do_next": advice,
             "holder": holder,
             "holder_name": holder_name,
             "is_you": bool(holder) and holder == me,

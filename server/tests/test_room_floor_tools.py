@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import engram_server.app as app_module
+from engram_server.errors import KBError
 from engram_server.registry import StoreRegistry
 
 
@@ -242,6 +243,128 @@ async def test_a_listening_session_is_not_notified(mu, monkeypatch):
     _as_session(monkeypatch, "sess-a")
     await app_module.kb_room_post("pairing", "here you go", speaker="windows")
     assert not any(k == "room_turn" for k, _ in sent)
+
+
+@pytest.mark.asyncio
+async def test_posting_against_a_stale_cursor_returns_what_you_missed(mu, monkeypatch):
+    """The failure every session hit in the first live test: read, think for 30
+    seconds, then assert something the room had already moved past — one of them
+    reported a member absent who had been present for 24 minutes."""
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("busy", "the room moves while you write")
+    first = await app_module.kb_room_post("busy", "opening", speaker="windows")
+    cursor = first["turn"]["id"]
+
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_room_post("busy", "something you missed", speaker="mac-a")
+
+    _as_session(monkeypatch, "sess-a")
+    out = await app_module.kb_room_post(
+        "busy", "composed from a stale view", speaker="windows", expect_cursor=cursor
+    )
+    assert out["turn"]["id"], "the post still goes through — never block the intent"
+    assert [t["body"] for t in out["missed"]] == ["something you missed"]
+    assert any("while you were composing" in w for w in out["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_a_current_cursor_reports_nothing_missed(mu, monkeypatch):
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("calm", "nothing moved")
+    first = await app_module.kb_room_post("calm", "opening", speaker="windows")
+    out = await app_module.kb_room_post(
+        "calm", "still current", speaker="windows", expect_cursor=first["turn"]["id"]
+    )
+    assert "missed" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_unnamed_session_is_warned(mu, monkeypatch):
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("anon", "nobody named themselves")
+    out = await app_module.kb_room_post("anon", "who am I")
+    assert any("named yourself" in w for w in out["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_do_next_says_what_to_do(mu, monkeypatch):
+    """Five booleans is four too many — every session reasoned its way to the same
+    action from the same flags."""
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("advice", "one sentence, not five flags")
+    out = await app_module.kb_room_post("advice", "alone here", speaker="windows")
+    assert "Don't wait" in out["floor"]["do_next"]
+
+    _as_session(monkeypatch, "sess-b")
+    read = await app_module.kb_room_read("advice", speaker="mac-a")
+    assert "Your turn" in read["floor"]["do_next"]
+
+
+@pytest.mark.asyncio
+async def test_do_next_points_at_the_human_when_blocked(mu, monkeypatch):
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("blocked", "needs a person")
+    out = await app_module.kb_room_post(
+        "blocked", "stuck", speaker="windows", ask_human="Ship or hold?"
+    )
+    assert "kb_room_relay_answer" in out["floor"]["do_next"]
+    assert "Ship or hold?" in out["floor"]["do_next"]
+
+
+@pytest.mark.asyncio
+async def test_a_relayed_answer_unblocks_the_room(mu, monkeypatch):
+    """The user answers wherever they already are — in chat with their own Claude
+    — instead of being made to open a web page they rarely visit."""
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("decide", "needs a person")
+    await app_module.kb_room_post(
+        "decide", "blocked", speaker="windows", ask_human="Flag or hold?"
+    )
+    _as_session(monkeypatch, "sess-b")
+    out = await app_module.kb_room_relay_answer("decide", "Hold it for now.")
+    assert out["turn"]["via"] == "human", "their decision, so it counts as theirs"
+    assert out["turn"]["relayed"] is True, "but never claim they were in the room"
+    assert out["floor"]["awaiting_human"] == ""
+
+    _as_session(monkeypatch, "sess-a")
+    read = await app_module.kb_room_read("decide", speaker="windows")
+    assert read["floor"]["is_you"] is True, "the floor returns to whoever asked"
+
+
+@pytest.mark.asyncio
+async def test_relaying_nothing_is_refused(mu, monkeypatch):
+    """The guard against inventing an answer nobody gave."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("decide", "needs a person")
+    with pytest.raises(KBError, match="ask the user"):
+        await app_module.kb_room_relay_answer("decide", "   ")
+
+
+@pytest.mark.asyncio
+async def test_kb_rooms_surfaces_rooms_blocked_on_the_user(mu, monkeypatch):
+    """A blocked room is invisible to the person unless a session tells them."""
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("decide", "needs a person")
+    await app_module.kb_room_post(
+        "decide", "blocked", speaker="windows", ask_human="Ship it or hold?"
+    )
+    listing = await app_module.kb_rooms()
+    assert listing["needs_the_user"] == {"decide": "Ship it or hold?"}
 
 
 @pytest.mark.asyncio

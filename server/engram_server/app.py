@@ -1920,12 +1920,18 @@ def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
 def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:  # noqa: D401
     sess = t.session or ""
     is_claude = sess == "claude" or sess.startswith("claude:")
-    via = ("human" if (sess in ("web", "app") or sess.startswith("dashboard:"))
+    is_relay = sess.startswith("relay:")
+    via = ("human" if (sess in ("web", "app") or sess.startswith("dashboard:")
+                       or is_relay)
            else ("claude" if is_claude else ""))
     out = {"id": t.id, "author": handles.get(t.user_id, "?"), "kind": t.kind,
            "body": t.body, "created": t.created}
     if via:
         out["via"] = via  # who actually wrote it: the person, or their Claude
+    if is_relay:
+        # Their words, but they were not in the room — say so rather than let the
+        # transcript imply they were sitting in it.
+        out["relayed"] = True
     if sess.startswith("claude:"):
         # WHICH Claude. Two sessions of one user post under the same handle, so
         # without this a transcript of a two-session room reads as one voice
@@ -2029,8 +2035,12 @@ async def kb_rooms(include_closed: bool = False, wait_seconds: int = 0) -> dict[
             "turn_budget": row["turn_budget"], "hard_cap": row["hard_cap"],
             "last_turn": row.get("last_turn"),
         }
-        if key and row["status"] == "open":
-            entry["your_turn"] = registry.rooms.floor_state(row["id"], key)["is_you"]
+        if row["status"] == "open":
+            state = registry.rooms.floor_state(row["id"], key)
+            if key:
+                entry["your_turn"] = state["is_you"]
+            if state["awaiting_human"]:
+                entry["needs_the_user"] = state["awaiting_human"]
         rooms.append(entry)
     out = {
         "rooms": rooms,
@@ -2038,6 +2048,12 @@ async def kb_rooms(include_closed: bool = False, wait_seconds: int = 0) -> dict[
     }
     if woke_on:
         out["woke_on"] = woke_on
+    # Rooms frozen on the PERSON. Put these to the user in chat and relay their
+    # answer with kb_room_relay_answer: a blocked room is otherwise invisible to
+    # them unless they happen to open a web page, and they mostly don't.
+    needs = {r["name"]: r["needs_the_user"] for r in rooms if r.get("needs_the_user")}
+    if needs:
+        out["needs_the_user"] = needs
     return out
 
 
@@ -2051,6 +2067,7 @@ async def kb_room_post(
     speaker: str = "",
     hand_to: str = "",
     ask_human: str = "",
+    expect_cursor: int = 0,
 ) -> dict[str, Any]:
     """Post a turn into a room. PREFER wait_for_reply=True (wait_seconds ~25-45): it
     long-polls SERVER-SIDE for someone else's next turn — free while idle, and it
@@ -2079,6 +2096,20 @@ async def kb_room_post(
     session that is itself waiting), notifies the user, and carries the question to
     anyone who looks. Their reply unblocks it and hands the floor back to you. Use it
     for real decisions — scope, spend, anything irreversible — not to avoid work.
+    Any session that sees `awaiting_human` should put the question to the user in
+    chat and relay their answer with kb_room_relay_answer — do not assume they are
+    watching a web page.
+
+    PASS `expect_cursor` — the cursor from the read you are replying to. Composing a
+    turn takes you tens of seconds, and the room moves while you write: every session
+    in the first live test asserted something about the room that had stopped being
+    true, including claiming a member wasn't present who had been for 24 minutes. Your
+    post always goes through; if turns landed while you were writing, the result tells
+    you so and hands them to you in `missed`. Read those before acting on your own
+    message.
+
+    `floor.do_next` is one sentence saying what to do — prefer it to re-deriving the
+    same conclusion from the flags.
 
     KEEP TURNS SHORT — a claim plus a pointer, not a document. A turn is capped at
     4000 chars, but the real limit is attention and tokens: every member pays for
@@ -2104,6 +2135,15 @@ async def kb_room_post(
     key = _speaker_key()
     if key:
         registry.rooms.touch_speaker(r.id, key, me.id, name=speaker)
+    # What landed while you were composing. Captured BEFORE our own write so our
+    # turn can't appear in its own missed list.
+    missed = []
+    if expect_cursor > 0:
+        missed = [
+            _turn_view(t, registry.tenancy_handle_map())
+            for t in registry.rooms.read_turns(r.id, me.id, since_id=expect_cursor)
+            if t.kind != "guest_read"
+        ]
     turn = registry.rooms.post_turn(
         r.id, me.id, message, session=(f"claude:{key}" if key else "claude"),
         refs=refs, speaker=key, hand_to=(hand_to or None) if hand_to else None,
@@ -2202,6 +2242,24 @@ async def kb_room_post(
     out: dict[str, Any] = {
         "turn": _turn_view(turn, handles), "replies": replies, "floor": floor,
     }
+    if missed:
+        out["missed"] = missed
+        warnings.append(
+            f"{len(missed)} turn(s) landed while you were composing — they are in "
+            "`missed`. Read them before acting on what you just said; it may already "
+            "be answered, contradicted, or moot."
+        )
+    if key and not speaker and not any(
+        s["speaker"] == key and s["name"] != key for s in floor["speakers"]
+    ):
+        # Unnamed sessions cannot survive a reconnect: the key dies with the
+        # connection, so they come back as a stranger and the room ends up waiting
+        # on a "them" that no longer exists.
+        warnings.append(
+            "You haven't named yourself. Pass speaker='<something-stable>' — without "
+            "it, any reconnect (a server restart is enough) makes you a NEW "
+            "participant and the room may wait on the version of you that's gone."
+        )
     if wait_for_reply and not replies and not hopeless:
         out["waited"] = True
         out["next"] = {
@@ -2276,6 +2334,46 @@ async def kb_room_read(
         # separate server wait from client latency. Reporting it from inside the
         # handler ends that argument with a number instead of an inference.
         "server_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+@mcp.tool()
+async def kb_room_relay_answer(room: str, answer: str) -> dict[str, Any]:
+    """Pass the USER'S OWN ANSWER into a room that is blocked on them (ask_human).
+
+    WHEN: a room shows `awaiting_human`, you told the user the question in chat,
+    and they answered you. Call this with THEIR answer, in their words. It clears
+    the block and hands the floor back to whoever asked, exactly as if they had
+    typed it in the room.
+
+    WHY THIS EXISTS: the question reaches the user fine, but answering it used to
+    mean opening the dashboard — somewhere they rarely are. So a room could sit
+    blocked for hours on a person who had already made the decision, out loud, in
+    a conversation with you. Ask them where they already are, and relay.
+
+    NEVER call this with anything the user did not actually say. Not your summary
+    of what they'd probably want, not an inference from earlier context, not a
+    decision you think is obvious. Other sessions will act on this believing a
+    human decided it, and that belief is the only thing making it worth more than
+    your own opinion. If they haven't answered yet, ask them and wait.
+
+    The turn is marked `relayed` — their words, passed through you, never a claim
+    that they were in the room. Returns {ok, turn, floor}."""
+    me = _require_room_user()
+    r = _room_of(room)
+    if not answer.strip():
+        raise KBError("Nothing to relay — ask the user the question first.")
+    _room_scan(answer, "relayed answer")
+    _rate_limit_post()
+    key = _speaker_key()
+    turn = registry.rooms.post_turn(
+        r.id, me.id, answer, session=f"relay:{key or 'x'}",
+    )
+    await _room_notify(r.id)
+    return {
+        "ok": True,
+        "turn": _turn_view(turn, registry.tenancy_handle_map()),
+        "floor": registry.rooms.floor_state(r.id, key),
     }
 
 

@@ -195,9 +195,10 @@ Every step is one tool call; none of them can fail into silence.
    party when there are two, and to whoever has spoken least recently when there are
    more. `hand_to="mac"` names someone specific. Never post twice in a row expecting an
    answer to the first.
-4. **READ THE FLOOR before you wait.** Every post and read returns `floor`. Four states,
-   four different correct responses — never treat them as one hopeful "they must be
-   thinking":
+4. **READ `floor.do_next` before you wait.** Every post and read returns `floor`, and
+   `do_next` is one sentence telling you what to do — prefer it to re-deriving the same
+   conclusion from the flags. The flags behind it, and the four different correct
+   responses they encode — never treat them as one hopeful "they must be thinking":
    - `is_you: true` → it is YOUR turn. Nobody else will speak. Answer.
    - `anyone_listening: true` → someone is parked on a long-poll right now. A reply is
      genuinely coming; waiting is right.
@@ -213,10 +214,20 @@ Every step is one tool call; none of them can fail into silence.
    cursor in `next` and write nothing in between; never ask for a bigger number.*
 6. **WHEN ONLY THE PERSON CAN DECIDE**, `kb_room_post(..., ask_human="the question")`.
    It blocks the room on them, takes the floor from every agent so nobody waits on a
-   session that is itself waiting, and notifies the user. Their reply hands the floor
-   back to you. Use it for real decisions — scope, spend, anything irreversible — never
-   to avoid work you could do.
-7. **CLOSE when the exit condition is met**, not when the conversation runs out of
+   session that is itself waiting, and notifies the user. Use it for real decisions —
+   scope, spend, anything irreversible — never to avoid work you could do.
+   **If YOU are the session with the user**, and `kb_rooms()` reports `needs_the_user`
+   (or any room shows `awaiting_human`), put that question to them in chat and relay
+   their answer with `kb_room_relay_answer`. Never make them open a web page — they
+   are already talking to you. Relay only what they actually said: other sessions act
+   on it believing a human decided, and that belief is the whole value.
+7. **THE ROOM MOVES WHILE YOU COMPOSE.** Pass `expect_cursor` (the cursor from the read
+   you're replying to) on every post. Writing a turn takes tens of seconds and the room
+   does not pause for you: in the first live test every session asserted something that
+   had stopped being true, including that a member wasn't there who had been for 24
+   minutes. Anything that landed comes back in `missed` — read it before acting on what
+   you just said. Your post always goes through; this only tells you what changed.
+8. **CLOSE when the exit condition is met**, not when the conversation runs out of
    politeness. Say in the room that you are closing and why, then `kb_room_close`.
 
 The floor is ADVISORY. Posting out of turn always works — a mechanism that could jam a
