@@ -288,3 +288,21 @@ async def test_generic_path_words_do_not_score(store):
     out = await store.kb_realign(cwd="C:/Users/Admin/Documents/code/unmatched-thing")
     top = out["candidates"][0]["id"]
     assert top != "server", out["candidates"]
+
+
+@pytest.mark.asyncio
+async def test_a_rare_name_match_beats_two_common_org_words(store):
+    """Live finding: `.../alt.inc/formthefuture-v2` floated three unrelated 'Alt
+    Inc' projects above the one whose NAME was in the path, because raw hit
+    counting let two generic words outvote one distinctive match."""
+    common = "shared work at Alt Inc"
+    for pid in ("stellar-ux", "human-ai", "eod-update"):
+        await store.kb_write(f"projects/{pid}/context.md", _project(common), "seed")
+    await store.kb_write(
+        "projects/formthefuture-ux/context.md",
+        _project("Respondent experience for FormTheFuture"), "seed",
+    )
+    out = await store.kb_realign(cwd="/Users/hirenk/code/alt.inc/formthefuture-v2")
+    assert out["candidates"][0]["id"] == "formthefuture-ux", [
+        c["id"] for c in out["candidates"]
+    ]

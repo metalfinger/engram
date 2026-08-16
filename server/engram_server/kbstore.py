@@ -3637,15 +3637,33 @@ class KBStore:
         id, title, short description, folder, recency. Tags/visibility/status are
         noise that made an already-unhelpful payload expensive too."""
         wanted = cls._location_tokens(repo, cwd)
-
-        def score(p: dict[str, Any]) -> tuple[int, int, str]:
-            haystack = " ".join(
+        haystacks = {
+            str(p.get("id")): " ".join(
                 str(p.get(k) or "") for k in ("id", "title", "description", "folder")
             ).lower()
-            hits = sum(1 for tok in wanted if tok in haystack)
+            for p in projects
+        }
+        # RARE WORDS CARRY THE SIGNAL. A path like `.../alt.inc/formthefuture-v2`
+        # yields both 'alt' (in half the descriptions of an Alt Inc brain) and
+        # 'formthefuture' (in one project). Counting raw hits let two generic org
+        # words outrank the one distinctive match, which is backwards — so each
+        # token is weighted by how FEW projects contain it.
+        rarity = {
+            tok: 1.0 / max(1, sum(1 for h in haystacks.values() if tok in h))
+            for tok in wanted
+        }
+
+        def score(p: dict[str, Any]) -> tuple[float, int, str]:
+            hay = haystacks.get(str(p.get("id")), "")
+            pid = str(p.get("id") or "").lower()
+            relevance = 0.0
+            for tok in wanted:
+                if tok in hay:
+                    # A hit in the id itself is the strongest kind of match.
+                    relevance += rarity[tok] * (2.0 if tok in pid else 1.0)
             # No log yet == freshly created == a live candidate, not a dead one.
             never_logged = 0 if p.get("last_session") else 1
-            return (hits, never_logged, str(p.get("last_session") or ""))
+            return (relevance, never_logged, str(p.get("last_session") or ""))
 
         ranked = sorted(projects, key=score, reverse=True)[:limit]
         lean: list[dict[str, Any]] = []
