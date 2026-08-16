@@ -147,6 +147,32 @@ def test_speaking_ends_your_own_listen(rooms, room):
     assert rooms.floor_state(room.id, "sess-b")["anyone_listening"] is False
 
 
+# -- unread is a count, not id arithmetic -------------------------------------
+
+
+def test_unread_counts_turns_rather_than_subtracting_ids(rooms):
+    """Turn ids are one global sequence across every room. Subtracting them made a
+    brand-new room report 70 unread on a single system turn — and read as 0 wherever
+    you were caught up, which is why it survived. Found live via kb_rooms."""
+    busy = rooms.open_room(1, "busy", "somewhere else entirely")
+    for i in range(12):
+        rooms.post_turn(busy.id, 1, f"turn {i}", speaker="sess-x")
+    fresh = rooms.open_room(1, "fresh", "brand new room")
+    row = next(r for r in rooms.list_rooms_for(1) if r["name"] == "fresh")
+    assert row["unread"] == 1, "one system turn in, one unread out"
+
+
+def test_unread_falls_to_zero_once_read(rooms):
+    busy = rooms.open_room(1, "busy", "elsewhere")
+    for i in range(5):
+        rooms.post_turn(busy.id, 1, f"turn {i}", speaker="sess-x")
+    r = rooms.open_room(1, "quiet", "a room to catch up in")
+    rooms.post_turn(r.id, 1, "something to read", speaker="sess-y")
+    rooms.read_turns(r.id, 1)
+    row = next(x for x in rooms.list_rooms_for(1) if x["name"] == "quiet")
+    assert row["unread"] == 0
+
+
 # -- surviving a reconnect ----------------------------------------------------
 
 

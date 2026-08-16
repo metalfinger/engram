@@ -823,7 +823,17 @@ class RoomStore:
                     (room.id, user_id),
                 ).fetchone()
                 read_floor = read_row["last_turn_id"] if read_row is not None else 0
-                unread = max(0, last_id - read_floor)
+                # COUNT the turns past your cursor — do not subtract ids. Turn ids
+                # are a single global sequence across every room, so `last_id -
+                # read_floor` is not a count of anything: a brand-new room reported
+                # 70 unread on one system turn, because its only turn happened to be
+                # the 70th written server-wide. It read as 0 in rooms you were caught
+                # up in (there the two happen to be equal) which is exactly why it
+                # survived this long.
+                unread = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM room_turns WHERE room_id = ? AND id > ?",
+                    (room.id, read_floor),
+                ).fetchone()["n"]
                 messages_used = self._conn.execute(
                     "SELECT COUNT(*) AS n FROM room_turns WHERE room_id = ? AND kind = 'message'",
                     (room.id,),
