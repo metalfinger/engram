@@ -3700,17 +3700,47 @@ class KBStore:
             for tok in wanted
         }
 
-        def score(p: dict[str, Any]) -> tuple[float, int, str]:
+        # A FOLDER IS A FAMILY. If one project in a folder looks relevant, its
+        # siblings — and crucially the folder's hub — are live candidates too:
+        # the hub's map routes onward, and a suite member is often reached from
+        # it. Found live: seven `vibechk-suite` siblings were offered and the hub
+        # `vibechk` (the correct answer) was missing entirely, which is the one
+        # failure mode that actually hurts. Propagating a fraction of the best
+        # in-folder score beats trying to IDENTIFY the hub by name — the id
+        # rarely equals the folder (`vibechk` lives in `vibechk-suite`).
+        def raw_relevance(p: dict[str, Any]) -> float:
             hay = haystacks.get(str(p.get("id")), "")
             pid = str(p.get("id") or "").lower()
-            relevance = 0.0
+            total = 0.0
             for tok in wanted:
                 if tok in hay:
                     # A hit in the id itself is the strongest kind of match.
-                    relevance += rarity[tok] * (2.0 if tok in pid else 1.0)
-            # No log yet == freshly created == a live candidate, not a dead one.
-            never_logged = 0 if p.get("last_session") else 1
-            return (relevance, never_logged, str(p.get("last_session") or ""))
+                    total += rarity[tok] * (2.0 if tok in pid else 1.0)
+            return total
+
+        base = {str(p.get("id")): raw_relevance(p) for p in projects}
+        folder_best: dict[str, float] = {}
+        for p in projects:
+            folder = str(p.get("folder") or "")
+            if folder:
+                pid = str(p.get("id"))
+                folder_best[folder] = max(folder_best.get(folder, 0.0), base.get(pid, 0.0))
+
+        def score(p: dict[str, Any]) -> tuple[float, str]:
+            pid = str(p.get("id") or "")
+            folder = str(p.get("folder") or "")
+            relevance = base.get(pid, 0.0)
+            if folder:
+                # Half the family's best score — enough to surface the whole
+                # folder above unrelated projects, never enough to outrank the
+                # sibling that actually matched.
+                relevance = max(relevance, folder_best.get(folder, 0.0) * 0.5)
+            # Recency, with "never logged" treated as neither best nor worst: a
+            # brand-new project is a live candidate (the original bug buried it
+            # dead-last), but it must not outrank something worked on TODAY —
+            # which is what a naive inversion did, pushing an active hub off the
+            # list entirely. The empty-string sentinel sorts below real dates.
+            return (relevance, str(p.get("last_session") or ""))
 
         ranked = sorted(projects, key=score, reverse=True)[:limit]
         lean: list[dict[str, Any]] = []

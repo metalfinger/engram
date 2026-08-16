@@ -456,3 +456,37 @@ async def test_an_already_pinned_repo_is_not_nagged(store):
     out = await store.kb_realign(pin="engram", cwd="C:/code/engram")
     assert out["resolved_by"].startswith("pin")
     assert out["pin_nudge"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_recently_worked_project_outranks_a_never_logged_one(store):
+    """Regression, found live: the no-log tiebreak was INVERTED, so brand-new
+    projects ranked above ones worked on today and pushed an active hub off the
+    shortlist entirely."""
+    await _seed(store, "worked-today", "never-touched")
+    await store.kb_append_log("worked-today", "did the thing")
+    out = await store.kb_realign(cwd="D:/no/relevance/here")
+    ids = [c["id"] for c in out["candidates"]]
+    # Recent work makes the shortlist; a never-logged project does not displace it.
+    assert "worked-today" in ids, ids
+    assert ids.index("worked-today") < len(ids)
+    if "never-touched" in ids:
+        assert ids.index("worked-today") < ids.index("never-touched"), ids
+
+
+@pytest.mark.asyncio
+async def test_a_folder_hub_is_offered_alongside_its_siblings(store):
+    """The failure mode that matters: seven vibechk-suite siblings were offered
+    and the hub itself — the correct answer — was missing. A hub's map routes
+    onward, so if a sibling looks relevant the hub is at least as good."""
+    await _seed(store, "vibechk", "vibechk-sprite-pipeline", "formthefuture-ux")
+    for pid in ("vibechk", "vibechk-sprite-pipeline", "formthefuture-ux"):
+        await store.kb_move_project(pid, "vibechk-suite")
+    out = await store.kb_realign(
+        repo="https://github.com/Alt-AI-Inc/formthefuture-v2.git",
+        cwd="/Users/hirenk/Documents/code/alt.inc/formthefuture-v2",
+    )
+    ids = [c["id"] for c in out["candidates"]]
+    # the sibling that matched AND the rest of its family, hub included
+    assert "formthefuture-ux" in ids, ids
+    assert "vibechk" in ids, ids
