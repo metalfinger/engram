@@ -360,3 +360,35 @@ def test_system_turns_do_not_move_the_floor(rooms, room):
     before = rooms.floor_state(room.id, "sess-b")["holder"]
     rooms.post_turn(room.id, 1, "a system note", speaker="sess-a", kind="system")
     assert rooms.floor_state(room.id, "sess-b")["holder"] == before
+
+
+# -- the rest ladder (PARK pattern: stop polling, hand back to the user) ------
+
+
+def test_empty_waits_accumulate_and_then_say_stop(rooms, room):
+    """Straight from the PARK playbook: after ~4 fruitless polls the agent should
+    rest rather than loop. Without a count it cannot tell its first empty wait
+    from its twentieth, and every one costs the user tokens for silence."""
+    for _ in range(RoomStore.REST_AFTER_EMPTY_WAITS):
+        rooms.note_empty_wait(room.id, "sess-a")
+    state = rooms.floor_state(room.id, "sess-a")
+    assert state["empty_waits"] == RoomStore.REST_AFTER_EMPTY_WAITS
+    assert "STOP polling" in state["do_next"]
+
+
+def test_a_delivered_turn_ends_the_drought(rooms, room):
+    for _ in range(3):
+        rooms.note_empty_wait(room.id, "sess-a")
+    rooms.clear_empty_waits(room.id, "sess-a")
+    assert rooms.floor_state(room.id, "sess-a")["empty_waits"] == 0
+
+
+def test_holding_the_floor_beats_the_rest_advice(rooms, room):
+    """If it IS your turn, 'stop waiting' is the wrong instruction — you're not
+    waiting, you're the one everybody else is waiting for."""
+    for _ in range(10):
+        rooms.note_empty_wait(room.id, "sess-b")
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")
+    state = rooms.floor_state(room.id, "sess-b")
+    assert state["is_you"] is True
+    assert "Your turn" in state["do_next"]

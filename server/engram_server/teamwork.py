@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS room_speakers (
     last_seen TEXT NOT NULL,
     listening_until TEXT NOT NULL DEFAULT '',
     last_spoke TEXT NOT NULL DEFAULT '',
+    empty_waits INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_id, speaker)
 );
 CREATE TABLE IF NOT EXISTS room_grants (
@@ -226,6 +227,10 @@ class RoomStore:
             if scols and "last_spoke" not in scols:
                 self._conn.execute(
                     "ALTER TABLE room_speakers ADD COLUMN last_spoke TEXT NOT NULL DEFAULT ''"
+                )
+            if scols and "empty_waits" not in scols:
+                self._conn.execute(
+                    "ALTER TABLE room_speakers ADD COLUMN empty_waits INTEGER NOT NULL DEFAULT 0"
                 )
             self._conn.commit()
 
@@ -450,6 +455,41 @@ class RoomStore:
         if newest_other and newest_other > str(mine["last_spoke"]):
             self._set_floor_locked(room_id, speaker)
 
+    # After this many polls in a row that returned nothing, stop waiting and hand
+    # the turn back to the user. Straight from the PARK pattern playbook, where a
+    # model rests after ~4 timeouts rather than looping forever. Without a count,
+    # an agent has no way to tell its first empty wait from its twentieth, and
+    # every one of them costs the user tokens for silence.
+    REST_AFTER_EMPTY_WAITS = 4
+
+    def note_empty_wait(self, room_id: int, speaker: str) -> int:
+        """Record a long-poll that returned nothing; returns the running count."""
+        if not speaker:
+            return 0
+        with self._lock:
+            self._conn.execute(
+                "UPDATE room_speakers SET empty_waits = empty_waits + 1 "
+                "WHERE room_id = ? AND speaker = ?",
+                (room_id, speaker),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT empty_waits FROM room_speakers WHERE room_id = ? AND speaker = ?",
+                (room_id, speaker),
+            ).fetchone()
+        return int(row["empty_waits"]) if row else 0
+
+    def clear_empty_waits(self, room_id: int, speaker: str) -> None:
+        """Something arrived, or you spoke — the drought is over."""
+        if not speaker:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE room_speakers SET empty_waits = 0 WHERE room_id = ? AND speaker = ?",
+                (room_id, speaker),
+            )
+            self._conn.commit()
+
     def stop_listening(self, room_id: int, speaker: str) -> None:
         """End a listen the moment the poll is satisfied.
 
@@ -484,6 +524,7 @@ class RoomStore:
                 "user_id": r["user_id"],
                 "last_seen": last_seen,
                 "last_spoke": (self._col(r, "last_spoke") or ""),
+                "empty_waits": int(self._col(r, "empty_waits") or 0),
                 "live": _is_fresh(last_seen),
                 # A listening window that has expired is not listening. This is
                 # deliberately a timestamp rather than a boolean flag: a session
@@ -626,7 +667,15 @@ class RoomStore:
         # reason its way to an action; the reasoning is identical every time, so
         # the server should just do it. The flags stay for anyone who wants them.
         me_holds = bool(holder) and holder == me
-        if room.awaiting_human:
+        mine = next((s for s in speakers if s["speaker"] == me), None)
+        waited = int(mine["empty_waits"]) if mine else 0
+        if waited >= self.REST_AFTER_EMPTY_WAITS and not me_holds:
+            advice = (
+                f"You've waited {waited} times with nothing arriving. STOP polling — "
+                "tell the user the other side hasn't answered and end your turn. Your "
+                "turn stays in the room; check once when they next speak to you."
+            )
+        elif room.awaiting_human:
             advice = (
                 "Blocked on the PERSON, not on any agent. Put this question to the "
                 f"user in chat and relay their answer with kb_room_relay_answer: "
@@ -664,6 +713,7 @@ class RoomStore:
             "alone": not others,          # nobody else was ever here
             "stalled": bool(others) and not live_others,   # they were, and left
             "awaiting_human": room.awaiting_human,          # blocked on a person
+            "empty_waits": waited,   # polls in a row that returned nothing
             "anyone_listening": any(s["listening"] for s in others),
             "since": room.floor_since,
         }

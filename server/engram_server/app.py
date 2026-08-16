@@ -710,6 +710,7 @@ async def kb_thread_post(
         me = _require_room_user()
         if key:
             registry.rooms.touch_speaker(fid, key, me.id, name=sender)
+            registry.rooms.clear_empty_waits(fid, key)
             registry.rooms.record_speech(
                 fid, key, hand_to=(hand_to or None) if hand_to else None,
             )
@@ -773,7 +774,13 @@ async def kb_thread_read(
         )
     out = await (await current_store()).kb_thread_read(thread, since, wait_seconds)
     if fid is not None:
-        if out.get("turns") and key:
+        if key and wait_seconds > 0:
+            if out.get("turns"):
+                registry.rooms.stop_listening(fid, key)
+                registry.rooms.clear_empty_waits(fid, key)
+            else:
+                registry.rooms.note_empty_wait(fid, key)
+        elif out.get("turns") and key:
             registry.rooms.stop_listening(fid, key)
         out["floor"] = registry.rooms.floor_state(fid, key)
     # The server's own elapsed time. Absent here, any timing report a session makes
@@ -2265,6 +2272,7 @@ async def kb_room_post(
     key = _speaker_key()
     if key:
         registry.rooms.touch_speaker(r.id, key, me.id, name=speaker)
+        registry.rooms.clear_empty_waits(r.id, key)
     # What landed while you were composing. Captured BEFORE our own write so our
     # turn can't appear in its own missed list.
     missed = []
@@ -2454,9 +2462,13 @@ async def kb_room_read(
     if not turns and wait_seconds > 0 and r.status == "open":
         await _room_wait(r.id, _wait_window(wait_seconds))
         turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
-        if turns and key:
-            # Woken early: we're about to act on what we read, not keep waiting.
-            registry.rooms.stop_listening(r.id, key)
+        if key:
+            if turns:
+                # Woken early: about to act on what we read, not keep waiting.
+                registry.rooms.stop_listening(r.id, key)
+                registry.rooms.clear_empty_waits(r.id, key)
+            else:
+                registry.rooms.note_empty_wait(r.id, key)
     handles = registry.tenancy_handle_map()
     return {
         "room": _room_view(r),
