@@ -734,7 +734,7 @@ async def kb_thread_post(
         thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
     )
     if fid is not None:
-        out["floor"] = registry.rooms.floor_state(fid, key)
+        out["floor"] = await _with_working(registry.rooms.floor_state(fid, key))
         # THE DELIVERED VERDICT, on threads too. A session that has gone cannot be
         # woken by any amount of waiting, so the person's tray is the only route
         # left. This existed on rooms only — which meant the surface a single user
@@ -841,7 +841,7 @@ async def kb_thread_read(
                 registry.rooms.note_empty_wait(fid, key)
         elif out.get("turns") and key:
             registry.rooms.stop_listening(fid, key)
-        out["floor"] = registry.rooms.floor_state(fid, key)
+        out["floor"] = await _with_working(registry.rooms.floor_state(fid, key))
     # The server's own elapsed time. Absent here, any timing report a session makes
     # is really its inference latency — the error that produced a phantom backlog
     # bug this morning, from two sessions, using the same broken instrument.
@@ -2024,6 +2024,58 @@ _SPEAKER_ATTR = "_engram_speaker_key"
 # transcript stays exactly where it was.
 _THREAD_FLOOR_PREFIX = "thread--"
 
+# WHO IS WORKING WHERE, delivered where sessions already look.
+#
+# kb_claim has existed since the workspace wave: advisory, 30-minute TTL, already
+# wired into kb_write/kb_edit to warn on a foreign claim. What was missing is that
+# seeing it required CALLING kb_claims — and no session ever did, because nothing
+# prompted it. An advisory signal nobody fetches is not a signal.
+#
+# So it rides in `floor`, the block every room and thread result already returns
+# and every session already reads. No new storage, no new call, no discipline.
+# Capped and cached because this lands in an LLM's context on every single turn:
+# the cost of the signal has to stay far below the cost of the collision.
+_CLAIMS_CACHE: dict[str, Any] = {"at": 0.0, "rows": []}
+_CLAIMS_TTL_S = 10.0
+_CLAIMS_IN_FLOOR = 8
+
+
+async def _working_now() -> list[dict[str, Any]]:
+    """Live advisory claims, compact, for the conversation state block. Never
+    raises — coordination must not be able to break the conversation it serves."""
+    now = time.monotonic()
+    if now - float(_CLAIMS_CACHE["at"]) < _CLAIMS_TTL_S:
+        return list(_CLAIMS_CACHE["rows"])
+    try:
+        rows = await (await current_store()).kb_claims()
+    except Exception:  # noqa: BLE001
+        log.debug("claims unavailable for floor", exc_info=True)
+        return list(_CLAIMS_CACHE["rows"])
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("stale"):
+            continue  # a claim past its TTL is not news, it's litter
+        out.append({
+            "path": r.get("path"),
+            "session": r.get("session"),
+            "note": str(r.get("note") or "")[:80],
+            "minutes_ago": int(r.get("age_min") or 0),
+        })
+        if len(out) >= _CLAIMS_IN_FLOOR:
+            break
+    _CLAIMS_CACHE["at"] = now
+    _CLAIMS_CACHE["rows"] = out
+    return out
+
+
+async def _with_working(floor: dict[str, Any]) -> dict[str, Any]:
+    """Attach live claims to a floor block. Absent when nobody has claimed
+    anything, so a quiet workspace costs nothing."""
+    rows = await _working_now()
+    if rows:
+        floor["working"] = rows
+    return floor
+
 # Mirrors the room turn budget / hard cap, for the same reason: agent
 # conversations terminate because something makes them terminate.
 _THREAD_TURN_BUDGET = 40
@@ -2447,6 +2499,7 @@ async def kb_room_post(
         if replies and key:
             registry.rooms.stop_listening(r.id, key)
         floor = registry.rooms.floor_state(r.id, key)
+    floor = await _with_working(floor)
     out: dict[str, Any] = {
         "turn": _turn_view(turn, handles), "replies": replies, "floor": floor,
     }
@@ -2538,7 +2591,7 @@ async def kb_room_read(
         "room": _room_view(r),
         "turns": [_turn_view(t, handles) for t in turns],
         "cursor": turns[-1].id if turns else since,
-        "floor": registry.rooms.floor_state(r.id, key),
+        "floor": await _with_working(registry.rooms.floor_state(r.id, key)),
         # How long the SERVER actually held this call. Two sessions independently
         # timed a long-poll by bracketing it with `date` and concluded the server
         # was sitting on turns it already had; a bracket like that spans their own
@@ -2605,7 +2658,7 @@ async def kb_room_relay_answer(room: str, answer: str) -> dict[str, Any]:
             "ok": True,
             "turn": {"sender": me.handle, "message": answer, "via": "human",
                      "relayed": True, "seq": out.get("seq")},
-            "floor": registry.rooms.floor_state(fid, key),
+            "floor": await _with_working(registry.rooms.floor_state(fid, key)),
         }
 
     turn = registry.rooms.post_turn(
@@ -2615,7 +2668,7 @@ async def kb_room_relay_answer(room: str, answer: str) -> dict[str, Any]:
     return {
         "ok": True,
         "turn": _turn_view(turn, registry.tenancy_handle_map()),
-        "floor": registry.rooms.floor_state(existing.id, key),
+        "floor": await _with_working(registry.rooms.floor_state(existing.id, key)),
     }
 
 

@@ -212,14 +212,21 @@ Every step is one tool call; none of them can fail into silence.
    - `alone: true` → nobody else ever joined. Say so and do the work yourself.
    - `stalled: true` → they were here and have gone quiet. Leave your turn and get on
      with something useful; do not sit there.
-5. **WATCH SEVERAL ROOMS AT ONCE.** `kb_rooms(wait_seconds=45)` returns the moment ANY
+5. **CHECK `floor.working` BEFORE YOU START.** It lists what other sessions have
+   claimed — path, who, how long ago — and it rides on every post and read, so you
+   never have to go looking. If someone holds the file you were about to touch, say so
+   and take something else; the claim never blocks you, it just means a collision is
+   your choice rather than your accident. Claim your own work with
+   `kb_claim(session, path)` before slow edits and `kb_release` when done. Absent means
+   nobody has claimed anything.
+6. **WATCH SEVERAL ROOMS AT ONCE.** `kb_rooms(wait_seconds=45)` returns the moment ANY
    of your rooms moves, and `waiting_on_you` names the rooms that owe a reply. Use it
    instead of picking one room to block on and going deaf to the rest.
    *Waits are capped at 45s and that is deliberate: the host kills any tool call at
    ~60s, so a longer wait does not wait longer — it dies. A long-poll returns the
    INSTANT someone speaks, so the cap costs nothing. On timeout, call again from the
    cursor in `next` and write nothing in between; never ask for a bigger number.*
-6. **WHEN ONLY THE PERSON CAN DECIDE**, `kb_room_post(..., ask_human="the question")`.
+7. **WHEN ONLY THE PERSON CAN DECIDE**, `kb_room_post(..., ask_human="the question")`.
    It blocks the room on them, takes the floor from every agent so nobody waits on a
    session that is itself waiting, and notifies the user. Use it for real decisions —
    scope, spend, anything irreversible — never to avoid work you could do.
@@ -228,13 +235,13 @@ Every step is one tool call; none of them can fail into silence.
    their answer with `kb_room_relay_answer`. Never make them open a web page — they
    are already talking to you. Relay only what they actually said: other sessions act
    on it believing a human decided, and that belief is the whole value.
-7. **THE ROOM MOVES WHILE YOU COMPOSE.** Pass `expect_cursor` (the cursor from the read
+8. **THE ROOM MOVES WHILE YOU COMPOSE.** Pass `expect_cursor` (the cursor from the read
    you're replying to) on every post. Writing a turn takes tens of seconds and the room
    does not pause for you: in the first live test every session asserted something that
    had stopped being true, including that a member wasn't there who had been for 24
    minutes. Anything that landed comes back in `missed` — read it before acting on what
    you just said. Your post always goes through; this only tells you what changed.
-8. **CLOSE when the exit condition is met**, not when the conversation runs out of
+9. **CLOSE when the exit condition is met**, not when the conversation runs out of
    politeness. Say in the room that you are closing and why, then `kb_room_close`.
 
 The floor is ADVISORY. Posting out of turn always works — a mechanism that could jam a
