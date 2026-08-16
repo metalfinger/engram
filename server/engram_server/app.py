@@ -16,6 +16,7 @@ import posixpath
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -2160,6 +2161,47 @@ async def _working_now() -> list[dict[str, Any]]:
     return out
 
 
+_HANDOFF_CACHE: dict[str, Any] = {"at": 0.0, "rows": []}
+_HANDOFF_TTL_S = 30.0
+_HANDOFF_FRESH_MIN = 120
+
+
+async def _recent_handoffs() -> list[dict[str, Any]]:
+    """Handoffs from the last couple of hours, compact. Never raises."""
+    now = time.monotonic()
+    if now - float(_HANDOFF_CACHE["at"]) < _HANDOFF_TTL_S:
+        return list(_HANDOFF_CACHE["rows"])
+    try:
+        rows = await (await current_store()).kb_recent_handoffs(limit=5)
+    except Exception:  # noqa: BLE001
+        log.debug("handoffs unavailable for floor", exc_info=True)
+        return list(_HANDOFF_CACHE["rows"])
+    out: list[dict[str, Any]] = []
+    for h in rows:
+        created = str(h.get("created") or "")
+        if created and not _is_fresh_iso(created, _HANDOFF_FRESH_MIN):
+            continue
+        out.append({
+            "from": h.get("from"),
+            "summary": str(h.get("summary") or "")[:160],
+            "path": h.get("path"),
+            "created": created,
+        })
+        if len(out) >= 2:
+            break
+    _HANDOFF_CACHE["at"] = now
+    _HANDOFF_CACHE["rows"] = out
+    return out
+
+
+def _is_fresh_iso(stamp: str, minutes: int) -> bool:
+    try:
+        seen = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    return (datetime.now(timezone.utc) - seen) <= timedelta(minutes=minutes)
+
+
 async def _with_working(floor: dict[str, Any]) -> dict[str, Any]:
     """Attach who is working where: declared claims AND derived activity.
 
@@ -2191,6 +2233,21 @@ async def _with_working(floor: dict[str, Any]) -> dict[str, Any]:
         log.debug("activity unavailable for floor", exc_info=True)
     if rows:
         floor["working"] = rows
+
+    # HANDOFFS, but only when they change what you would do. Earlier today a
+    # session was told "the holder has gone — take the floor" and had no idea
+    # what that holder had been doing. A handoff is exactly that missing context.
+    # Attached when the conversation is stalled (someone left, so their notes are
+    # the point) — not on every turn, where it would be wallpaper.
+    if floor.get("stalled"):
+        notes = await _recent_handoffs()
+        if notes:
+            floor["handoffs"] = notes
+            floor["do_next"] = (
+                str(floor.get("do_next") or "")
+                + f" A recent handoff from {notes[0]['from']} may say what they "
+                "were doing — kb_read its path before you pick the work up."
+            )
     return floor
 
 # Mirrors the room turn budget / hard cap, for the same reason: agent

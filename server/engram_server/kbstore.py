@@ -2751,6 +2751,14 @@ class KBStore:
         out.sort(key=lambda h: str(h.get("created") or ""), reverse=True)
         return out[:limit] if (limit is not None and limit >= 0) else out
 
+    async def kb_recent_handoffs(self, limit: int = 3) -> list[dict[str, Any]]:
+        """Recent handoffs, newest first, WITHOUT a git refresh.
+
+        kb_workspace refreshes first, which is right for a deliberate snapshot and
+        far too heavy for something read on every conversation turn. Handoffs are
+        written by this same server, so the working tree is already current."""
+        return await to_thread.run_sync(lambda: self._handoffs_sync(limit=limit))
+
     async def kb_workspace(self) -> dict[str, Any]:
         """One-shot snapshot of the whole workspace: {roster, rooms, recent_handoffs}. Single
         refresh, then reads presence (active 15 min), open threads, and the last ~5 handoffs.
