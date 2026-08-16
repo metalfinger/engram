@@ -15,6 +15,7 @@ import logging
 import posixpath
 import sys
 import time
+import uuid
 from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -1806,6 +1807,7 @@ async def kb_asks() -> dict[str, Any]:
 
 from engram_server.teamwork import room_notify as _room_notify  # noqa: E402
 from engram_server.teamwork import room_wait as _room_wait  # noqa: E402
+from engram_server.teamwork import room_wait_any as _wait_any_room  # noqa: E402
 
 
 def _require_room_user():
@@ -1847,6 +1849,50 @@ def _room_scan(text: str, what: str) -> None:
         )
 
 
+_SPEAKER_ATTR = "_engram_speaker_key"
+
+# The host hard-kills any tools/call at ~60s (measured on claude.ai during the
+# MCP-Apps work — see the PARK pattern playbook in the brain). A long-poll that
+# outlives the call does not "wait longer", it DIES, and the caller gets a
+# transport error after its turn has already posted. So the ceiling sits safely
+# inside that, and a timeout is answered with "call again from this cursor"
+# rather than a longer wait. The dashboard's browser long-poll is not subject to
+# this and keeps the bus-level clamp.
+_MAX_MCP_WAIT_S = 45
+
+
+def _wait_window(seconds: int) -> int:
+    """Clamp a caller's requested wait into a window that survives the host."""
+    return max(1, min(_MAX_MCP_WAIT_S, seconds))
+
+
+def _speaker_key() -> str:
+    """A stable identifier for THIS MCP session, for floor control.
+
+    Two Claude sessions belonging to one user are the same `user_id` and the same
+    handle, so nothing in the room could previously tell them apart — which is why
+    wait_for_reply could never see the other one. The MCP session object lives for
+    the length of the connection, so we stamp a key onto it once and reuse it. Not
+    `id()`: CPython recycles addresses, and a recycled key would silently merge two
+    different sessions. Failure-soft — if there is no request context (tests, the
+    scheduler), returns '' and every caller degrades to the old open-floor
+    behaviour rather than erroring."""
+    try:
+        session = mcp.get_context().session
+    except Exception:  # noqa: BLE001 — no active request context
+        return ""
+    if session is None:
+        return ""
+    try:
+        key = getattr(session, _SPEAKER_ATTR, "")
+        if not key:
+            key = uuid.uuid4().hex[:8]
+            setattr(session, _SPEAKER_ATTR, key)
+        return str(key)
+    except Exception:  # noqa: BLE001 — never break a tool call over identity
+        return ""
+
+
 def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
     handles = registry.tenancy_handle_map()
     members = registry.rooms.members(room.id)
@@ -1866,12 +1912,18 @@ def _room_view(room, user_id: int | None = None) -> dict[str, Any]:
 
 def _turn_view(t, handles: dict[int, str]) -> dict[str, Any]:  # noqa: D401
     sess = t.session or ""
+    is_claude = sess == "claude" or sess.startswith("claude:")
     via = ("human" if (sess in ("web", "app") or sess.startswith("dashboard:"))
-           else ("claude" if sess == "claude" else ""))
+           else ("claude" if is_claude else ""))
     out = {"id": t.id, "author": handles.get(t.user_id, "?"), "kind": t.kind,
            "body": t.body, "created": t.created}
     if via:
         out["via"] = via  # who actually wrote it: the person, or their Claude
+    if sess.startswith("claude:"):
+        # WHICH Claude. Two sessions of one user post under the same handle, so
+        # without this a transcript of a two-session room reads as one voice
+        # talking to itself — which is exactly how it looked before floor control.
+        out["speaker"] = sess.split(":", 1)[1]
     refs = list(getattr(t, "refs", ()) or ())
     if refs:
         # Attached concepts — read them with kb_read (your own) or kb_room_fetch
@@ -1934,23 +1986,52 @@ async def kb_room_open(
 
 
 @mcp.tool()
-async def kb_rooms(include_closed: bool = False) -> dict[str, Any]:
+async def kb_rooms(include_closed: bool = False, wait_seconds: int = 0) -> dict[str, Any]:
     """List the rooms you are in — live first — with unread counts and budget state.
     Call when the user asks what's happening, whether anyone needs them, or to find a
-    room by name. Returns {rooms: [{name, goal, status, members, unread, messages_used,
-    turn_budget, last_turn}]}."""
+    room by name. `your_turn: true` means that room is WAITING ON YOU — somebody
+    handed you the floor and is not going to speak again until you do; deal with those
+    first.
+
+    MONITORING SEVERAL ROOMS AT ONCE: pass wait_seconds (~25-45) and this returns the
+    moment ANY of your rooms sees a turn, instead of you picking one room to block on
+    and going deaf to the rest. That is the right way to watch more than one
+    conversation — never poll in a loop. Capped at 45s (the host kills longer calls);
+    to keep waiting, call again rather than asking for a bigger number.
+
+    Returns {rooms: [{name, goal, status, members, unread, messages_used, turn_budget,
+    last_turn, your_turn}], waiting_on_you, woke_on}."""
     me = _require_room_user()
     handles = registry.tenancy_handle_map()
+    key = _speaker_key()
+    woke_on = ""
+    if wait_seconds > 0:
+        live = registry.rooms.list_rooms_for(me.id, include_closed=False)
+        # Only park if there is genuinely nothing new. Waiting on top of unread
+        # turns is how a session misses the message it was called to read.
+        if live and not any(row["unread"] for row in live):
+            names = {row["id"]: row["name"] for row in live}
+            woke = await _wait_any_room(list(names), _wait_window(wait_seconds))
+            woke_on = names.get(woke, "") if woke else ""
     rooms = []
     for row in registry.rooms.list_rooms_for(me.id, include_closed=include_closed):
-        rooms.append({
+        entry = {
             "name": row["name"], "goal": row["goal"], "status": row["status"],
             "members": [handles.get(uid, "?") for uid in row["member_ids"]],
             "unread": row["unread"], "messages_used": row.get("messages_used", 0),
             "turn_budget": row["turn_budget"], "hard_cap": row["hard_cap"],
             "last_turn": row.get("last_turn"),
-        })
-    return {"rooms": rooms}
+        }
+        if key and row["status"] == "open":
+            entry["your_turn"] = registry.rooms.floor_state(row["id"], key)["is_you"]
+        rooms.append(entry)
+    out = {
+        "rooms": rooms,
+        "waiting_on_you": [r["name"] for r in rooms if r.get("your_turn")],
+    }
+    if woke_on:
+        out["woke_on"] = woke_on
+    return out
 
 
 @mcp.tool()
@@ -1960,10 +2041,37 @@ async def kb_room_post(
     refs: list[str] | None = None,
     wait_for_reply: bool = False,
     wait_seconds: int = 25,
+    speaker: str = "",
+    hand_to: str = "",
+    ask_human: str = "",
 ) -> dict[str, Any]:
-    """Post a turn into a room. PREFER wait_for_reply=True (wait_seconds up to 120):
-    it long-polls SERVER-SIDE for someone else's next turn — free while idle — instead
-    of you polling. Never poll kb_room_read in a tight loop.
+    """Post a turn into a room. PREFER wait_for_reply=True (wait_seconds ~25-45): it
+    long-polls SERVER-SIDE for someone else's next turn — free while idle, and it
+    returns the INSTANT they speak, not after the timeout. Never poll in a tight loop.
+
+    Waits are capped at 45s because the host kills any tool call around 60s: asking for
+    longer doesn't wait longer, it dies. If you time out and still want to wait, call
+    again — writing nothing in between — rather than asking for a bigger number.
+
+    TAKING TURNS. Posting hands the floor to the other party, and the result tells you
+    the state of the conversation in `floor`:
+      - `floor.alone: true` — NOBODY else has spoken in this room. Do not wait for a
+        reply that cannot come; say so, or do the work yourself.
+      - `floor.anyone_listening: true` — someone is long-polling right now, so a reply
+        is actually coming and waiting is the right move.
+      - `floor.is_you: true` on a read means it is YOUR turn to speak; nobody else will.
+      - `floor.stalled: true` — the others were here and have gone quiet. Not the
+        same as `alone`, and not a reason to keep waiting.
+    Pass `speaker` once to name yourself ("mac", "windows-engram") — it labels you in
+    the transcript, which otherwise cannot tell two of your own sessions apart. With
+    three or more the floor rotates to whoever has spoken least recently; use
+    `hand_to` to name someone specific instead.
+
+    WHEN ONLY THE PERSON CAN DECIDE, pass `ask_human` with the question. It blocks the
+    room on them, takes the floor away from every agent (so nobody sits waiting on a
+    session that is itself waiting), notifies the user, and carries the question to
+    anyone who looks. Their reply unblocks it and hands the floor back to you. Use it
+    for real decisions — scope, spend, anything irreversible — not to avoid work.
 
     KEEP TURNS SHORT — a claim plus a pointer, not a document. A turn is capped at
     4000 chars, but the real limit is attention and tokens: every member pays for
@@ -1979,13 +2087,29 @@ async def kb_room_post(
     budget (extend with kb_room_extend only if genuinely converging) and absolutely
     refused at the hard cap.
 
-    Returns {turn, replies: [...]} — replies filled when wait_for_reply caught turns.
+    Returns {turn, replies: [...], floor: {...}} — replies filled when wait_for_reply
+    caught turns.
     """
     me = _require_room_user()
     r = _room_of(room)
     _room_scan(message, "room message")
     _rate_limit_post()
-    turn = registry.rooms.post_turn(r.id, me.id, message, session="claude", refs=refs)
+    key = _speaker_key()
+    if key:
+        registry.rooms.touch_speaker(r.id, key, me.id, name=speaker)
+    turn = registry.rooms.post_turn(
+        r.id, me.id, message, session=(f"claude:{key}" if key else "claude"),
+        refs=refs, speaker=key, hand_to=(hand_to or None) if hand_to else None,
+    )
+    if ask_human.strip():
+        registry.rooms.ask_human(r.id, ask_human, asker=key)
+        # The whole point is that the person finds out. A block nobody is told
+        # about is just a quieter version of everyone waiting.
+        _push_notification(
+            me.id, "room_question",
+            f"Room '{r.name}' needs you: {ask_human.strip()[:160]}",
+            ref=r.name,
+        )
     await _room_notify(r.id)
     handles = registry.tenancy_handle_map()
     # The soft limit is where behaviour actually changes: a long turn still
@@ -2001,15 +2125,78 @@ async def kb_room_post(
             "concept and post a one-line summary with its path in `refs` — versioned, "
             "searchable, re-readable, and cheap to skip."
         )
+    floor = registry.rooms.floor_state(r.id, key)
+    # The single most expensive failure in a room is waiting for a reply that
+    # cannot arrive. Say so BEFORE the caller decides to wait, and say which of
+    # the three reasons it is — they need different responses from the agent.
+    hopeless = ""
+    if floor["alone"]:
+        hopeless = (
+            "Nobody else has spoken in this room, so there is no one to reply. Don't "
+            "wait — carry on alone and post what you find, or tell the user the other "
+            "session never joined."
+        )
+    elif floor["stalled"]:
+        hopeless = (
+            "The others were here but have gone quiet. Don't wait — do the next useful "
+            "thing and leave your turn in the room for whenever they come back."
+        )
+    elif floor["awaiting_human"] and not ask_human.strip():
+        hopeless = (
+            "This room is blocked on the person, not on another agent: "
+            f"{floor['awaiting_human']!r}. No session will answer that. Wait for them, "
+            "or get on with work that doesn't depend on it."
+        )
+    if hopeless:
+        warnings.append(hopeless)
+    elif not floor["anyone_listening"]:
+        # THE DELIVERED VERDICT (from the PARK pattern playbook in the brain). A
+        # parked session gets this turn instantly off the long-poll bus and needs
+        # nothing more. A session that has ENDED ITS TURN cannot be woken by any
+        # amount of waiting on our side — so the only honest move is to reach the
+        # human, whose tray/extension is still live. Parked → instant; rested →
+        # notified; nobody polls in either case.
+        for other in floor["others"]:
+            _push_notification(
+                int(other["user_id"]), "room_turn",
+                f"Room '{r.name}' — {other['name']} has a turn waiting: {message[:120]}",
+                ref=r.name,
+            )
     replies: list[dict[str, Any]] = []
-    if wait_for_reply:
-        deadline = asyncio.get_event_loop().time() + max(1, min(120, wait_seconds))
+    if wait_for_reply and not hopeless:
+        window = _wait_window(wait_seconds)
+        deadline = asyncio.get_event_loop().time() + window
+        if key:
+            registry.rooms.touch_speaker(
+                r.id, key, me.id, listening_seconds=window
+            )
         while not replies and asyncio.get_event_loop().time() < deadline:
             remaining = int(deadline - asyncio.get_event_loop().time()) or 1
             await _room_wait(r.id, remaining)
             fresh = registry.rooms.read_turns(r.id, me.id, since_id=turn.id)
-            replies = [_turn_view(t, handles) for t in fresh if t.user_id != me.id]
-    out: dict[str, Any] = {"turn": _turn_view(turn, handles), "replies": replies}
+            # Any turn newer than the one we just wrote is someone else's: this
+            # call is blocked here and cannot have posted again. Filtering by
+            # user_id (as this did) silently broke the common case — two sessions
+            # of ONE person share a user_id, so every reply was discarded and the
+            # wait always timed out empty. Guest-read audit rows aren't replies.
+            replies = [_turn_view(t, handles) for t in fresh if t.kind != "guest_read"]
+        floor = registry.rooms.floor_state(r.id, key)
+    out: dict[str, Any] = {
+        "turn": _turn_view(turn, handles), "replies": replies, "floor": floor,
+    }
+    if wait_for_reply and not replies and not hopeless:
+        out["waited"] = True
+        out["next"] = {
+            "tool": "kb_room_read", "room": room, "since": turn.id,
+            "hint": "call this to keep waiting — write nothing in between",
+        }
+        warnings.append(
+            f"No reply within {_wait_window(wait_seconds)}s — a timeout, not a refusal. "
+            "They hold the floor, so they know it's their turn; do NOT re-post the same "
+            "thing. To keep waiting, call kb_room_read with the cursor in `next` (a "
+            "longer wait_seconds would just be killed by the host). Otherwise get on "
+            "with something useful and check back."
+        )
     if warnings:
         out["warnings"] = warnings
     return out
@@ -2019,18 +2206,36 @@ async def kb_room_post(
 async def kb_room_read(room: str, since: int = 0, wait_seconds: int = 0) -> dict[str, Any]:
     """Read a room's turns after cursor `since` (turn id). Pass wait_seconds (e.g. 25)
     to long-poll server-side for the next turn instead of polling — free while idle.
-    Returns {room, turns: [...], cursor}."""
+    While you long-poll here you are marked LISTENING, so the other side can see a
+    reply is actually coming rather than guessing whether you left.
+
+    Check `floor` in the result: `is_you` means it's your turn to speak and nobody
+    else will; `alone` means nobody else is in the room at all, so waiting is futile.
+    Returns {room, turns: [...], cursor, floor}."""
     me = _require_room_user()
     r = _room_of(room)
+    key = _speaker_key()
+    if key and r.status == "open":
+        # Reading a room means you are IN the conversation. Registering only on
+        # long-poll left the first speaker addressing an empty house — nobody was
+        # on record, so the floor opened and the reader arrived to find no
+        # obligation. Both sides then waited. Announce presence BEFORE parking,
+        # too: a listen recorded after the poll is a promise kept only once it no
+        # longer matters.
+        registry.rooms.touch_speaker(
+            r.id, key, me.id,
+            listening_seconds=(_wait_window(wait_seconds) if wait_seconds > 0 else 0),
+        )
     turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
     if not turns and wait_seconds > 0 and r.status == "open":
-        await _room_wait(r.id, wait_seconds)
+        await _room_wait(r.id, _wait_window(wait_seconds))
         turns = registry.rooms.read_turns(r.id, me.id, since_id=since)
     handles = registry.tenancy_handle_map()
     return {
         "room": _room_view(r),
         "turns": [_turn_view(t, handles) for t in turns],
         "cursor": turns[-1].id if turns else since,
+        "floor": registry.rooms.floor_state(r.id, key),
     }
 
 
@@ -2159,6 +2364,7 @@ async def kb_room_close(room: str, outcome: str = "") -> dict[str, Any]:
     me = _require_room_user()
     r = _room_of(room)
     _room_scan(outcome, "room outcome")
+    pending = registry.rooms.floor_state(r.id).get("awaiting_human", "")
     closed = registry.rooms.close_room(r.id, me.id, outcome=outcome)
     await _room_notify(r.id)
     handles = registry.tenancy_handle_map()
@@ -2170,8 +2376,18 @@ async def kb_room_close(room: str, outcome: str = "") -> dict[str, Any]:
                 + (f" — outcome: {outcome[:100]}" if outcome else ""),
                 ref=closed.name,
             )
+    out_warnings: list[str] = []
+    if pending:
+        # Closing over an unanswered question to the PERSON throws away the one
+        # thing in the room that was waiting on them. Closing still succeeds —
+        # the caller may know the question is moot — but it must be said out loud.
+        out_warnings.append(
+            f"This room was still waiting on the user: {pending!r}. That question is "
+            "now closed unanswered — put it to them directly if it still matters."
+        )
     return {
         "room": _room_view(closed),
+        **({"warnings": out_warnings} if out_warnings else {}),
         "precipitate_instruction": (
             "Offer this outcome to the user. If they accept, save it to their brain: "
             "kb_write('projects/<relevant>/decisions/<date>-<slug>.md', ...) with the "

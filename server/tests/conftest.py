@@ -26,6 +26,23 @@ def _git(cwd: Path, *args: str) -> str:
     return proc.stdout
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiters():
+    """Clear the process-global rate-limit tables between tests.
+
+    The limiters are module singletons keyed by token subject, and the whole
+    suite signs in as a handful of fixture users — so posts from earlier test
+    FILES counted against later ones. That made two room tests fail in the full
+    run and pass in isolation, which is the worst kind of failure: it looks like
+    a real regression and disappears the moment you investigate it.
+    """
+    from engram_server import limits
+
+    for limiter in (limits._rate_limiter, limits._thread_limiter):  # noqa: SLF001
+        limiter._windows.clear()  # noqa: SLF001
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _git_isolation(tmp_path_factory: pytest.TempPathFactory):
     """Isolate every git invocation in the suite from host/global config.

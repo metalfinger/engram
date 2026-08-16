@@ -185,13 +185,17 @@ async def test_append_log_prepends_newest_first_and_keeps_history(
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     r1 = await store.kb_append_log("alt", "Shipped the API spec.\nDetails about the ship.")
     r2 = await store.kb_append_log("alt", "## 2099-01-01 — Custom heading\n\nCustom body.")
-    assert r1 == {
+    # Subset, not exact equality: this entry says "Shipped …" with no commits, so the
+    # proof-link nudge correctly rides along in `warnings`. Pinning the whole dict made
+    # the test fail on an advisory field it was never about.
+    assert {k: r1[k] for k in ("ok", "path", "date", "pushed")} == {
         "ok": True,
         "path": "projects/alt/log.md",
-        "sha": r1["sha"],
         "date": today,
         "pushed": True,
     }
+    assert r1["sha"]
+    assert any("proof" in w for w in r1.get("warnings", []))
 
     text = (settings.brain_path / "projects/alt/log.md").read_text(encoding="utf-8")
     # OKF-strict: entries render as bullets, not decorated headings — a '## date' in the

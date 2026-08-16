@@ -30,6 +30,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .errors import KBError
 
@@ -57,6 +58,35 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# The floor holder when a room is blocked on the PERSON. Not a speaker key: no
+# session can ever be assigned it, which is the point — every agent sees "not me,
+# and not any of us".
+HUMAN_FLOOR = "human"
+
+# How long since we last heard from a session before we stop routing turns to it.
+# Generous, because being wrongly declared dead is worse than a slow rotation.
+_SPEAKER_LIVE_MINUTES = 30
+
+
+def _is_fresh(stamp: str, minutes: int = _SPEAKER_LIVE_MINUTES) -> bool:
+    """True if an ISO-8601 stamp is within `minutes` of now. Unparseable = not
+    fresh: an unreadable timestamp must never make a dead session look alive."""
+    if not stamp:
+        return False
+    try:
+        seen = dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    return (dt.datetime.now(dt.timezone.utc) - seen) <= dt.timedelta(minutes=minutes)
+
+
+def _is_human_session(session: str) -> bool:
+    """Did a PERSON write this turn, or their agent? The web composer and the
+    dashboard reply form are people; `claude`/`claude:<key>` is an agent."""
+    s = (session or "").strip()
+    return s in ("web", "app", "human") or s.startswith("dashboard:")
+
+
 @dataclass(frozen=True)
 class Room:
     id: int
@@ -70,6 +100,14 @@ class Room:
     outcome: str | None
     created: str
     closed_at: str | None
+    # Floor control: the speaker key whose turn it is to talk. '' = open floor
+    # (anyone may speak). See RoomStore.floor_state for what this is FOR.
+    floor: str = ""
+    floor_since: str | None = None
+    # The question a session escalated to the person. Non-empty = the room is
+    # blocked on a HUMAN, not on another agent.
+    awaiting_human: str = ""
+    awaiting_human_for: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +163,17 @@ CREATE TABLE IF NOT EXISTS room_reads (
     last_turn_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS room_speakers (
+    room_id INTEGER NOT NULL REFERENCES rooms(id),
+    speaker TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    listening_until TEXT NOT NULL DEFAULT '',
+    last_spoke TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (room_id, speaker)
+);
 CREATE TABLE IF NOT EXISTS room_grants (
     room_id INTEGER NOT NULL REFERENCES rooms(id),
     grantor_id INTEGER NOT NULL REFERENCES users(id),
@@ -149,6 +198,25 @@ class RoomStore:
             tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(room_turns)")}
             if "refs" not in tcols:
                 self._conn.execute("ALTER TABLE room_turns ADD COLUMN refs TEXT")
+            # Rooms predating floor control (whose turn it is to speak).
+            rcols = {r[1] for r in self._conn.execute("PRAGMA table_info(rooms)")}
+            if "floor" not in rcols:
+                self._conn.execute("ALTER TABLE rooms ADD COLUMN floor TEXT NOT NULL DEFAULT ''")
+            if "floor_since" not in rcols:
+                self._conn.execute("ALTER TABLE rooms ADD COLUMN floor_since TEXT")
+            if "awaiting_human" not in rcols:
+                self._conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN awaiting_human TEXT NOT NULL DEFAULT ''"
+                )
+            if "awaiting_human_for" not in rcols:
+                self._conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN awaiting_human_for TEXT NOT NULL DEFAULT ''"
+                )
+            scols = {r[1] for r in self._conn.execute("PRAGMA table_info(room_speakers)")}
+            if scols and "last_spoke" not in scols:
+                self._conn.execute(
+                    "ALTER TABLE room_speakers ADD COLUMN last_spoke TEXT NOT NULL DEFAULT ''"
+                )
             self._conn.commit()
 
     def close(self) -> None:
@@ -166,7 +234,19 @@ class RoomStore:
             turn_budget=row["turn_budget"], hard_cap=row["hard_cap"],
             status=row["status"], outcome=row["outcome"], created=row["created"],
             closed_at=row["closed_at"],
+            floor=(self._col(row, "floor") or ""),
+            floor_since=self._col(row, "floor_since"),
+            awaiting_human=(self._col(row, "awaiting_human") or ""),
+            awaiting_human_for=(self._col(row, "awaiting_human_for") or ""),
         )
+
+    @staticmethod
+    def _col(row: sqlite3.Row, name: str) -> Any:
+        """Read a column that may not exist on rows from an older schema."""
+        try:
+            return row[name]
+        except (IndexError, KeyError):
+            return None
 
     def _turn(self, row: sqlite3.Row | None) -> RoomTurn | None:
         if row is None:
@@ -234,6 +314,214 @@ class RoomStore:
             "MAX(last_turn_id, excluded.last_turn_id)",
             (room_id, user_id, turn_id),
         )
+
+    # -- floor control ----------------------------------------------------------
+    #
+    # THE PROBLEM THIS SOLVES. Two agent sessions in a room have no way to tell
+    # "they are composing a reply" from "they went away". Both failure modes were
+    # observed in one afternoon: two sessions each waiting for the other and
+    # nobody speaking, and a session parked on a reply that was never coming
+    # because the other side had moved on. Politeness deadlocks; impatience talks
+    # over. Neither is fixable by asking agents to be more careful — the
+    # information genuinely isn't there.
+    #
+    # So the room carries it explicitly. `floor` is the speaker key whose turn it
+    # is; posting hands it to the other party; '' means open (anyone may speak).
+    # A speaker that is long-polling is recorded as LISTENING with an expiry, so
+    # the talker can see someone is actually there. The floor is advisory —
+    # posting out of turn always succeeds, it just tells you what you did. Same
+    # nudge pattern as the rest of the system: never block the human's intent.
+
+    def touch_speaker(
+        self, room_id: int, speaker: str, user_id: int, *, name: str = "",
+        listening_seconds: int = 0,
+    ) -> None:
+        """Register/refresh a speaker in a room. `listening_seconds` > 0 marks them
+        as actively listening until that many seconds from now."""
+        speaker = (speaker or "").strip()
+        if not speaker:
+            return
+        now = _now()
+        until = ""
+        if listening_seconds > 0:
+            until = (
+                dt.datetime.now(dt.timezone.utc)
+                + dt.timedelta(seconds=min(600, listening_seconds))
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO room_speakers (room_id, speaker, user_id, name, first_seen, "
+                "last_seen, listening_until) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(room_id, speaker) DO UPDATE SET last_seen = excluded.last_seen, "
+                "name = CASE WHEN excluded.name != '' THEN excluded.name ELSE room_speakers.name END, "
+                "listening_until = CASE WHEN excluded.listening_until != '' "
+                "THEN excluded.listening_until ELSE room_speakers.listening_until END",
+                (room_id, speaker, user_id, name.strip(), now, now, until),
+            )
+            self._claim_open_floor_locked(room_id, speaker)
+            self._conn.commit()
+
+    def _claim_open_floor_locked(self, room_id: int, speaker: str) -> None:
+        """An arriving session picks up an OPEN floor if it owes the room a reply.
+
+        Without this, whoever speaks first in a new room speaks to an empty house —
+        there is nobody registered yet, so the floor opens, and when the second
+        session finally reads the room it sees 'open' and no obligation. Both then
+        wait. Resolving it on arrival closes that window: the newcomer is told, in
+        the same call it used to read, that the turn is theirs.
+
+        Only when someone has spoken more recently than you have — so a session
+        re-reading a room it just posted in never takes its own floor back."""
+        room = self._room_locked(room_id)
+        if room is None or room.floor or room.awaiting_human or room.status != "open":
+            return
+        rows = self._speakers_locked(room_id)
+        mine = next((s for s in rows if s["speaker"] == speaker), None)
+        if mine is None:
+            return
+        newest_other = max(
+            (str(s["last_spoke"]) for s in rows if s["speaker"] != speaker), default=""
+        )
+        if newest_other and newest_other > str(mine["last_spoke"]):
+            self._set_floor_locked(room_id, speaker)
+
+    def _speakers_locked(self, room_id: int) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM room_speakers WHERE room_id = ? ORDER BY first_seen",
+            (room_id,),
+        ).fetchall()
+        now = _now()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            last_seen = r["last_seen"]
+            out.append({
+                "speaker": r["speaker"],
+                "name": r["name"] or r["speaker"],
+                "user_id": r["user_id"],
+                "last_seen": last_seen,
+                "last_spoke": (self._col(r, "last_spoke") or ""),
+                "live": _is_fresh(last_seen),
+                # A listening window that has expired is not listening. This is
+                # deliberately a timestamp rather than a boolean flag: a session
+                # that dies mid-poll can't clear a flag, and a stuck "listening"
+                # would be worse than none at all.
+                "listening": bool(r["listening_until"]) and r["listening_until"] > now,
+            })
+        return out
+
+    def speakers(self, room_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._speakers_locked(room_id)
+
+    def _set_floor_locked(self, room_id: int, speaker: str) -> None:
+        self._conn.execute(
+            "UPDATE rooms SET floor = ?, floor_since = ? WHERE id = ?",
+            (speaker or "", _now(), room_id),
+        )
+
+    def _resolve_speaker_locked(self, room_id: int, wanted: str) -> str:
+        """Map a hand_to value onto a known speaker key. Accepts either the key or
+        the friendly name, so an agent can hand the floor to 'mac' without knowing
+        the opaque session key."""
+        wanted = (wanted or "").strip()
+        if not wanted:
+            return ""
+        for s in self._speakers_locked(room_id):
+            if wanted == s["speaker"] or wanted.lower() == str(s["name"]).lower():
+                return str(s["speaker"])
+        return wanted
+
+    def _pass_floor_locked(self, room_id: int, me: str, hand_to: str | None) -> None:
+        """Posting hands the floor on.
+
+        Explicit `hand_to` always wins. Otherwise the floor rotates to the LIVE
+        speaker who has gone longest without speaking (never-spoken first, so a
+        session that just joined gets drawn in rather than lurking). With two
+        parties that degenerates to the obvious 'the other one', and with three or
+        more it is a fair round-robin — which matters because an open floor among
+        three agents reproduces the exact deadlock this mechanism exists to
+        prevent: everyone sees 'not mine' and nobody speaks.
+
+        Dead speakers are skipped. Handing the floor to a session that went home
+        parks the whole room behind someone who will never answer, so if nobody is
+        live the floor opens and `stalled` says why."""
+        room = self._room_locked(room_id)
+        if room is not None and room.awaiting_human:
+            # The room is blocked on a person. An agent posting while it waits is
+            # commentary, not an answer — it must not quietly cancel the question
+            # another session asked, or the human is never told and everyone waits.
+            return
+        if hand_to is not None:
+            self._set_floor_locked(room_id, self._resolve_speaker_locked(room_id, hand_to))
+            return
+        others = [s for s in self._speakers_locked(room_id) if s["speaker"] != me]
+        live = [s for s in others if s["live"] or s["listening"]]
+        if not live:
+            self._set_floor_locked(room_id, "")
+            return
+        nxt = min(live, key=lambda s: (str(s["last_spoke"]), str(s["speaker"])))
+        self._set_floor_locked(room_id, str(nxt["speaker"]))
+
+    def ask_human(self, room_id: int, question: str, asker: str = "") -> None:
+        """Mark the room as blocked on the PERSON, not on another agent.
+
+        Without this, a session that needs a human decision looks identical to one
+        that is thinking, so every other session keeps waiting and the human — the
+        only one who can unblock it — is never told. The floor moves to the human
+        sentinel: no agent holds it, all of them can see why, and the question
+        travels with it."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE rooms SET awaiting_human = ?, awaiting_human_for = ? WHERE id = ?",
+                (question.strip()[:500], asker or "", room_id),
+            )
+            self._set_floor_locked(room_id, HUMAN_FLOOR)
+            self._conn.commit()
+
+    def _human_answered_locked(self, room_id: int) -> None:
+        """A human turn clears the block and hands the floor back to whoever asked."""
+        room = self._room_locked(room_id)
+        if room is None or not room.awaiting_human:
+            return
+        self._conn.execute(
+            "UPDATE rooms SET awaiting_human = '', awaiting_human_for = '' WHERE id = ?",
+            (room_id,),
+        )
+        self._set_floor_locked(room_id, room.awaiting_human_for or "")
+
+    def floor_state(self, room_id: int, me: str = "") -> dict[str, Any]:
+        """Who holds the floor, who else is here, and whether anyone is listening.
+
+        `alone` is the one every agent must check before waiting: a room with no
+        other speaker cannot reply, however long you poll. Reporting that plainly
+        is the difference between 'they're thinking' and 'nobody is coming'."""
+        with self._lock:
+            room = self._room_locked(room_id)
+            if room is None:
+                raise TeamworkError(f"No room with id {room_id}.")
+            speakers = self._speakers_locked(room_id)
+        others = [s for s in speakers if s["speaker"] != me]
+        holder = room.floor
+        held_by = next((s for s in speakers if s["speaker"] == holder), None)
+        live_others = [s for s in others if s["live"] or s["listening"]]
+        holder_name = held_by["name"] if held_by else holder
+        if holder == HUMAN_FLOOR:
+            holder_name = "the human"
+        return {
+            "holder": holder,
+            "holder_name": holder_name,
+            "is_you": bool(holder) and holder == me,
+            "open": not holder,
+            "speakers": speakers,
+            "others": others,
+            # Three distinct reasons a reply might not come, which agents kept
+            # conflating into one hopeful "they must be thinking":
+            "alone": not others,          # nobody else was ever here
+            "stalled": bool(others) and not live_others,   # they were, and left
+            "awaiting_human": room.awaiting_human,          # blocked on a person
+            "anyone_listening": any(s["listening"] for s in others),
+            "since": room.floor_since,
+        }
 
     # -- rooms ------------------------------------------------------------------
 
@@ -338,6 +626,7 @@ class RoomStore:
     def post_turn(
         self, room_id: int, user_id: int, body: str, *, session: str = "",
         kind: str = "message", refs: list[str] | None = None,
+        speaker: str = "", hand_to: str | None = None,
     ) -> RoomTurn:
         body = (body or "").strip()
         if not body:
@@ -379,6 +668,21 @@ class RoomStore:
                     )
             turn = self._write_turn_locked(room_id, user_id, body, kind=kind, session=session, refs=refs)
             self._touch_read_locked(room_id, user_id, turn.id)
+            if kind == "message" and speaker:
+                # Speaking ends your turn. Whoever just talked is by definition no
+                # longer waiting, so the floor moves on the same write that
+                # records the turn — never as a separate call an agent can forget.
+                self._conn.execute(
+                    "UPDATE room_speakers SET listening_until = '', last_spoke = ? "
+                    "WHERE room_id = ? AND speaker = ?",
+                    (_now(), room_id, speaker),
+                )
+                self._pass_floor_locked(room_id, speaker, hand_to)
+            elif kind == "message" and _is_human_session(session):
+                # The person answered. Unblock the room and give the floor back to
+                # whichever session asked, so the answer reaches the one waiting
+                # on it instead of landing in an open room nobody owns.
+                self._human_answered_locked(room_id)
             self._conn.commit()
             return turn
 
@@ -759,3 +1063,41 @@ async def room_wait(room_id: int, seconds: int) -> None:
             await _asyncio.wait_for(cond.wait(), timeout=max(1, min(120, seconds)))
     except (TimeoutError, _asyncio.TimeoutError):
         pass
+
+
+async def room_wait_any(room_ids: list[int], seconds: int) -> int | None:
+    """Block until ANY of these rooms sees a turn; return the one that woke us.
+
+    A session in several rooms otherwise has to pick one to block on and goes deaf
+    to the others — or polls, which is what the whole bus exists to avoid. Returns
+    None on timeout. Losing waiters are cancelled, so a session watching ten rooms
+    still costs one wakeup, not ten."""
+    ids = [int(r) for r in room_ids]
+    if not ids:
+        return None
+
+    # No shortcut for the single-room case: delegating to room_wait() there would
+    # have to return the id unconditionally, which reports a wake on a plain
+    # timeout — a caller then believes a turn arrived when none did.
+    async def _one(rid: int) -> int:
+        cond = _room_condition(rid)
+        async with cond:
+            await cond.wait()
+        return rid
+
+    tasks = {_asyncio.ensure_future(_one(rid)): rid for rid in ids}
+    try:
+        done, pending = await _asyncio.wait(
+            tasks.keys(), timeout=max(1, min(120, seconds)),
+            return_when=_asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+    for t in done:
+        try:
+            return t.result()
+        except Exception:  # noqa: BLE001 — a cancelled/failed waiter is not a wake
+            continue
+    return None

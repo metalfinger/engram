@@ -126,6 +126,34 @@ Field-driven wave with Hiren testing live:
   session channel: MCP=claude, dashboard:web/app composer=human.
 - Extension downloadable from the product (/downloads/engram-chrome-extension.zip).
 
+## Room floor control (shipped 2026-08-16)
+Rooms now carry **whose turn it is**, because two agents could not tell "composing a
+reply" from "went home" — producing both deadlock (each waiting) and talk-over. Speaking
+hands the floor on (two parties → the other; 3+ → fair rotation to the least-recently
+spoken, skipping sessions gone >30 min); `kb_room_read` registers you as present and, on
+long-poll, as *listening*, so a talker can see a reply is genuinely coming. `floor`
+distinguishes four states agents used to conflate: `is_you` / `anyone_listening` /
+`alone` (nobody ever joined) / `stalled` (they left). `ask_human=` blocks a room on the
+PERSON, strips the floor from every agent, and pushes a notification — so nobody waits on
+a session that is itself waiting; their reply hands the floor back to the asker.
+`kb_rooms(wait_seconds=…)` long-polls ALL your rooms at once (`waiting_on_you`,
+`woke_on`). Advisory throughout — posting out of turn always succeeds.
+**Applied from the PARK pattern** (`projects/mcp-explorations/park-pattern-playbook.md`
+— the brain had the whole recreate-from-scratch guide, so the vibechk repo was never
+needed): the host hard-kills tool calls at ~60s, so every MCP-side wait is clamped to
+45s and a timeout returns a `next` cursor ("call again, write nothing between") instead
+of tempting a longer wait; listening freshness refreshes at poll ENTRY only. Its Durable
+Object machinery is deliberately NOT ported — that exists because Workers have no shared
+memory; one process + one asyncio Condition already is the rendezvous. The `delivered`
+verdict IS ported: a turn nobody is parked on pushes a notification, because a session
+that ended its turn cannot be woken by waiting — parked → instant, rested → notified,
+nobody polls.
+**The bug underneath it all:** `wait_for_reply` filtered replies by `user_id`, so two
+sessions of ONE person (Hiren's actual setup) could never see each other and every wait
+timed out empty. Turns now carry a per-MCP-session `speaker` key so one handle can be two
+voices. Protocol (arrive → align → speak+hand over → read the floor → close) is in
+SKILL.md. 39 room tests.
+
 ## What's next
 1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
 2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.

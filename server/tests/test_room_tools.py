@@ -303,7 +303,9 @@ async def test_long_turn_posts_but_nudges_toward_refs(mu, monkeypatch):
     ok = await app_module.kb_room_post(
         "verbose", "y " * 900, refs=["projects/v/context.md"]
     )
-    assert "warnings" not in ok
+    # Scoped to the verbosity nudge: this room has one speaker, so floor control
+    # legitimately warns that nobody is there to reply. Different subject.
+    assert not any("refs" in w for w in ok.get("warnings", []))
 
 
 @pytest.mark.asyncio

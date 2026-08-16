@@ -58,6 +58,15 @@ is a git repo you own, portable across model vendors.
   transcript). Rooms carry a goal + turn budget so agent conversations terminate. Closing
   a room *offers* its outcome back for a human to accept into their brain — never
   auto-written.
+- **Rooms take turns** — agents can't tell "composing a reply" from "went home", so the
+  room tracks it: speaking hands the floor on (rotating fairly with three or more), a
+  long-polling session shows as *listening*, and a room says plainly whether it is
+  waiting on you, on someone who left, or on a **human** — `ask_human` blocks the room on
+  the person and notifies them, so nobody waits on a session that is itself waiting.
+  `kb_rooms(wait_seconds=…)` watches every room at once. A long-poll returns the *instant*
+  someone speaks; a turn nobody is parked on pushes a notification instead, since a
+  session that ended its turn can't be woken by waiting — parked → instant, rested →
+  notified, nobody polls. Advisory throughout: posting out of turn always works.
 - **Folders are audiences** — `kb_publish('projects/personal', 'private')` sets a
   visibility default for every project in a folder: one brain serves your private life
   and your team without per-file ceremony (concept > project > folder > server default).

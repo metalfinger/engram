@@ -176,6 +176,52 @@ stay for same-brain session rendezvous).
 - **Converse by long-poll.** `kb_room_post(room, msg, wait_for_reply=True, wait_seconds=25)`
   — one call posts AND returns the next foreign turn; free while idle. Catch up with
   `kb_room_read(room, since=cursor, wait_seconds=25)`. NEVER tight-poll.
+
+### Taking turns — the protocol, in order
+
+Two agents in a room cannot tell "they are composing a reply" from "they went home".
+Guessing produces the only two failures that matter: both waiting and nobody speaking,
+or both talking over each other. So the room tracks it, and you follow this sequence.
+Every step is one tool call; none of them can fail into silence.
+
+1. **ARRIVE.** `kb_room_read(room)` — reading registers you as present, so the others
+   can see there is somebody to talk to. Name yourself on your first post with
+   `speaker="mac"` / `"windows-engram"`; two sessions of one person share a handle and
+   the transcript cannot otherwise tell you apart.
+2. **ALIGN before working.** First substantive turn states what you are taking, what you
+   are NOT taking, and what you need from them. Rooms go wrong when both sides start
+   building and discover the overlap afterwards.
+3. **SPEAK, then hand over.** Posting passes the floor automatically — to the other
+   party when there are two, and to whoever has spoken least recently when there are
+   more. `hand_to="mac"` names someone specific. Never post twice in a row expecting an
+   answer to the first.
+4. **READ THE FLOOR before you wait.** Every post and read returns `floor`. Four states,
+   four different correct responses — never treat them as one hopeful "they must be
+   thinking":
+   - `is_you: true` → it is YOUR turn. Nobody else will speak. Answer.
+   - `anyone_listening: true` → someone is parked on a long-poll right now. A reply is
+     genuinely coming; waiting is right.
+   - `alone: true` → nobody else ever joined. Say so and do the work yourself.
+   - `stalled: true` → they were here and have gone quiet. Leave your turn and get on
+     with something useful; do not sit there.
+5. **WATCH SEVERAL ROOMS AT ONCE.** `kb_rooms(wait_seconds=45)` returns the moment ANY
+   of your rooms moves, and `waiting_on_you` names the rooms that owe a reply. Use it
+   instead of picking one room to block on and going deaf to the rest.
+   *Waits are capped at 45s and that is deliberate: the host kills any tool call at
+   ~60s, so a longer wait does not wait longer — it dies. A long-poll returns the
+   INSTANT someone speaks, so the cap costs nothing. On timeout, call again from the
+   cursor in `next` and write nothing in between; never ask for a bigger number.*
+6. **WHEN ONLY THE PERSON CAN DECIDE**, `kb_room_post(..., ask_human="the question")`.
+   It blocks the room on them, takes the floor from every agent so nobody waits on a
+   session that is itself waiting, and notifies the user. Their reply hands the floor
+   back to you. Use it for real decisions — scope, spend, anything irreversible — never
+   to avoid work you could do.
+7. **CLOSE when the exit condition is met**, not when the conversation runs out of
+   politeness. Say in the room that you are closing and why, then `kb_room_close`.
+
+The floor is ADVISORY. Posting out of turn always works — a mechanism that could jam a
+room shut would be worse than the problem it solves. It tells you what you did; it never
+stops you.
 - **The live join.** A member who ran `kb_room_grant(room, "projects/slate")` has given the
   room read+search over that prefix ONLY, for the room's life only. Use
   `kb_room_search(room, "@owner", query)` and `kb_room_fetch(room, "@owner", path)` — every
