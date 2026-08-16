@@ -2540,23 +2540,53 @@ async def kb_room_relay_answer(room: str, answer: str) -> dict[str, Any]:
     human decided it, and that belief is the only thing making it worth more than
     your own opinion. If they haven't answered yet, ask them and wait.
 
+    Works for a ROOM or a THREAD — pass either name. Threads keep their transcript in
+    git, so nothing there passes through the room tables to notice the answer; without
+    handling both, ask_human on a thread would block it forever.
+
     The turn is marked `relayed` — their words, passed through you, never a claim
     that they were in the room. Returns {ok, turn, floor}."""
     me = _require_room_user()
-    r = _room_of(room)
     if not answer.strip():
         raise KBError("Nothing to relay — ask the user the question first.")
     _room_scan(answer, "relayed answer")
     _rate_limit_post()
     key = _speaker_key()
+
+    existing = registry.rooms.room_by_name(room.strip().lower())
+    if existing is None:
+        # Not a room — try it as a thread, whose floor lives in a shadow room.
+        # Confirm the thread EXISTS first: the shadow room is created on demand,
+        # so a typo would otherwise invent a brand-new thread whose only content
+        # is the user's answer to a question nobody asked.
+        probe = await (await current_store()).kb_thread_read(room, None, 0)
+        if probe.get("status") == "none":
+            raise KBError(
+                f"No room or thread named '{room}'. kb_rooms() lists your rooms, "
+                "kb_threads() your threads."
+            )
+        fid = _thread_floor_id(room)
+        if fid is None:
+            raise KBError(f"Cannot reach the floor state for thread '{room}'.")
+        out = await (await current_store()).kb_thread_post(
+            room, me.handle, answer, False, "", None, False, False, 0
+        )
+        registry.rooms.answer_human(fid)
+        return {
+            "ok": True,
+            "turn": {"sender": me.handle, "message": answer, "via": "human",
+                     "relayed": True, "seq": out.get("seq")},
+            "floor": registry.rooms.floor_state(fid, key),
+        }
+
     turn = registry.rooms.post_turn(
-        r.id, me.id, answer, session=f"relay:{key or 'x'}",
+        existing.id, me.id, answer, session=f"relay:{key or 'x'}",
     )
-    await _room_notify(r.id)
+    await _room_notify(existing.id)
     return {
         "ok": True,
         "turn": _turn_view(turn, registry.tenancy_handle_map()),
-        "floor": registry.rooms.floor_state(r.id, key),
+        "floor": registry.rooms.floor_state(existing.id, key),
     }
 
 

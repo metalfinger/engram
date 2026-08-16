@@ -623,6 +623,15 @@ class RoomStore:
             self._set_floor_locked(room_id, HUMAN_FLOOR)
             self._conn.commit()
 
+    def answer_human(self, room_id: int) -> None:
+        """Clear a human block explicitly, for surfaces whose transcript is not in
+        the room tables. A thread's turns live in git, so nothing passes through
+        post_turn to notice the answer — without this, ask_human on a thread could
+        block it forever."""
+        with self._lock:
+            self._human_answered_locked(room_id)
+            self._conn.commit()
+
     def _human_answered_locked(self, room_id: int) -> None:
         """A human turn clears the block and hands the floor back to whoever asked."""
         room = self._room_locked(room_id)

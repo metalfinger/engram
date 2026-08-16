@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import engram_server.app as app_module
+from engram_server.errors import KBError
 from engram_server.registry import StoreRegistry
 
 
@@ -209,3 +210,35 @@ async def test_a_very_long_thread_is_told_to_stop(mu, monkeypatch):
     for i in range(5):
         out = await app_module.kb_thread_post("longer", "windows", f"turn {i}")
     assert any("past the" in w for w in out.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_a_thread_block_can_be_answered_by_relay(mu, monkeypatch):
+    """The gap that mattered most: ask_human on a THREAD blocked it and notified
+    Hiren, but kb_room_relay_answer looked for a room by that name and a thread
+    has none — so the thread could stay blocked forever. Threads keep their turns
+    in git, so nothing passes through the room tables to notice the answer."""
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    out = await app_module.kb_thread_post(
+        "blocked-thread", "windows", "stuck", ask_human="Ship it or hold?"
+    )
+    assert out["floor"]["awaiting_human"] == "Ship it or hold?"
+
+    relayed = await app_module.kb_room_relay_answer("blocked-thread", "Hold it.")
+    assert relayed["turn"]["via"] == "human"
+    assert relayed["turn"]["relayed"] is True
+    assert relayed["floor"]["awaiting_human"] == ""
+
+    read = await app_module.kb_thread_read("blocked-thread", sender="windows")
+    assert read["floor"]["is_you"] is True, "floor returns to whoever asked"
+    assert any("Hold it." in t["message"] for t in read["turns"])
+
+
+@pytest.mark.asyncio
+async def test_relaying_to_nothing_is_refused(mu, monkeypatch):
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    with pytest.raises(KBError, match="No room or thread"):
+        await app_module.kb_room_relay_answer("does-not-exist-anywhere", "hi")
