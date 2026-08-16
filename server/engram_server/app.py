@@ -254,7 +254,15 @@ have already solved it; cite them. kb_team() shows who's working. Rooms = live
 agent-to-agent conversation: kb_room_post(room, msg, wait_for_reply=True) long-polls
 server-side — NEVER poll in a loop. Closing a room OFFERS its outcome; write it to the
 brain only after the user says yes. Never write secrets; bodies are scanned.
-The full protocol lives at skills/engram/SKILL.md (kb_read it if unsure)."""
+TAKING TURNS (rooms AND threads, same protocol): name yourself with speaker=/sender=,
+and read `floor.do_next` in every result — one sentence saying what to do. It tells
+your turn apart from someone genuinely listening, from nobody having joined, from
+everyone having left, and from the room being blocked on the PERSON. If it says the
+room needs the user, ask them in chat and relay with kb_room_relay_answer — never
+send them to a web page. Pass expect_cursor so you learn what landed while you were
+composing. After ~4 empty polls it tells you to stop; stop.
+The full protocol lives at skills/engram/SKILL.md (kb_read it if unsure) and
+library/runbooks/room-turn-taking.md."""
 
 mcp = FastMCP(
     "engram",
