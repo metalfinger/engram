@@ -183,3 +183,29 @@ async def test_a_thread_floor_survives_a_reconnect(mu, monkeypatch):
     out = await app_module.kb_thread_read("handoff", sender="windows")
     names = [s["name"] for s in out["floor"]["speakers"]]
     assert names.count("windows") == 1, "one session, one row, across a reconnect"
+
+
+@pytest.mark.asyncio
+async def test_a_long_thread_is_told_to_end(mu, monkeypatch):
+    """Rooms carry a turn budget so agent conversations terminate instead of
+    agreeing politely forever. Threads had only a per-minute rate limit, which
+    stops a burst and not a runaway — an asymmetry that only mattered once
+    threads became first-class for agent-to-agent work."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_THREAD_TURN_BUDGET", 2)
+    monkeypatch.setattr(app_module, "_THREAD_TURN_CAP", 4)
+    for i in range(3):
+        out = await app_module.kb_thread_post("long", "windows", f"turn {i}")
+    assert any("close the thread" in w for w in out.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_a_very_long_thread_is_told_to_stop(mu, monkeypatch):
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_THREAD_TURN_BUDGET", 2)
+    monkeypatch.setattr(app_module, "_THREAD_TURN_CAP", 4)
+    for i in range(5):
+        out = await app_module.kb_thread_post("longer", "windows", f"turn {i}")
+    assert any("past the" in w for w in out.get("warnings", []))

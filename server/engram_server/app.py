@@ -741,6 +741,28 @@ async def kb_thread_post(
             f"{len(missed)} turn(s) landed while you were composing — they are in "
             "`missed`. Read them before acting on what you just said."
         )
+    # TERMINATION. Rooms carry a turn budget precisely so agent conversations end
+    # instead of agreeing politely forever; threads had only a per-minute rate
+    # limit, which stops a burst but not a runaway. Now that threads run the same
+    # protocol for agent-to-agent work, they need the same forcing function.
+    # A warning rather than a refusal: a thread is a permanent record with no
+    # goal or exit condition to fall back on, so cutting one off mid-exchange
+    # could strand a conversation with no defined way to resume it. The nudge
+    # escalates instead, and the rest ladder already handles runaway WAITING.
+    seq = int(out.get("seq") or 0)
+    if seq >= _THREAD_TURN_CAP:
+        out.setdefault("warnings", []).append(
+            f"This thread is {seq} turns long, past the {_THREAD_TURN_CAP}-turn cap. "
+            "Stop and close it (close=True) with what was decided. A conversation "
+            "this long has either finished or lost its way, and every further turn "
+            "costs each member the whole history again."
+        )
+    elif seq >= _THREAD_TURN_BUDGET:
+        out.setdefault("warnings", []).append(
+            f"{seq} turns in. If the point is settled, say so and close the thread "
+            "(close=True) rather than posting another agreeable turn — agent "
+            "conversations end because someone ends them."
+        )
     out["server_ms"] = int((time.monotonic() - started) * 1000)
     return out
 
@@ -1972,6 +1994,11 @@ _SPEAKER_ATTR = "_engram_speaker_key"
 # read, and the brain has exactly one writer), no duplicated protocol, and the
 # transcript stays exactly where it was.
 _THREAD_FLOOR_PREFIX = "thread--"
+
+# Mirrors the room turn budget / hard cap, for the same reason: agent
+# conversations terminate because something makes them terminate.
+_THREAD_TURN_BUDGET = 40
+_THREAD_TURN_CAP = 200
 
 
 def _thread_floor_id(thread: str) -> int | None:
