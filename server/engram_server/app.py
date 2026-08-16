@@ -628,6 +628,7 @@ async def kb_thread_post(
     wait_seconds: int = 25,
     hand_to: str = "",
     ask_human: str = "",
+    expect_cursor: str = "",
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -674,20 +675,41 @@ async def kb_thread_post(
     so nobody waits on a session that is itself waiting, and notifies him. Whichever
     session is talking to him relays his answer with kb_room_relay_answer.
 
-    Returns {thread, seq, status, participants, posted, pushed, warnings, floor} plus
-    {reply, waited?} when wait_for_reply=True.
+    PASS `expect_cursor` — the cursor from the read you are replying to. On threads that
+    is an ISO timestamp string, not the integer a room uses; the cursors are of the
+    thread's own type on each surface. Anything that landed while you were composing
+    comes back in `missed`. Your post always goes through.
+
+    Returns {thread, seq, status, participants, posted, pushed, warnings, floor,
+    server_ms} plus {reply, waited?} when wait_for_reply=True. `server_ms` is the
+    SERVER's own elapsed time — the only honest way to measure a wait, since bracketing
+    a tool call with `date` also measures your own inference.
     """
     _rate_limit_post()
+    started = time.monotonic()
     key = _speaker_key()
     fid = _thread_floor_id(thread)
-    if fid is not None and key:
-        registry.rooms.touch_speaker(fid, key, _require_room_user().id, name=sender)
-    out = await (await current_store()).kb_thread_post(
-        thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
-    )
+    store = await current_store()
+
+    # What landed while you were composing, captured before our own write.
+    missed: list[dict[str, Any]] = []
+    if expect_cursor.strip():
+        try:
+            prior = await store.kb_thread_read(thread, expect_cursor.strip(), 0)
+            missed = list(prior.get("turns") or [])
+        except Exception:  # noqa: BLE001 — a bad cursor must not block a post
+            missed = []
+
+    # ALL coordination state settles BEFORE the transcript write, because the
+    # write is what wakes everyone parked on this thread. Updating the floor
+    # afterwards let a waiter observe the turn with the PREVIOUS floor still in
+    # place — seen live: mac-a posted, and a parked session read `last_spoke: ""`
+    # and the floor unmoved. Rooms never had this because post_turn moves the
+    # floor inside the same transaction that writes the turn.
     if fid is not None:
         me = _require_room_user()
         if key:
+            registry.rooms.touch_speaker(fid, key, me.id, name=sender)
             registry.rooms.record_speech(
                 fid, key, hand_to=(hand_to or None) if hand_to else None,
             )
@@ -698,7 +720,19 @@ async def kb_thread_post(
                 f"Thread '{thread}' needs you: {ask_human.strip()[:160]}",
                 ref=thread,
             )
+
+    out = await store.kb_thread_post(
+        thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
+    )
+    if fid is not None:
         out["floor"] = registry.rooms.floor_state(fid, key)
+    if missed:
+        out["missed"] = missed
+        out.setdefault("warnings", []).append(
+            f"{len(missed)} turn(s) landed while you were composing — they are in "
+            "`missed`. Read them before acting on what you just said."
+        )
+    out["server_ms"] = int((time.monotonic() - started) * 1000)
     return out
 
 
@@ -727,6 +761,7 @@ async def kb_thread_read(
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?, floor} — check `floor.do_next`.
     """
+    started = time.monotonic()
     key = _speaker_key()
     fid = _thread_floor_id(thread)
     if fid is not None and key:
@@ -741,6 +776,10 @@ async def kb_thread_read(
         if out.get("turns") and key:
             registry.rooms.stop_listening(fid, key)
         out["floor"] = registry.rooms.floor_state(fid, key)
+    # The server's own elapsed time. Absent here, any timing report a session makes
+    # is really its inference latency — the error that produced a phantom backlog
+    # bug this morning, from two sessions, using the same broken instrument.
+    out["server_ms"] = int((time.monotonic() - started) * 1000)
     return out
 
 
