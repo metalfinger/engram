@@ -188,3 +188,36 @@ async def test_map_is_noted_not_read(store):
     )
     out = await store.kb_realign(project="vibechk")
     assert out["map_path"] == "projects/vibechk/map.md"
+
+
+# -- found by dogfooding: sessions live in SUBDIRECTORIES ---------------------
+
+
+@pytest.mark.asyncio
+async def test_guess_walks_up_from_a_subdirectory(store):
+    """The first live call failed on engram's OWN repo: cwd was `<repo>/server`,
+    and a guess that only looked at the last path segment saw 'server'. Sessions
+    sit in subdirectories far more often than at the repo root."""
+    await _seed(store, "engram")
+    out = await store.kb_realign(cwd="C:/Users/Admin/Documents/code/engram/server")
+    assert out["resolved"] and out["project"] == "engram"
+    assert out["guess"] is True
+
+
+@pytest.mark.asyncio
+async def test_guess_prefers_the_nearest_matching_directory(store):
+    """Walking up must stop at the FIRST match — the innermost directory that
+    names a project is the more specific answer."""
+    await _seed(store, "engram", "code")
+    out = await store.kb_realign(cwd="D:/code/engram/server/engram_server")
+    assert out["project"] == "engram"
+
+
+@pytest.mark.asyncio
+async def test_candidates_are_a_shortlist_not_the_whole_brain(store):
+    """The instruction says 'never make the user read the whole list', so the
+    payload must not BE the whole list — ranked by recency, capped."""
+    await _seed(store, *[f"proj-{i}" for i in range(12)])
+    out = await store.kb_realign(cwd="D:/nowhere/unmatched")
+    assert out["resolved"] is False
+    assert 0 < len(out["candidates"]) <= 8

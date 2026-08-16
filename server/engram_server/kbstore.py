@@ -3603,6 +3603,13 @@ class KBStore:
             out[current] = "\n".join(buf).strip()
         return {k: v for k, v in out.items() if v}
 
+    @staticmethod
+    def _rank_candidates(projects: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+        """Most-recently-worked first, capped — the shortlist a session offers from."""
+        return sorted(
+            projects, key=lambda p: str(p.get("last_session") or ""), reverse=True
+        )[:limit]
+
     async def kb_realign(self, project: str = "", repo: str = "", cwd: str = "") -> dict[str, Any]:
         """Resolve → load → surface → pin, in one call. See the kb_realign tool."""
         await self._refresh()
@@ -3624,7 +3631,7 @@ class KBStore:
                     return {
                         "resolved": False,
                         "reason": f"{project!r} matches several projects",
-                        "candidates": [known[i] for i in sorted(near)],
+                        "candidates": self._rank_candidates([known[i] for i in sorted(near)]),
                         "instruction": "Ask ONE question naming your best candidate.",
                     }
 
@@ -3635,19 +3642,32 @@ class KBStore:
             if hit and hit in known:
                 resolved, how = hit, f"learned route ({why})"
 
-        # 3 · Weakest signal, still usually right: the directory is named after
-        #     the project. Flagged as a guess so the caller can confirm.
+        # 3 · Weakest signal, still usually right: a directory on the path is
+        #     named after the project. Walks UP like the route match does —
+        #     sessions sit in subdirectories (`<repo>/server`) far more often
+        #     than at the repo root, and only checking the last segment made
+        #     this rung useless in exactly the common case (found by running
+        #     kb_realign against engram's own repo from server/).
         guess = False
         if not resolved and cwd:
-            base = self._route_key(cwd).rsplit("/", 1)[-1]
-            if base in known:
-                resolved, how, guess = base, f"guess (directory named {base!r})", True
+            key = self._route_key(cwd)
+            while key:
+                base = key.rsplit("/", 1)[-1]
+                if base in known:
+                    resolved, how, guess = base, f"guess (directory named {base!r})", True
+                    break
+                if "/" not in key:
+                    break
+                key = key.rsplit("/", 1)[0]
 
         if not resolved:
             return {
                 "resolved": False,
                 "reason": "no project named, no learned route for this location",
-                "candidates": projects,
+                # Ranked by recency and capped: the caller is told to offer ONE
+                # candidate, so shipping all ~20 projects is both a token cost
+                # and an invitation to do the thing the instruction forbids.
+                "candidates": self._rank_candidates(projects),
                 "instruction": (
                     "Ask ONE question offering your best candidate — never make the user "
                     "read the whole list. If this work has no project yet, say so and offer "
