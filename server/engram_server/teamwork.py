@@ -687,6 +687,18 @@ class RoomStore:
         holder_active = held_by is not None and (
             held_by["listening"] or _is_fresh(str(held_by["last_seen"]), minutes=2)
         )
+        # THE FLOOR-HOLDER IS THE CONVERSATION. If they are gone, nothing can
+        # advance no matter how many others are alive — and `stalled` used to be
+        # computed from the others alone, so a dead holder with one live bystander
+        # reported stalled:false and nobody was told to act. Reported by mac-a
+        # after sitting behind a holder that had been dead three hours: the
+        # original deadlock, arriving through the flag meant to catch it.
+        holder_gone = (
+            held_by is not None
+            and holder != HUMAN_FLOOR
+            and not held_by["live"]
+            and not held_by["listening"]
+        )
         if waited >= self.REST_AFTER_EMPTY_WAITS and not me_holds and not holder_active:
             advice = (
                 f"You've waited {waited} times with nothing arriving. STOP polling — "
@@ -703,6 +715,16 @@ class RoomStore:
             advice = "Your turn. Nobody else will speak until you do — answer."
         elif not others:
             advice = "Nobody else has ever joined. Don't wait; work alone and say so."
+        elif holder_gone:
+            # Say what to DO, not merely what is true. "Not currently listening"
+            # reads as stepped-away-mid-turn; the fact is they are gone and the
+            # thread cannot move until somebody takes the floor back. Posting out
+            # of turn is always allowed, so this is advice the reader can act on
+            # immediately.
+            advice = (
+                f"{holder_name} holds the floor and has GONE — nothing can advance "
+                "until someone takes it. Take it: post, and the floor moves on."
+            )
         elif not [s for s in others if s["live"] or s["listening"]]:
             advice = (
                 "They were here and have gone quiet. Don't wait — leave your turn "
@@ -739,7 +761,9 @@ class RoomStore:
             # Three distinct reasons a reply might not come, which agents kept
             # conflating into one hopeful "they must be thinking":
             "alone": not others,          # nobody else was ever here
-            "stalled": bool(others) and not live_others,   # they were, and left
+            # "cannot advance": either nobody live is left, or the one person who
+            # owes the turn has gone. The second half is what mac-a caught.
+            "stalled": bool(others) and (not live_others or holder_gone),
             "awaiting_human": room.awaiting_human,          # blocked on a person
             "empty_waits": waited,   # polls in a row that returned nothing
             "anyone_listening": any(s["listening"] for s in others),

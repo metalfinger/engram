@@ -441,3 +441,36 @@ def test_rest_advice_fires_once_the_holder_has_gone_quiet(rooms, room):
     for _ in range(RoomStore.REST_AFTER_EMPTY_WAITS):
         rooms.note_empty_wait(room.id, "sess-a")
     assert "STOP polling" in rooms.floor_state(room.id, "sess-a")["do_next"]
+
+
+def test_a_dead_floor_holder_counts_as_stalled_even_with_others_alive(rooms, room):
+    """Reported by mac-a after sitting behind a holder dead for three hours:
+    stalled was computed from the OTHERS, so one live bystander made it read
+    false while the conversation could not advance at all. The floor-holder IS
+    the conversation."""
+    rooms.touch_speaker(room.id, "sess-c", 2, name="third")
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")
+    holder = rooms.floor_state(room.id, "sess-a")["holder"]
+    with rooms._lock:  # noqa: SLF001 — the holder goes home; everyone else stays
+        rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND speaker = ?", (room.id, holder),
+        )
+        rooms._conn.commit()
+    state = rooms.floor_state(room.id, "sess-a")
+    assert state["stalled"] is True
+    assert "GONE" in state["do_next"] and "Take it" in state["do_next"]
+
+
+def test_a_live_holder_is_not_stalled(rooms, room):
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")
+    assert rooms.floor_state(room.id, "sess-a")["stalled"] is False
+
+
+def test_a_human_block_is_never_reported_as_a_gone_holder(rooms, room):
+    """The human sentinel is not a session and has no last_seen — it must not be
+    mistaken for someone who wandered off."""
+    rooms.ask_human(room.id, "Ship or hold?", asker="sess-a")
+    state = rooms.floor_state(room.id, "sess-b")
+    assert state["stalled"] is False
+    assert "kb_room_relay_answer" in state["do_next"]
