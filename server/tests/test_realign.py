@@ -436,3 +436,23 @@ async def test_bad_commit_refs_are_dropped_not_rendered(store):
     )
     log = (store.root / "projects/engram/log.md").read_text(encoding="utf-8")
     assert "deadbeef" in log and "not-a-sha" not in log
+
+
+@pytest.mark.asyncio
+async def test_a_weakly_resolved_repo_is_nagged_to_pin_itself(store):
+    """Their closing suggestion, which follows from the root cause: nag about
+    PINS, not hooks. A pin is per-repo, it's the only thing that teaches the
+    routing table, and the session is standing next to the repo when it resolves."""
+    await _seed(store, "engram")
+    out = await store.kb_realign(cwd="C:/code/engram/server")
+    assert out["resolved"] and out["guess"] is True
+    assert "engram-project" in out["pin_nudge"]
+    assert "invisible to routing" in out["pin_nudge"]
+
+
+@pytest.mark.asyncio
+async def test_an_already_pinned_repo_is_not_nagged(store):
+    await _seed(store, "engram")
+    out = await store.kb_realign(pin="engram", cwd="C:/code/engram")
+    assert out["resolved_by"].startswith("pin")
+    assert out["pin_nudge"] == ""

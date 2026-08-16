@@ -3916,6 +3916,23 @@ class KBStore:
             "unread_messages": unread,
             "pin_file": ".engram-project",
             "pin_content": resolved,
+            # NAG ABOUT PINS, NOT HOOKS. Hooks are a per-machine install someone
+            # does once and forgets; a pin is per-repo, it is the ONLY thing that
+            # teaches the routing table (the presence hook reads the project from
+            # it), and a session is standing right next to the repo at the exact
+            # moment it resolves. So: whenever we resolved by anything WEAKER than
+            # a pin, say so — that's the cheapest possible moment to fix the cause.
+            "pin_nudge": (
+                ""
+                if how.startswith("pin")
+                else (
+                    f"This repo resolved by {how} — it may have no `.engram-project`. "
+                    f"Write '{resolved}' into `.engram-project` at the repo root now: it "
+                    "commits with the repo, resolves cold on any machine, AND is what "
+                    "teaches the routing table (presence records take their project from "
+                    "it, so an unpinned repo stays invisible to routing forever)."
+                )
+            ),
             "instruction": (
                 "1) Surface the unread messages FIRST (act or ask, then kb_mark_read). "
                 "2) Write pin_content into .engram-project at the repo root if it isn't "

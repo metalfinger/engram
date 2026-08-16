@@ -970,6 +970,11 @@ async def kb_realign(
     `.engram-project`, your working directory, and `git remote get-url origin`). The pin
     makes resolution exact; repo/cwd make it reliable and teach the table for next time.
 
+    If `pin_nudge` is non-empty, ACT ON IT: write `pin_content` into `.engram-project`
+    at the repo root. A pin is per-repo and is the ONLY thing that teaches the routing
+    table (presence records take their project from it), so an unpinned repo stays
+    invisible to routing no matter how much work happens in it.
+
     Read `missing_sections` before trusting an empty `open_loops`/`next_actions` — an
     absent heading is not the same as nothing outstanding. If `sequence_truncated` is
     true, the list was cut: read `sequence_path` before acting on it as complete.
