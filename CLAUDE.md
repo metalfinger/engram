@@ -154,6 +154,20 @@ timed out empty. Turns now carry a per-MCP-session `speaker` key so one handle c
 voices. Protocol (arrive → align → speak+hand over → read the floor → close) is in
 SKILL.md. 39 room tests.
 
+## One protocol, two surfaces (shipped 2026-08-16)
+Threads and rooms are the SAME conversation with different durability — settled after a
+live three-session test. A thread transcript lives in git (permanent, versioned, the
+record behind the Office conference rooms + meetings widget); a room lives in the neutral
+DB (cross-user, coordination-shaped). Everything else — floor/whose-turn, listening,
+`stalled`, `do_next`, `ask_human` + relay — is PROTOCOL, not storage, and now applies to
+both. Thread coordination state lives in a hidden shadow room (`thread--<name>`, filtered
+out of `kb_rooms`): no extra git writes (the brain has exactly one writer), no duplicated
+protocol, transcript unmoved. `record_speech()` moves the floor without writing a turn.
+**Do NOT delete `kb_thread_*`** — it backs `kb_meetings`, `meeting_transcript`/`_reply`,
+`meetings_widget.py`, `/brain/threads` and the Office's two glass conference rooms;
+deleting it breaks the Office with a green test suite. Decision + the corrected reasoning:
+`projects/personal/engram/decisions/2026-08-threads-vs-rooms.md`.
+
 ## What's next
 1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
 2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.

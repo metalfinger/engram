@@ -626,6 +626,8 @@ async def kb_thread_post(
     allow_secrets: bool = False,
     wait_for_reply: bool = False,
     wait_seconds: int = 25,
+    hand_to: str = "",
+    ask_human: str = "",
 ) -> dict[str, Any]:
     """Send a message to ANOTHER Claude session over a shared, named thread — agent-to-agent
     async chat, NO project needed. Call this when a session should talk to a different
@@ -660,17 +662,50 @@ async def kb_thread_post(
     written to GIT HISTORY permanently — and refused if any are found (pass allow_secrets=True
     to override a placeholder). A `refs` path that doesn't exist is warned about, not blocked.
 
-    Returns {thread, seq, status, participants, posted, pushed, warnings} plus {reply, waited?}
-    when wait_for_reply=True.
+    TAKING TURNS — threads carry the same floor as rooms. `sender` is your name, and
+    posting hands the floor on: to the other party with two, to whoever has spoken least
+    recently with more. Read `floor.do_next` in the result — one sentence saying what to
+    do. It distinguishes the four states agents otherwise conflate into one hopeful
+    guess: your turn / someone is genuinely listening / nobody ever joined / they were
+    here and have gone. `hand_to` names a specific next speaker.
+
+    WHEN ONLY HIREN CAN DECIDE, pass `ask_human` with the question instead of posting
+    '@hiren:' and hoping. It blocks the thread on him, takes the floor from every agent
+    so nobody waits on a session that is itself waiting, and notifies him. Whichever
+    session is talking to him relays his answer with kb_room_relay_answer.
+
+    Returns {thread, seq, status, participants, posted, pushed, warnings, floor} plus
+    {reply, waited?} when wait_for_reply=True.
     """
     _rate_limit_post()
-    return await (await current_store()).kb_thread_post(
+    key = _speaker_key()
+    fid = _thread_floor_id(thread)
+    if fid is not None and key:
+        registry.rooms.touch_speaker(fid, key, _require_room_user().id, name=sender)
+    out = await (await current_store()).kb_thread_post(
         thread, sender, message, close, topic, refs, allow_secrets, wait_for_reply, wait_seconds
     )
+    if fid is not None:
+        me = _require_room_user()
+        if key:
+            registry.rooms.record_speech(
+                fid, key, hand_to=(hand_to or None) if hand_to else None,
+            )
+        if ask_human.strip():
+            registry.rooms.ask_human(fid, ask_human, asker=key)
+            _push_notification(
+                me.id, "room_question",
+                f"Thread '{thread}' needs you: {ask_human.strip()[:160]}",
+                ref=thread,
+            )
+        out["floor"] = registry.rooms.floor_state(fid, key)
+    return out
 
 
 @mcp.tool()
-async def kb_thread_read(thread: str, since: str | None = None, wait_seconds: int = 0) -> dict[str, Any]:
+async def kb_thread_read(
+    thread: str, since: str | None = None, wait_seconds: int = 0, sender: str = ""
+) -> dict[str, Any]:
     """Read a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
     PREFER wait_seconds=25 over tight polling: it long-polls SERVER-SIDE and returns the
     instant a new turn from another sender arrives (or the thread closes), or empty at
@@ -684,10 +719,29 @@ async def kb_thread_read(thread: str, since: str | None = None, wait_seconds: in
     A thread that was never created returns {status: 'none', turns: []} (not an error — a
     joiner may read before the opener posts), and long-poll keeps waiting through it.
 
+    Pass your `sender` name — reading REGISTERS you as present, so the others can see
+    there is somebody to talk to, and while you long-poll you show as listening rather
+    than as someone who might have left. Without it you are invisible until you speak,
+    and a reconnect makes you a stranger.
+
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
-    message}], cursor, closed_by?}.
+    message}], cursor, closed_by?, floor} — check `floor.do_next`.
     """
-    return await (await current_store()).kb_thread_read(thread, since, wait_seconds)
+    key = _speaker_key()
+    fid = _thread_floor_id(thread)
+    if fid is not None and key:
+        registry.rooms.touch_speaker(
+            fid, key, _require_room_user().id, name=sender,
+            listening_seconds=(
+                _wait_window(wait_seconds) + _LISTEN_GRACE_S if wait_seconds > 0 else 0
+            ),
+        )
+    out = await (await current_store()).kb_thread_read(thread, since, wait_seconds)
+    if fid is not None:
+        if out.get("turns") and key:
+            registry.rooms.stop_listening(fid, key)
+        out["floor"] = registry.rooms.floor_state(fid, key)
+    return out
 
 
 @mcp.tool()
@@ -1851,6 +1905,38 @@ def _room_scan(text: str, what: str) -> None:
 
 _SPEAKER_ATTR = "_engram_speaker_key"
 
+# ONE PROTOCOL, TWO SURFACES. Threads and rooms are the same conversation with
+# different durability: a thread transcript lives in GIT (permanent, versioned,
+# the record behind the Office conference rooms and the meetings widget), while a
+# room lives in the neutral DB (cross-user, coordination-shaped). Everything ELSE
+# that made rooms work today — whose turn it is, who is listening, who has gone,
+# escalating to the person — is protocol, not storage, and threads deserve all of
+# it.
+#
+# So the coordination state for a thread lives in the room tables under a hidden
+# shadow room. No extra git writes (presence would otherwise commit on every
+# read, and the brain has exactly one writer), no duplicated protocol, and the
+# transcript stays exactly where it was.
+_THREAD_FLOOR_PREFIX = "thread--"
+
+
+def _thread_floor_id(thread: str) -> int | None:
+    """The shadow room carrying a thread's floor state, created on first use.
+    Returns None if anything goes wrong — coordination must never break the
+    conversation it is meant to help."""
+    name = f"{_THREAD_FLOOR_PREFIX}{thread.strip().lower()}"[:64]
+    try:
+        me = _require_room_user()
+        existing = registry.rooms.room_by_name(name)
+        if existing is not None:
+            return existing.id
+        return registry.rooms.open_room(
+            me.id, name, goal=f"floor state for thread {thread}",
+        ).id
+    except Exception:  # noqa: BLE001 — never break a thread over its floor
+        log.debug("thread floor unavailable for %s", thread, exc_info=True)
+        return None
+
 # The host hard-kills any tools/call at ~60s (measured on claude.ai during the
 # MCP-Apps work — see the PARK pattern playbook in the brain). A long-poll that
 # outlives the call does not "wait longer", it DIES, and the caller gets a
@@ -2017,9 +2103,14 @@ async def kb_rooms(include_closed: bool = False, wait_seconds: int = 0) -> dict[
     me = _require_room_user()
     handles = registry.tenancy_handle_map()
     key = _speaker_key()
+    def _visible(rows: list[dict]) -> list[dict]:
+        # Shadow rooms hold thread floor state and are plumbing, not conversations.
+        # Listing them would put a duplicate entry beside every thread.
+        return [r for r in rows if not str(r["name"]).startswith(_THREAD_FLOOR_PREFIX)]
+
     woke_on = ""
     if wait_seconds > 0:
-        live = registry.rooms.list_rooms_for(me.id, include_closed=False)
+        live = _visible(registry.rooms.list_rooms_for(me.id, include_closed=False))
         # Only park if there is genuinely nothing new. Waiting on top of unread
         # turns is how a session misses the message it was called to read.
         if live and not any(row["unread"] for row in live):
@@ -2027,7 +2118,7 @@ async def kb_rooms(include_closed: bool = False, wait_seconds: int = 0) -> dict[
             woke = await _wait_any_room(list(names), _wait_window(wait_seconds))
             woke_on = names.get(woke, "") if woke else ""
     rooms = []
-    for row in registry.rooms.list_rooms_for(me.id, include_closed=include_closed):
+    for row in _visible(registry.rooms.list_rooms_for(me.id, include_closed=include_closed)):
         entry = {
             "name": row["name"], "goal": row["goal"], "status": row["status"],
             "members": [handles.get(uid, "?") for uid in row["member_ids"]],

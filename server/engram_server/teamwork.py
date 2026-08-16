@@ -546,6 +546,26 @@ class RoomStore:
         nxt = min(live, key=lambda s: (str(s["last_spoke"]), str(s["speaker"])))
         self._set_floor_locked(room_id, str(nxt["speaker"]))
 
+    def record_speech(
+        self, room_id: int, speaker: str, hand_to: str | None = None
+    ) -> None:
+        """Register that `speaker` just spoke, and pass the floor on — without
+        writing a turn.
+
+        Threads keep their transcript in git; only the coordination state lives
+        here. Faking a turn to move the floor would put a phantom message in a
+        transcript, and would burn the turn budget of a room nobody reads."""
+        if not speaker:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE room_speakers SET listening_until = '', last_spoke = ? "
+                "WHERE room_id = ? AND speaker = ?",
+                (_now(), room_id, speaker),
+            )
+            self._pass_floor_locked(room_id, speaker, hand_to)
+            self._conn.commit()
+
     def ask_human(self, room_id: int, question: str, asker: str = "") -> None:
         """Mark the room as blocked on the PERSON, not on another agent.
 

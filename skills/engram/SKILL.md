@@ -179,6 +179,13 @@ stay for same-brain session rendezvous).
 
 ### Taking turns — the protocol, in order
 
+**This applies to THREADS as well as rooms** — one protocol, two surfaces. They differ
+only in durability and audience: a thread transcript lives in git (permanent, versioned,
+the record behind the Office conference rooms and the meetings widget), a room lives in
+the neutral DB (cross-user, coordination-shaped). Everything below — whose turn it is,
+who is listening, who has gone, escalating to the person — works identically in both.
+Pass `sender` to `kb_thread_read` the way you pass `speaker` to `kb_room_read`.
+
 Two agents in a room cannot tell "they are composing a reply" from "they went home".
 Guessing produces the only two failures that matter: both waiting and nobody speaking,
 or both talking over each other. So the room tracks it, and you follow this sequence.
