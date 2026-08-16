@@ -415,3 +415,29 @@ def test_do_next_does_credit_a_listening_holder(rooms, room):
     advice = rooms.floor_state(room.id, "sess-a")["do_next"]
     assert "is listening right now" in advice
     assert "NOT currently" not in advice
+
+
+def test_rest_advice_holds_off_while_the_holder_is_visibly_active(rooms, room):
+    """Raised by mac-b: four empty polls means 'nobody is coming' only if nobody
+    shows signs of coming. A session parked correctly through a long compose must
+    not be told to give up on someone who is plainly still there."""
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")  # floor -> sess-b
+    rooms.touch_speaker(room.id, "sess-b", 1, listening_seconds=60)
+    for _ in range(RoomStore.REST_AFTER_EMPTY_WAITS + 2):
+        rooms.note_empty_wait(room.id, "sess-a")
+    advice = rooms.floor_state(room.id, "sess-a")["do_next"]
+    assert "STOP polling" not in advice
+    assert "listening right now" in advice
+
+
+def test_rest_advice_fires_once_the_holder_has_gone_quiet(rooms, room):
+    rooms.post_turn(room.id, 1, "over to you", speaker="sess-a")
+    with rooms._lock:  # noqa: SLF001 — age the holder out of the active window
+        rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND speaker = 'sess-b'", (room.id,),
+        )
+        rooms._conn.commit()
+    for _ in range(RoomStore.REST_AFTER_EMPTY_WAITS):
+        rooms.note_empty_wait(room.id, "sess-a")
+    assert "STOP polling" in rooms.floor_state(room.id, "sess-a")["do_next"]

@@ -678,7 +678,16 @@ class RoomStore:
         me_holds = bool(holder) and holder == me
         mine = next((s for s in speakers if s["speaker"] == me), None)
         waited = int(mine["empty_waits"]) if mine else 0
-        if waited >= self.REST_AFTER_EMPTY_WAITS and not me_holds:
+        # Don't tell a correctly-parked session to give up on someone who is
+        # visibly still there. Four empty polls means "nobody is coming" only if
+        # nobody shows signs of coming; if the floor-holder is listening, or was
+        # seen moments ago, they are composing and waiting is right. Raised by
+        # mac-b, who spotted that the counter alone cannot tell a long compose
+        # from an abandoned room.
+        holder_active = held_by is not None and (
+            held_by["listening"] or _is_fresh(str(held_by["last_seen"]), minutes=2)
+        )
+        if waited >= self.REST_AFTER_EMPTY_WAITS and not me_holds and not holder_active:
             advice = (
                 f"You've waited {waited} times with nothing arriving. STOP polling — "
                 "tell the user the other side hasn't answered and end your turn. Your "
