@@ -31,6 +31,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
+from engram_server import session_prep
 from engram_server.config import Settings, get_settings
 from engram_server.doctor import run_doctor
 from engram_server.errors import GitError, KBError
@@ -2792,6 +2793,135 @@ async def kb_room_read(
         # handler ends that argument with a number instead of an inference.
         "server_ms": int((time.monotonic() - started) * 1000),
     }
+
+
+@mcp.tool()
+async def kb_prepare_session(
+    project: str,
+    task: str,
+    repo_path: str,
+    files: list[str] | None = None,
+    refs: list[str] | None = None,
+    goal: str = "",
+    exit_condition: str = "",
+    base: str = "main",
+    name: str = "",
+) -> dict[str, Any]:
+    """Prepare an isolated session for one chunk of work, and hand back the command
+    that starts it. Use when the user wants to split work across sessions, or when a
+    piece of work deserves its own branch and its own thread.
+
+    ONE CALL sets up everything a fresh session needs to start cold and start right:
+    a git worktree + branch (so parallel chunks cannot touch each other's files), an
+    `.engram-project` pin inside it (so the new session's first `realign` resolves
+    with no questions), a thread carrying `goal` and `exit_condition` (so it knows
+    what done means), advisory claims on `files` (so the chunk shows in everyone
+    else's `floor.working` before a keystroke), and a brief concept.
+
+    THE BRIEF IS A MAP, NOT A DUMP. Pass `refs` — paths to the decisions, specs and
+    constraints this chunk should know about. They attach as links; the session reads
+    what it needs when it needs it. Search the brain for them first: prior decisions
+    and the constraints that have already cost time are exactly what a new session
+    would otherwise rediscover or contradict.
+
+    `repo_path` is REQUIRED and absolute: the server has its own working directory
+    and cannot see yours, so there is nothing sensible to default to.
+
+    Returns {worktree, branch, thread, brief_path, command, warnings}. Give the user
+    `command` to run. Only the worktree is a hard failure — if the brain is
+    unreachable you still get a working command, with warnings naming what was not
+    recorded.
+    """
+    me = _require_room_user()
+    store = await current_store()
+    slug = session_prep.slugify(name or task)
+    repo = await to_thread.run_sync(lambda: session_prep.require_repo(repo_path))
+    dest = repo.parent / f"{repo.name}-{slug}"
+
+    warnings: list[str] = []
+    existing = await to_thread.run_sync(lambda: session_prep.worktree_paths(repo))
+    reused = str(dest.resolve()) in existing
+    if not reused:
+        # The one hard stop. A chunk with no claim is merely uncoordinated; a chunk
+        # with no worktree is a collision waiting to happen.
+        await to_thread.run_sync(
+            lambda: session_prep.add_worktree(repo, dest, slug, base)
+        )
+
+    # Pin: without it the new session must be told its project, which is precisely
+    # the hand-holding this tool exists to remove.
+    try:
+        await to_thread.run_sync(
+            lambda: (dest / ".engram-project").write_text(
+                f"{project.strip()}\n", encoding="utf-8"
+            )
+        )
+    except OSError as exc:
+        warnings.append(
+            f"Could not write .engram-project ({exc}) — the new session will need the "
+            "project named on its first realign."
+        )
+
+    brief_path = f"projects/{project.strip()}/briefs/{slug}.md"
+    ref_lines = "\n".join(f"- [{Path(r).stem}]({_rel_link(brief_path, r)})" for r in (refs or []))
+    body = (
+        f"# {task.strip()}\n\n"
+        + (f"**Goal.** {goal.strip()}\n\n" if goal.strip() else "")
+        + (f"**Done when.** {exit_condition.strip()}\n\n" if exit_condition.strip() else "")
+        + f"**Worktree.** `{dest}` on branch `{slug}`.\n\n"
+        + (f"## Read first\n\n{ref_lines}\n\n" if ref_lines else "")
+        + "## Notes\n\nWritten by kb_prepare_session. Read the linked concepts before "
+        "starting — they carry decisions already made and constraints already paid for.\n"
+    )
+    try:
+        await store.kb_write(
+            brief_path,
+            f"---\ntype: note\ndescription: Brief for {task.strip()[:120]}\n---\n\n{body}",
+            f"brief: {slug}",
+        )
+    except Exception as exc:  # noqa: BLE001 — the worktree is what matters
+        warnings.append(f"Brief not written ({exc}).")
+        brief_path = ""
+
+    try:
+        await kb_thread_post(
+            slug, "prepare",
+            f"Chunk prepared: {task.strip()}\n\nWorktree `{dest}` on `{slug}`.",
+            topic=task.strip()[:120], goal=goal, exit_condition=exit_condition,
+            refs=([brief_path] + list(refs or [])) if brief_path else list(refs or []),
+        )
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"Thread not opened ({exc}) — coordinate manually.")
+
+    for f in (files or []):
+        try:
+            await store.kb_claim(slug, f, note=task.strip()[:80])
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Claim on {f} failed ({exc}).")
+
+    if reused:
+        warnings.append(
+            f"Worktree {dest} already existed — reused rather than recreated. If that "
+            "is stale work, remove it with `git worktree remove` first."
+        )
+    return {
+        "worktree": str(dest),
+        "branch": slug,
+        "thread": slug,
+        "brief_path": brief_path,
+        "command": f'cd "{dest}" && claude',
+        "first_message": "realign",
+        "warnings": warnings,
+    }
+
+
+def _rel_link(from_path: str, to_path: str) -> str:
+    """A relative markdown link between two brain concepts, so the graph stays
+    walkable from the brief."""
+    try:
+        return posixpath.relpath(to_path, posixpath.dirname(from_path))
+    except ValueError:
+        return to_path
 
 
 @mcp.tool()
