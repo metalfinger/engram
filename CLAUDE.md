@@ -168,6 +168,47 @@ protocol, transcript unmoved. `record_speech()` moves the floor without writing 
 deleting it breaks the Office with a green test suite. Decision + the corrected reasoning:
 `projects/personal/engram/decisions/2026-08-threads-vs-rooms.md`.
 
+## Coordination + one protocol on two surfaces (shipped 2026-08-16/17)
+**Threads and rooms now run the SAME protocol** — floor, listening, `stalled`, `do_next`,
+`expect_cursor`, rest ladder, `ask_human` + relay, live wake, turn cap, close-precipitate.
+Thread coordination state lives in a hidden shadow room (`thread--<name>`, filtered out of
+`kb_rooms` and the dashboard) so nothing extra is written to git. Threads also carry
+`goal`/`exit_condition`, set once at creation — the turn cap quotes them back, which turns
+"40 turns in" into a question with an answer. **Do NOT delete `kb_thread_*`**: it backs
+`kb_meetings`, the meetings widget, `/brain/threads` and the Office conference rooms.
+Threads = git-permanent record, same-brain; rooms = neutral DB, cross-user.
+**Coordination (3 phases, all shipped):** `floor.working` carries declared claims AND
+derived activity (every `kb_write`/`kb_edit` path, SQLite, 15-min TTL, throttled, your own
+excluded); a write over another live session's recent path with no `base_hash` warns
+loudly. Claims deliberately stay in GIT — measured, not assumed: 81 brain commits in six
+hours, exactly one a claim. Handoffs surface in `floor` when a conversation is stalled.
+`/dashboard/office` has a "Working on" panel so Hiren sees it without asking a session.
+**~17 bugs found by USE, none by the 1250-test suite** — the `user_id` reply filter (two
+sessions of one person could never see each other), listening windows outliving their poll,
+session identity dying on reconnect, unread computed by subtracting global turn ids, a
+pending human question recorded against an absorbed key, a dead floor-holder reading
+`stalled: false`. One bug was REFUSED as unreproducible and later falsified by the session
+that reported it — `server_ms` was shipped instead of a patch. Decisions:
+`projects/personal/engram/decisions/2026-08-{room-floor-control,threads-vs-rooms,
+coordination-surface-dont-build}.md`; runbook: `library/runbooks/room-turn-taking.md`.
+
+## Session lifecycle — DESIGNED 2026-08-17, not built
+**Claude Code owns the agent loop; Engram owns the lifecycle around it.** Researched before
+deciding (DeepSeek Harness v0.1, the 2026 harness landscape, an audit of what Engram already
+provides): rebuilding the loop means owning sandboxing/permissioning/compaction, the exact
+layer the one documented defector regretted. Shape: `kb_prepare_session` (worktree + branch
++ `.engram-project` pin + thread with goal/exit + claims + brief carrying `refs`, returns one
+copy-pasteable command), `kb_finish_session` (detects commits AND concepts written since the
+thread was created — a git question, not a session-identity one; PR draft via `ask_human`,
+never auto-opened; log with proof-links; releases claims even on failure), and a `chunk-work`
+skill for the judgement (decomposition can't be a tool — no server-side LLM). Build order:
+prepare → finish → skill. Spec: `docs/superpowers/specs/2026-08-17-engram-session-lifecycle-design.md`
+and `projects/personal/engram/specs/session-lifecycle.md`.
+**The gap that should be closed before autonomy increases: nothing verifies a session's
+CONCLUSION.** `kb_doctor` checks plumbing, reconcile checks structure, the tests check the
+server. Self-critique provably needs an external signal — and Engram owns unusual ones
+(git history, test results, commit-linked decisions).
+
 ## What's next
 1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
 2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.
