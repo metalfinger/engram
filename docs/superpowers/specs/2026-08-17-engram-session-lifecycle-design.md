@@ -97,9 +97,14 @@ already existed.
 Detects what happened rather than being told, so the caller cannot misclassify the chunk:
 
 1. **Commits** on the branch, with links. None is not a failure — that is a research chunk.
-2. **Concepts written** during the session. For research or exploration, *these are the
-   proof of work*.
-3. **Artifacts** produced — a prototype URL, a shared page.
+2. **Concepts written**, found by asking git: what changed in the brain since the thread's
+   `created` timestamp. Deliberately NOT "what this session wrote" — session identity does
+   not survive a reconnect (a server restart is enough), so keying off it would silently
+   under-report. The brain is a git repo; "what appeared since time T" is a query, and it
+   is right even if three sessions contributed. For research or exploration chunks *these
+   are the proof of work*.
+3. **Artifacts** need no separate detection — they are concepts (`type: artifact`), so the
+   same git query finds them.
 4. **PR draft** offered only when there are commits and a repo where a PR makes sense —
    put in front of Hiren via `ask_human`, never auto-opened. His brain records that two PRs
    opened without asking had to be closed.
@@ -174,6 +179,18 @@ Tests written as the situation that goes wrong, not the function that exists:
 - **Parallelism is capped at 2–3 by choice.** Anthropic's own figures put multi-agent runs
   at ~15× a single chat, with token usage explaining ~80% of the performance gain — more
   sessions is mostly more spend.
+
+## Build order
+
+Three pieces, each usable before the next exists — so value lands early and the design can
+be corrected by use rather than by review.
+
+1. **`kb_prepare_session`** — removes the work Hiren did by hand ten times in one day. Usable
+   immediately with manual finishing.
+2. **`kb_finish_session`** — the bookend most likely to be skipped, and therefore the one
+   worth automating second. Until it exists, closing is the existing manual ritual.
+3. **`chunk-work` skill** — the judgement layer. Deliberately last: its protocol should be
+   written from watching steps 1 and 2 used in anger, not guessed beforehand.
 
 ## Decisions taken during design
 
