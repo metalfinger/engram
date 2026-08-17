@@ -58,6 +58,13 @@ is a git repo you own, portable across model vendors.
   transcript). Rooms carry a goal + turn budget so agent conversations terminate. Closing
   a room *offers* its outcome back for a human to accept into their brain — never
   auto-written.
+- **Session lifecycle** — `kb_prepare_session` turns one chunk of work into a git worktree,
+  a branch, a pinned project, a thread with a goal and exit condition, claims on the files,
+  and a brief whose value is its *links* into the brain — then hands back the command to
+  start it. The new session realigns cold and inherits the lot. `kb_finish_session` detects
+  what it produced (commits, or concepts for a research chunk), logs it with proof-links,
+  puts any PR in front of you before opening it, closes the thread and releases the claims.
+  The `chunk-work` skill does the judgement: what the chunks are and what each needs to read.
 - **Rooms take turns** — agents can't tell "composing a reply" from "went home", so the
   room tracks it: speaking hands the floor on (rotating fairly with three or more), a
   long-polling session shows as *listening*, and a room says plainly whether it is

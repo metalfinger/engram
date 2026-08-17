@@ -192,7 +192,31 @@ that reported it — `server_ms` was shipped instead of a patch. Decisions:
 `projects/personal/engram/decisions/2026-08-{room-floor-control,threads-vs-rooms,
 coordination-surface-dont-build}.md`; runbook: `library/runbooks/room-turn-taking.md`.
 
-## Session lifecycle — DESIGNED 2026-08-17, not built
+## Session lifecycle — SHIPPED 2026-08-17
+`kb_prepare_session(project, task, repo_path, files, refs, goal, exit_condition, base)` —
+one call: git worktree + branch, `.engram-project` pin (new session realigns COLD), thread
+with goal/exit, claims on the files, brief concept whose value is its `refs`, and returns
+the copy-pasteable command. `repo_path` is REQUIRED and absolute — the server cannot see
+the caller's cwd. Uses `session_prep.py`, NOT `gitops.GitRepo` (that forces the brain's
+deploy-key SSH env and would break auth in Hiren's own repos); never pushes. Worktree is
+the only hard failure; brain unreachable still returns a working command. Idempotent —
+re-preparing reuses and says so.
+`kb_finish_session(thread, project, repo_path, summary, pr_title, pr_body)` — DETECTS
+what happened: commits on the branch, plus concepts written since the thread's first turn
+(a GIT question via `kb_concepts_since`, not session identity, which dies on reconnect).
+Zero commits = a research chunk, and the log says its output is the concepts. PR fields go
+to Hiren via `ask_human` and the thread stays OPEN until he answers — **nothing is ever
+auto-opened**. Claims released outside the success path.
+`skills/chunk-work/SKILL.md` (synced to `~/.claude/skills/` + brain) is the judgement
+layer: search the brain for constraints already paid for, propose chunks with files+refs,
+flag chunks sharing refs as likely overlap, refuse to over-split (~5 max), hand back
+commands 2-3 at a time. Spec: `projects/personal/engram/specs/session-lifecycle.md`.
+**Tool search: build nothing** — deferral is client-side (`defer_loading` is set by the API
+caller); Claude Code already does it automatically, claude.ai's toggle is broken, the Agent
+SDK has no lever, and the MCP SEPs are Draft. Decision:
+`decisions/2026-08-tool-search-is-client-side.md`.
+
+## Session lifecycle — original design note (2026-08-17)
 **Claude Code owns the agent loop; Engram owns the lifecycle around it.** Researched before
 deciding (DeepSeek Harness v0.1, the 2026 harness landscape, an audit of what Engram already
 provides): rebuilding the loop means owning sandboxing/permissioning/compaction, the exact
