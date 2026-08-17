@@ -143,3 +143,20 @@ async def test_without_a_pr_the_thread_closes(mu, repo):
     assert res["thread_closed"] is True
     read = await app_module.kb_thread_read("quiet-chunk", sender="windows")
     assert read["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_thread_machinery_is_not_reported_as_output(mu, repo):
+    """Found by the first live smoke test: `concepts` came back listing the thread
+    file and its turn — the coordination artefacts this tool created itself. On a
+    real research chunk they would bury the actual findings under the machinery
+    that recorded them."""
+    await app_module.kb_prepare_session("alt", "Research something", str(repo))
+    store = await app_module.current_store()
+    await store.kb_write("projects/alt/research/real-finding.md", _DOC, "the actual output")
+
+    out = await app_module.kb_finish_session("research-something", "alt", str(repo))
+    assert any("real-finding.md" in c for c in out["concepts"])
+    assert not [c for c in out["concepts"] if c.startswith("threads/")], (
+        "thread files are coordination, not output"
+    )

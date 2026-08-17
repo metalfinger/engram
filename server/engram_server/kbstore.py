@@ -2779,8 +2779,11 @@ class KBStore:
         and silently report having produced nothing. Asking git what appeared
         since a timestamp stays correct even when three sessions contributed.
 
-        Excludes index.md and the ephemeral workspace/ tree — neither is anyone's
-        output, and listing them would bury the real work."""
+        Excludes index.md and the ephemeral workspace/ and threads/ trees. None of
+        those is anyone's OUTPUT: a thread file is the coordination artefact this
+        very tool created, and listing it would bury the real findings under the
+        machinery that recorded them. Found by running the first smoke test and
+        reading what came back."""
         stamp = (since_iso or "").strip()
         if not stamp:
             return []
@@ -2798,7 +2801,7 @@ class KBStore:
                 p = line.strip()
                 if not p or not p.endswith(".md"):
                     continue
-                if p.endswith("index.md") or p.startswith("workspace/"):
+                if p.endswith("index.md") or p.startswith(("workspace/", "threads/")):
                     continue
                 if p not in seen:
                     seen.append(p)
