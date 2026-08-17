@@ -2770,6 +2770,42 @@ class KBStore:
         out.sort(key=lambda h: str(h.get("created") or ""), reverse=True)
         return out[:limit] if (limit is not None and limit >= 0) else out
 
+    async def kb_concepts_since(self, since_iso: str, limit: int = 20) -> list[str]:
+        """Concept paths added or modified in the brain since `since_iso`.
+
+        Deliberately a GIT question, not a session-identity one. Asking "what did
+        this session write" would depend on a speaker key that does not survive a
+        reconnect (a server restart is enough), so a research chunk could finish
+        and silently report having produced nothing. Asking git what appeared
+        since a timestamp stays correct even when three sessions contributed.
+
+        Excludes index.md and the ephemeral workspace/ tree — neither is anyone's
+        output, and listing them would bury the real work."""
+        stamp = (since_iso or "").strip()
+        if not stamp:
+            return []
+
+        def _changed() -> list[str]:
+            try:
+                raw = self.repo.run(
+                    "log", f"--since={stamp}", "--name-only", "--pretty=format:",
+                    "--diff-filter=AM",
+                )
+            except GitError:
+                return []
+            seen: list[str] = []
+            for line in raw.splitlines():
+                p = line.strip()
+                if not p or not p.endswith(".md"):
+                    continue
+                if p.endswith("index.md") or p.startswith("workspace/"):
+                    continue
+                if p not in seen:
+                    seen.append(p)
+            return seen[:limit]
+
+        return await to_thread.run_sync(_changed)
+
     async def kb_recent_handoffs(self, limit: int = 3) -> list[dict[str, Any]]:
         """Recent handoffs, newest first, WITHOUT a git refresh.
 

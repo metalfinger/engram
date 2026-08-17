@@ -2915,6 +2915,131 @@ async def kb_prepare_session(
     }
 
 
+@mcp.tool()
+async def kb_finish_session(
+    thread: str,
+    project: str,
+    repo_path: str = "",
+    summary: str = "",
+    pr_title: str = "",
+    pr_body: str = "",
+    base: str = "main",
+) -> dict[str, Any]:
+    """Close out a chunk: gather the proof of work, log it, close the thread, release
+    the claims. Call when the work is done — before you end the session, not after.
+
+    IT DETECTS WHAT HAPPENED rather than being told, so you cannot misclassify the
+    chunk: commits on the branch (with links), and concepts written in the brain
+    since the thread was created. A chunk with NO commits is not a failure — that is
+    a research chunk, and its concepts ARE the proof of work.
+
+    NOTHING IS OPENED ON YOUR BEHALF. If you pass `pr_title`/`pr_body` they are put in
+    front of the user via ask_human and the thread blocks until they answer. Their
+    decision is relayed back; you open the PR only if they said yes. Hiren's record
+    notes two PRs opened without asking that had to be closed.
+
+    Claims are released even when the steps above fail — a stale claim outlives the
+    session and misinforms everyone.
+
+    Returns {commits, concepts, logged, thread_closed, claims_released, awaiting_human}.
+    """
+    me = _require_room_user()
+    store = await current_store()
+    result: dict[str, Any] = {
+        "commits": [], "concepts": [], "logged": False,
+        "thread_closed": False, "claims_released": 0, "warnings": [],
+    }
+
+    started = ""
+    try:
+        info = await store.kb_thread_read(thread, None, 0)
+        turns = info.get("turns") or []
+        started = str(turns[0]["timestamp"]) if turns else ""
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(f"Could not read the thread ({exc}).")
+
+    if repo_path.strip():
+        try:
+            repo = await to_thread.run_sync(
+                lambda: session_prep.require_repo(repo_path)
+            )
+            result["commits"] = await to_thread.run_sync(
+                lambda: session_prep.commits_on(repo, thread, base)
+            )
+            result["repo"] = await to_thread.run_sync(
+                lambda: session_prep.remote_slug(repo)
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"Could not read commits ({exc}).")
+
+    if started:
+        try:
+            result["concepts"] = await store.kb_concepts_since(started)
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"Could not list concepts ({exc}).")
+
+    # The log entry is the durable record, and proof-links are what make "shipped X"
+    # checkable rather than asserted.
+    body = summary.strip() or f"Finished chunk {thread}."
+    if result["concepts"]:
+        body += "\n\nWritten: " + ", ".join(result["concepts"][:10])
+    if not result["commits"] and result["concepts"]:
+        body += "\n\nNo commits — the output of this chunk is the concepts above."
+    try:
+        await store.kb_append_log(
+            project, body,
+            commits=[c["sha"] for c in result["commits"]] or None,
+            repo=result.get("repo") or "",
+        )
+        result["logged"] = True
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(f"Log not appended ({exc}).")
+
+    if pr_title.strip():
+        # Blocks the thread on the person and pushes a notification. Whichever
+        # session is talking to them relays the answer back.
+        try:
+            # A THREAD, not a room — prepare creates threads, so ask_human rides on
+            # kb_thread_post. Calling kb_room_post here failed on the room lookup
+            # every time, which the tests caught before it ever ran for real.
+            await kb_thread_post(
+                thread, "finish",
+                f"Chunk done. Proposed PR:\n\n**{pr_title.strip()}**\n\n{pr_body.strip()}",
+                ask_human=(
+                    f"Open this PR? Title: {pr_title.strip()}. "
+                    "Nothing is opened until you say so."
+                ),
+            )
+            result["awaiting_human"] = pr_title.strip()
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"Could not put the PR to the user ({exc}).")
+
+    # Release claims BEFORE closing, and outside the success path — a stale claim
+    # outlives the session and misinforms everyone.
+    try:
+        for c in await store.kb_claims():
+            if str(c.get("session") or "") == thread and not c.get("stale"):
+                await store.kb_release(thread, str(c["path"]))
+                result["claims_released"] += 1
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(f"Claims not fully released ({exc}).")
+
+    if not result.get("awaiting_human"):
+        try:
+            await kb_thread_post(
+                thread, "finish", body, close=True,
+            )
+            result["thread_closed"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"Thread not closed ({exc}).")
+    else:
+        result["warnings"].append(
+            "Thread left OPEN because it is waiting on the user's PR decision — "
+            "close it once they have answered."
+        )
+    return result
+
+
 def _rel_link(from_path: str, to_path: str) -> str:
     """A relative markdown link between two brain concepts, so the graph stays
     walkable from the brief."""
