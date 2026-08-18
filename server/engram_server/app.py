@@ -2827,9 +2827,16 @@ async def kb_room_read(
 
 @mcp.tool()
 async def kb_setup_machine() -> dict[str, Any]:
-    """SET THIS MACHINE UP for Engram — call when the user says "set up engram here",
-    "engram setup", on a new computer, or when something looks stale (a skill that
-    doesn't match, hooks that never fire, this machine missing from the roster).
+    """SET UP OR UPDATE THIS MACHINE for Engram — call when the user says "set up
+    engram here", "engram setup", "check for updates", on a new computer, or when
+    something looks stale (a skill that doesn't match, hooks that never fire, this
+    machine missing from the roster).
+
+    SETUP AND UPDATE ARE THE SAME CALL. Step 0 compares digests and skips whatever
+    already matches, so running it again is a cheap update check rather than a
+    reinstall. That is deliberate: a separate "check" command is one more thing to
+    remember, and the thing nobody remembers is what leaves a machine stale for six
+    weeks — which is exactly what happened to the skill on Hiren's Mac.
 
     Returns everything needed and NOTHING you have to ask the user for: the skill
     and hook bundles to download, where to put them, the settings.json wiring, and a
@@ -2897,8 +2904,14 @@ async def kb_setup_machine() -> dict[str, Any]:
             }
         },
         "steps": [
-            "1. Download skills_zip and unpack each skill into ~/.claude/skills/<name>/.",
-            "2. Download hooks zip and unpack into ~/.claude/hooks/; chmod +x the .sh on macOS/Linux.",
+            "0. CHECK FIRST — this is also the update path. For each skill and for the "
+            "hooks, compare the `digest` here against what is installed locally (same "
+            "recipe: sha256 over each file's relative path + bytes, sorted, first 12 "
+            "hex chars — `local_digest_recipe` below). Anything that MATCHES is already "
+            "current: skip it, say so, and do not re-download. Only fetch what differs.",
+            "1. Download skills_zip and unpack each STALE skill into ~/.claude/skills/<name>/.",
+            "2. If the hooks digest differs, download hooks zip and unpack into "
+            "~/.claude/hooks/; chmod +x the .sh on macOS/Linux.",
             "3. Merge settings_snippet into ~/.claude/settings.json — APPEND to any existing "
             "hooks for those events, never replace them. Other tools' hooks live there too.",
             "4. Write upload_config.contents to upload_config.path (create ~/.engram/ if needed).",
@@ -2909,7 +2922,16 @@ async def kb_setup_machine() -> dict[str, Any]:
             "6. Tell the user to run /mcp if they want tool arguments added since this "
             "session connected — a file copy cannot refresh cached schemas.",
         ],
+        "local_digest_recipe": (
+            "sha256 over, for each file in the directory sorted by relative POSIX path: "
+            "the path bytes then the file bytes; take the first 12 hex characters. "
+            "Matches the server's `_dir_digest`, so equal digests mean identical trees."
+        ),
         "notes": [
+            "RUN THIS AGAIN ANY TIME to check for updates — it is the same prompt. "
+            "Setup and update are one path on purpose: a separate 'check' command is "
+            "one more thing to remember, and the thing nobody remembers is the thing "
+            "that leaves a machine stale for six weeks.",
             "Pin each repo with a .engram-project file — an unpinned repo teaches the "
             "routing table nothing, however well the hooks work.",
             "Never paste the token into a chat or commit it; ~/.engram/ is where the "

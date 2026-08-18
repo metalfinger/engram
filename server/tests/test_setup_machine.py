@@ -99,3 +99,37 @@ async def test_a_failure_to_mint_still_returns_usable_setup(mu, monkeypatch):
     assert out["token"] == ""
     assert out["skills"], "the rest of setup still works"
     assert "ask Hiren" in out["upload_config"]["contents"]["token"]
+
+
+@pytest.mark.asyncio
+async def test_setup_is_also_the_update_check(mu):
+    """Setup and update are one call on purpose. A separate 'check for updates'
+    command is one more thing to remember, and the thing nobody remembers is what
+    leaves a machine stale for six weeks."""
+    out = await app_module.kb_setup_machine()
+    steps = " ".join(out["steps"])
+    assert "CHECK FIRST" in steps
+    assert "already current" in steps and "do not re-download" in steps
+    assert out["local_digest_recipe"], "a client cannot compare without the recipe"
+    assert any("RUN THIS AGAIN" in n for n in out["notes"])
+
+
+@pytest.mark.asyncio
+async def test_the_digest_recipe_matches_what_the_server_actually_does(mu, tmp_path):
+    """If the recipe drifts from _dir_digest, every machine reports itself stale
+    forever — which is worse than no check at all, because it trains you to ignore
+    it."""
+    import hashlib
+
+    from engram_server.app import _dir_digest
+
+    d = tmp_path / "sk"
+    (d / "sub").mkdir(parents=True)
+    (d / "SKILL.md").write_text("alpha", encoding="utf-8")
+    (d / "sub" / "extra.md").write_text("beta", encoding="utf-8")
+
+    h = hashlib.sha256()
+    for p in sorted(x for x in d.rglob("*") if x.is_file()):
+        h.update(p.relative_to(d).as_posix().encode("utf-8"))
+        h.update(p.read_bytes())
+    assert _dir_digest(d) == h.hexdigest()[:12]
