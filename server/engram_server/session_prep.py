@@ -151,3 +151,25 @@ def commits_on(repo: Path, branch: str, base: str = "main") -> list[dict[str, st
 
 def is_dirty(repo: Path) -> bool:
     return bool(_git(repo, "status", "--porcelain").strip())
+
+
+def current_branch(cwd: str) -> str:
+    """The checked-out branch at `cwd`, or '' for anything that isn't a branch in a
+    repo (detached HEAD, not a repo, no git).
+
+    Used to find a prepared chunk's own paperwork: prepare gives the worktree, the
+    branch, the thread and the brief ONE name, so the branch is the key to the other
+    three. Empty rather than raising — realign is the call a session makes to find
+    its feet, and it must not fail because the session happens to be somewhere odd.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=_TIMEOUT,
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    if out.returncode != 0:
+        return ""
+    branch = (out.stdout or "").strip()
+    return "" if branch in ("", "HEAD") else branch

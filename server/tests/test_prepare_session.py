@@ -195,3 +195,54 @@ async def test_an_unknown_harness_is_refused_before_anything_is_created(mu, repo
         )
     assert {p.name for p in repo.parent.iterdir()} == before, \
         "a rejected harness must not leave a worktree behind"
+
+
+@pytest.mark.asyncio
+async def test_a_prepared_session_realigns_into_its_own_chunk(mu, repo, monkeypatch):
+    """THE GAP THIS CLOSES. A prepared session used to realign, learn its project,
+    and still have to be TOLD where its goal and exit condition were — the exact
+    hand-holding prepare exists to remove, leaking back onto the user one call
+    later. Prepare gives the worktree, branch, thread and brief ONE name, so the
+    branch is the key to the other three."""
+    out = await app_module.kb_prepare_session(
+        "alt", "Reskin the widgets", str(repo),
+        goal="Ship the reskin", exit_condition="PR merged or parked",
+        refs=[],
+    )
+    wt = out["worktree"]
+
+    got = await app_module.kb_realign(cwd=wt, pin="alt")
+    chunk = got["chunk"]
+    assert chunk["thread"] == "reskin-the-widgets"
+    assert chunk["goal"] == "Ship the reskin"
+    assert chunk["exit_condition"] == "PR merged or parked"
+    assert chunk["brief"] == "projects/alt/briefs/reskin-the-widgets.md"
+    # It must also say how to CLOSE, since the thread name is the one argument
+    # kb_finish_session cannot infer.
+    assert 'kb_finish_session(thread="reskin-the-widgets"' in chunk["finish_with"]
+
+
+@pytest.mark.asyncio
+async def test_realign_outside_a_prepared_worktree_says_nothing(mu, repo):
+    """An ordinary session in an ordinary repo has no chunk. Inventing one — or
+    failing — would make orientation worse for the common case to serve the rare
+    one."""
+    got = await app_module.kb_realign(cwd=str(repo), pin="alt")
+    assert "chunk" not in got
+
+
+@pytest.mark.asyncio
+async def test_orientation_survives_a_broken_chunk_lookup(mu, repo, monkeypatch):
+    """Realign is the one call a session makes to find its feet. A side dish must
+    never take the meal down."""
+    # Prepare first, so the project genuinely exists and `resolved` is testing the
+    # thing it names rather than an absent project.
+    out = await app_module.kb_prepare_session("alt", "Some chunk", str(repo))
+
+    def _boom(_cwd):
+        raise RuntimeError("git exploded")
+
+    monkeypatch.setattr(app_module.session_prep, "current_branch", _boom)
+    got = await app_module.kb_realign(cwd=out["worktree"], pin="alt")
+    assert got["resolved"] is True, "orientation itself must still succeed"
+    assert "chunk" not in got, "the broken lookup contributes nothing, silently"

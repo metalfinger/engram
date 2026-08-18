@@ -1266,7 +1266,8 @@ async def kb_realign(
     pin_content, working, needs_the_user, instruction} — or {resolved: false,
     candidates, instruction}.
     """
-    result = await (await current_store()).kb_realign(project=project, repo=repo, cwd=cwd, pin=pin)
+    store = await current_store()
+    result = await store.kb_realign(project=project, repo=repo, cwd=cwd, pin=pin)
     if result.get("resolved"):
         _presence_project(str(result.get("project") or ""))
     # Orientation is the moment a session decides what to touch, so it is exactly
@@ -1293,6 +1294,45 @@ async def kb_realign(
             result["needs_the_user"] = pending
     except Exception:  # noqa: BLE001
         log.debug("could not attach workspace state to realign", exc_info=True)
+
+    # THE CHUNK'S OWN PAPERWORK, if this session is sitting in a prepared worktree.
+    #
+    # kb_prepare_session gives the worktree, the branch, the thread and the brief ONE
+    # name, so the branch is the key to the other three — but nothing used to say so.
+    # A prepared session realigned, learned its project, and still had to be TOLD
+    # where its goal and its exit condition were. That is precisely the hand-holding
+    # prepare exists to remove, leaking back onto the user one call later.
+    #
+    # Goal and exit come from the THREAD's frontmatter rather than the brief's prose:
+    # structured fields beat regexing bold text out of markdown, and the thread is
+    # also the name kb_finish_session needs.
+    try:
+        branch = await to_thread.run_sync(
+            lambda: session_prep.current_branch(cwd)
+        ) if cwd else ""
+        proj = str(result.get("project") or "")
+        if branch and proj:
+            info = await store.kb_thread_read(branch, None, 0)
+            if str(info.get("status") or "none") != "none":
+                brief = f"projects/{proj}/briefs/{branch}.md"
+                chunk: dict[str, Any] = {"thread": branch}
+                if info.get("goal"):
+                    chunk["goal"] = info["goal"]
+                if info.get("exit_condition"):
+                    chunk["exit_condition"] = info["exit_condition"]
+                if await to_thread.run_sync(lambda: (store.root / brief).is_file()):
+                    chunk["brief"] = brief
+                    chunk["read_the_brief"] = (
+                        "Its value is its LINKS — decisions and constraints already "
+                        "paid for. Follow them; don't re-derive them."
+                    )
+                chunk["finish_with"] = (
+                    f'kb_finish_session(thread="{branch}", project="{proj}", '
+                    'repo_path="<this worktree, absolute>")'
+                )
+                result["chunk"] = chunk
+    except Exception:  # noqa: BLE001 — orientation must never fail on a side dish
+        log.debug("could not attach chunk paperwork to realign", exc_info=True)
     return result
 
 
