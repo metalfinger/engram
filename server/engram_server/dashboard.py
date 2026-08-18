@@ -2521,6 +2521,23 @@ class Dashboard:
             "<div class=card><h2>ChatGPT</h2>"
             f"<p>Settings → Connectors → add <span class=mono>{esc(url)}</span> "
             "(needs a plan with custom MCP connectors).</p></div>"
+            # THE MACHINE ITSELF — distinct from connecting a client. Skills, hooks
+            # and presence config live on the box, and until now they were installed
+            # by walking someone through curl commands. Placed AFTER Claude Code
+            # because the prompt below is an MCP tool: the connector has to exist
+            # before a session can call it.
+            "<div class=card><h2>Set up this machine (after Claude Code, above)</h2>"
+            "<p>Installs the Engram skills and the presence hooks, and connects this "
+            "computer to your roster. Open Claude Code here and paste:</p>"
+            "<div class=codebox style='white-space:pre-wrap'>Set up Engram on this "
+            "machine — call kb_setup_machine and follow its steps.</div>"
+            "<p class=meta>The session mints its own scope-limited token, so there is "
+            "nothing to copy and no secret in your chat. It verifies the install at the "
+            "end rather than assuming — the hooks always exit 0, so a broken one looks "
+            "exactly like a working one.</p>"
+            "<p class=meta>Do this on <b>every</b> computer you use. Without it that "
+            "machine never appears in the roster, and its sessions can't be told apart "
+            "in the office.</p></div>"
             "<div class=card><h2>Desktop app — Engram in your tray (recommended)</h2>"
             "<p>Native notifications even with no browser open, plus the team's live "
             "'working now' roster in your Windows taskbar / Mac menu bar. Clicks open "

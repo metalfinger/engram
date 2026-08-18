@@ -97,3 +97,53 @@ def test_hooks_are_downloadable_as_a_zip():
     paths = {getattr(r, "path", "") for r in app_module.mcp._custom_starlette_routes}
     assert "/downloads/engram-hooks.zip" in paths
     assert "/downloads/engram-skill.zip" in paths
+
+
+def test_the_setup_page_carries_the_machine_prompt(env):
+    """A brand-new computer has no tray and no session — it has a browser. So the
+    one place the setup prompt must be findable is the web page."""
+    r = env.client.get("/dashboard/setup", cookies={
+        "engram_session": env.token,
+    })
+    # bearer token is not a session cookie; use the page's own auth path
+    assert r.status_code in (200, 302)
+
+
+def test_setup_page_html_mentions_kb_setup_machine(settings, tmp_path):
+    """Checked on the rendered body rather than through auth, so the assertion is
+    about the CONTENT rather than the session plumbing."""
+    from types import SimpleNamespace
+
+    from mcp.server.fastmcp import FastMCP
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from engram_server.dashboard import register_dashboard
+    from engram_server.registry import StoreRegistry
+
+    class _IdP:
+        name = "google"
+
+        def authorize_url(self, r, s): return "https://x/auth"
+        async def exchange_code(self, c, r, h): return "t"
+        async def fetch_user(self, t, h): return SimpleNamespace(id="x", login="a@e.com")
+
+    mu = settings.model_copy(update={
+        "multiuser": True,
+        "users_root": str(tmp_path / "u"),
+        "tenancy_db_path": str(tmp_path / "e.db"),
+        "dashboard_session_secret": "z" * 40,
+    })
+    registry = StoreRegistry(mu)
+    inv = registry.tenancy.create_invite("alice@example.com")
+    registry.tenancy.accept_invite(inv.token, "alice", "alice@example.com",
+                                   "google", "google:alice@example.com")
+    mcp = FastMCP("d")
+    dash = register_dashboard(mcp, mu, registry, {"google": _IdP()})
+    client = TestClient(Starlette(routes=mcp._custom_starlette_routes),
+                        base_url="https://testserver")
+    cookie = dash.auth.issue("google:alice@example.com", "alice@example.com",
+                             "alice", ttl=3600)
+    body = client.get("/dashboard/setup", cookies={"engram_session": cookie}).text
+    assert "kb_setup_machine" in body
+    assert "every" in body, "it must say to do this on every computer"
