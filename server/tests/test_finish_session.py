@@ -160,3 +160,32 @@ async def test_thread_machinery_is_not_reported_as_output(mu, repo):
     assert not [c for c in out["concepts"] if c.startswith("threads/")], (
         "thread files are coordination, not output"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_bookends_compose_across_harnesses(mu, repo):
+    """A chunk prepared for Pi must close through the SAME bookend, or routing grind
+    to a cheaper harness would mean losing the record of it — which is the whole
+    reason the lifecycle sits in Engram rather than in a harness.
+
+    Nothing here is Claude-Code-specific and that is the assertion: `repo_path` is
+    the only path input, so any MCP client that can call the tool can close a chunk.
+    """
+    out = await app_module.kb_prepare_session(
+        "alt", "Migrate the suite", str(repo), harness="pi",
+    )
+    wt = out["worktree"]
+    subprocess.run(["git", "-C", wt, "config", "user.email", "t@example.invalid"], check=True)
+    subprocess.run(["git", "-C", wt, "config", "user.name", "t"], check=True)
+    with open(f"{wt}/migrated.py", "w", encoding="utf-8") as fh:
+        fh.write("# migrated\n")
+    subprocess.run(["git", "-C", wt, "add", "-A"], check=True)
+    subprocess.run(["git", "-C", wt, "commit", "-m", "test: migrate the suite"],
+                   check=True, capture_output=True)
+
+    res = await app_module.kb_finish_session(
+        "migrate-the-suite", "alt", str(repo), summary="Suite migrated by Pi.",
+    )
+    assert [c["subject"] for c in res["commits"]] == ["test: migrate the suite"]
+    assert res["logged"] is True
+    assert res["thread_closed"] is True

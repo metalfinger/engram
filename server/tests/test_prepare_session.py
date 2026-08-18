@@ -158,3 +158,40 @@ async def test_a_broken_brain_still_returns_a_working_command(mu, repo, monkeypa
     assert Path(out["worktree"]).is_dir()
     assert "claude" in out["command"]
     assert any("Brief not written" in w for w in out["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_it_can_prepare_a_chunk_for_a_different_harness(mu, repo):
+    """The lifecycle is harness-agnostic on purpose: a worktree, a pin, a thread and
+    claims mean the same thing whoever does the work. Routing grind to a cheaper
+    harness should not mean giving up the record of it."""
+    out = await app_module.kb_prepare_session(
+        "alt", "Migrate the tests", str(repo), harness="pi",
+    )
+    assert out["command"].endswith("&& pi")
+    assert "claude" not in out["command"]
+    assert out["harness"] == "pi"
+    # Everything else is identical — that is the point.
+    assert (Path(out["worktree"]) / ".engram-project").exists()
+
+
+@pytest.mark.asyncio
+async def test_claude_stays_the_default(mu, repo):
+    out = await app_module.kb_prepare_session("alt", "Ordinary work", str(repo))
+    assert out["command"].endswith("&& claude")
+    assert out["harness"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_harness_is_refused_before_anything_is_created(mu, repo):
+    """`command` is written for a human to paste into a shell, so a passthrough
+    would be command injection reached through an ordinary-looking argument. And
+    validating at the RETURN would leave a worktree, branch, thread and claims
+    behind for a typo — so it has to fail before the first side effect."""
+    before = {p.name for p in repo.parent.iterdir()}
+    with pytest.raises((ValueError, KBError)):
+        await app_module.kb_prepare_session(
+            "alt", "Some work", str(repo), harness="pi; rm -rf ~",
+        )
+    assert {p.name for p in repo.parent.iterdir()} == before, \
+        "a rejected harness must not leave a worktree behind"

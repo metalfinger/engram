@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS room_speakers (
     listening_until TEXT NOT NULL DEFAULT '',
     last_spoke TEXT NOT NULL DEFAULT '',
     empty_waits INTEGER NOT NULL DEFAULT 0,
+    read_through INTEGER NOT NULL DEFAULT -1,
+    processed_through INTEGER NOT NULL DEFAULT -1,
     PRIMARY KEY (room_id, speaker)
 );
 CREATE TABLE IF NOT EXISTS session_activity (
@@ -240,6 +242,19 @@ class RoomStore:
             if scols and "empty_waits" not in scols:
                 self._conn.execute(
                     "ALTER TABLE room_speakers ADD COLUMN empty_waits INTEGER NOT NULL DEFAULT 0"
+                )
+            if scols and "read_through" not in scols:
+                self._conn.execute(
+                    "ALTER TABLE room_speakers ADD COLUMN read_through INTEGER NOT NULL DEFAULT -1"
+                )
+            if scols and "processed_through" not in scols:
+                self._conn.execute(
+                    "ALTER TABLE room_speakers ADD COLUMN processed_through "
+                    "INTEGER NOT NULL DEFAULT -1"
+                )
+            if "latest_seq" not in rcols:
+                self._conn.execute(
+                    "ALTER TABLE rooms ADD COLUMN latest_seq INTEGER NOT NULL DEFAULT -1"
                 )
             self._conn.commit()
 
@@ -610,15 +625,107 @@ class RoomStore:
             )
             self._conn.commit()
 
+    def mark_read(self, room_id: int, speaker: str, seq: int) -> None:
+        """Record what a speaker has actually CONSUMED, not merely been present for.
+
+        `last_seen` and `listening` say somebody is there; neither says they have
+        seen turn 7. Without this, "delivered but unread" has to be inferred by each
+        client from presence flags — and three sessions inferring from identical
+        flags reached three different conclusions on 2026-08-16, which is why
+        `do_next` is computed server-side. This is the same fix for the same reason.
+
+        MONOTONIC. A read is a high-water mark: a stale or out-of-order call can
+        never walk it backwards and resurrect turns someone has already answered.
+
+        SEQ 0 IS A REAL TURN. Thread seqs are 0-based, so "nothing read" has to be
+        -1 rather than 0 — guarding on `<= 0` silently made the FIRST turn of every
+        thread unmarkable, which a test caught and no amount of reading would have."""
+        if not speaker or seq < 0:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE room_speakers SET read_through = MAX(read_through, ?) "
+                "WHERE room_id = ? AND speaker = ?",
+                (int(seq), room_id, speaker),
+            )
+            self._conn.commit()
+
+    def mark_processed(self, room_id: int, speaker: str, seq: int) -> None:
+        """Record what the AGENT has actually taken in, as opposed to what its client
+        fetched on its behalf.
+
+        These were one event for every reader the floor was designed against, because
+        a model reading for itself fetches and consumes in the same breath. Put a
+        background listener in between — Pi holds a long-poll outside the model's turn
+        and queues the turn until the current work ends — and they come apart by
+        minutes. `read_through` would then say "read" during exactly the window that
+        Hiren wanted made visible: delivered, not yet read. A receipt that lies in the
+        one case it exists for is worse than no receipt.
+
+        Client-stamped, because only the client knows when its agent surfaced the turn.
+        Monotonic, like the others. Never stamping is the correct behaviour for a
+        harness where fetch and consume ARE one event — see `_speakers_locked`, which
+        falls back to `read_through` so those clients need no change and stay right."""
+        if not speaker or seq < 0:
+            return
+        with self._lock:
+            # CLAMPED to what exists. A client acking a seq that hasn't arrived would
+            # mark itself caught up on turns nobody has written — and because the
+            # watermark is monotonic, that damage is permanent: it would read as
+            # "processed" for every future turn up to the bogus number. Monotonic and
+            # unbounded is a bad pair.
+            latest = self._latest_seq_locked(room_id)
+            capped = min(int(seq), latest) if latest >= 0 else -1
+            if capped < 0:
+                return
+            self._conn.execute(
+                "UPDATE room_speakers SET processed_through = MAX(processed_through, ?) "
+                "WHERE room_id = ? AND speaker = ?",
+                (capped, room_id, speaker),
+            )
+            self._conn.commit()
+
+    def note_latest(self, room_id: int, seq: int) -> None:
+        """Record the newest turn seq in a room, so unread is arithmetic the SERVER
+        does rather than arithmetic each client invents.
+
+        Also monotonic, and deliberately per-room: an earlier version of unread
+        subtracted GLOBAL turn ids, which reported 70 unread on a brand-new room."""
+        if seq < 0:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE rooms SET latest_seq = MAX(latest_seq, ?) WHERE id = ?",
+                (int(seq), room_id),
+            )
+            self._conn.commit()
+
+    def _latest_seq_locked(self, room_id: int) -> int:
+        row = self._conn.execute(
+            "SELECT latest_seq FROM rooms WHERE id = ?", (room_id,)
+        ).fetchone()
+        # -1 means "no turn has ever been noted here", which is NOT the same as
+        # "turn 0" — the distinction 0-based seqs make load-bearing.
+        if row is None or row["latest_seq"] is None:
+            return -1
+        return int(row["latest_seq"])
+
     def _speakers_locked(self, room_id: int) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM room_speakers WHERE room_id = ? ORDER BY first_seen",
             (room_id,),
         ).fetchall()
         now = _now()
+        latest = self._latest_seq_locked(room_id)
         out: list[dict[str, Any]] = []
         for r in rows:
             last_seen = r["last_seen"]
+            rt = self._col(r, "read_through")
+            read_through = -1 if rt is None else int(rt)
+            st = self._col(r, "processed_through")
+            stamped = -1 if st is None else int(st)
+            # A client that never stamps is one where fetching IS consuming.
+            processed = stamped if stamped >= 0 else read_through
             out.append({
                 "speaker": r["speaker"],
                 "name": r["name"] or r["speaker"],
@@ -626,6 +733,28 @@ class RoomStore:
                 "last_seen": last_seen,
                 "last_spoke": (self._col(r, "last_spoke") or ""),
                 "empty_waits": int(self._col(r, "empty_waits") or 0),
+                # What they have CONSUMED, distinct from being present. `listening`
+                # means "inside a long-poll right now"; `read_through` means "has
+                # seen up to here". A turn that is delivered-but-unread is exactly
+                # the gap between them, and conflating the two is what made a
+                # composing session look identical to one that had gone home.
+                "read_through": read_through,
+                # A client that never stamps is one where fetching IS consuming —
+                # every model reading for itself. Defaulting to read_through keeps
+                # those correct without asking them to change anything.
+                "processed_through": processed,
+                "unread": max(0, latest - read_through) if latest >= 0 else 0,
+                # Delivered to the client, not yet in front of the agent. Zero for
+                # everyone except a harness with a listener in between.
+                "unprocessed": max(0, read_through - processed),
+                # The three states named once, here, rather than re-derived from
+                # three integers by every client — the same reason `do_next` is a
+                # sentence and not five booleans.
+                "state": (
+                    "unread" if latest >= 0 and latest > read_through
+                    else "delivered" if read_through > processed
+                    else "read"
+                ),
                 "live": _is_fresh(last_seen),
                 # A listening window that has expired is not listening. This is
                 # deliberately a timestamp rather than a boolean flag: a session
@@ -790,6 +919,12 @@ class RoomStore:
             if room is None:
                 raise TeamworkError(f"No room with id {room_id}.")
             speakers = self._speakers_locked(room_id)
+            # Read under the SAME lock as the speakers, so `latest_seq` and every
+            # `read_through` come from one consistent snapshot. Fetching it after
+            # the lock released could report a turn as unread that the reader had
+            # already consumed a microsecond later — a phantom, and phantoms in
+            # this subsystem have cost a day each.
+            latest_seq = self._latest_seq_locked(room_id)
         others = [s for s in speakers if s["speaker"] != me]
         holder = room.floor
         held_by = next((s for s in speakers if s["speaker"] == holder), None)
@@ -893,6 +1028,16 @@ class RoomStore:
             "awaiting_human": room.awaiting_human,          # blocked on a person
             "empty_waits": waited,   # polls in a row that returned nothing
             "anyone_listening": any(s["listening"] for s in others),
+            # DELIVERED vs READ. `latest_seq` is what exists; each speaker's
+            # `read_through` is what they have taken in. A turn sitting in the gap
+            # is delivered-but-unread — the state a session doing real work is in
+            # when it hasn't looked yet, which used to be indistinguishable from
+            # having left. Computed here so every client reads the same number
+            # instead of inventing its own arithmetic.
+            "latest_seq": latest_seq,
+            "unread_by_others": {
+                s["name"]: s["unread"] for s in others if s.get("unread")
+            },
             "since": room.floor_since,
         }
 
@@ -1421,13 +1566,30 @@ class PresenceStore:
 
 import asyncio as _asyncio
 
-_room_conditions: dict[int, _asyncio.Condition] = {}
+import weakref as _weakref
+
+# Keyed by LOOP first, then room. An asyncio.Condition binds to the loop that first
+# awaits it and raises "bound to a different event loop" forever after — so a single
+# process-wide dict silently poisons every waiter the moment a second loop appears.
+# The server runs one loop for its lifetime, which is exactly why this hid: the only
+# place a second loop exists is the test suite, i.e. the one place that could have
+# caught it. Weak keys so finished loops take their conditions with them.
+_room_conditions: "_weakref.WeakKeyDictionary[Any, dict[int, _asyncio.Condition]]" = (
+    _weakref.WeakKeyDictionary()
+)
 
 
 def _room_condition(room_id: int) -> _asyncio.Condition:
-    cond = _room_conditions.get(room_id)
+    try:
+        loop: Any = _asyncio.get_running_loop()
+    except RuntimeError:  # no loop yet — a caller about to await will make one
+        loop = None
+    per = _room_conditions.get(loop)
+    if per is None:
+        per = _room_conditions[loop] = {}
+    cond = per.get(room_id)
     if cond is None:
-        cond = _room_conditions[room_id] = _asyncio.Condition()
+        cond = per[room_id] = _asyncio.Condition()
     return cond
 
 

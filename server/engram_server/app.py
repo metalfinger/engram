@@ -763,8 +763,28 @@ async def kb_thread_post(
     out = await store.kb_thread_post(
         thread, sender, message, close, topic, goal, exit_condition, refs,
         allow_secrets, wait_for_reply, wait_seconds,
+        # Fires the moment the turn is on disk — INSIDE the store call, before any
+        # reply-wait. Waking afterwards would let a poster using wait_for_reply hold
+        # every listener asleep for the length of their own wait.
+        on_posted=(lambda: _room_notify(fid)) if fid is not None else None,
     )
     if fid is not None:
+        # The turn that was just written is now the newest thing in the room, and
+        # its author has by definition read it — otherwise a speaker would show as
+        # having unread mail consisting entirely of their own message.
+        # `or -1` not `or 0`: seq 0 is the first turn of every thread, and treating
+        # it as falsy is exactly the bug the watermark sentinel exists to avoid.
+        posted_seq = out.get("seq")
+        posted_seq = -1 if posted_seq is None else int(posted_seq)
+        if posted_seq >= 0:
+            registry.rooms.note_latest(fid, posted_seq)
+            if key:
+                registry.rooms.mark_read(fid, key, posted_seq)
+        # A reply collected by wait_for_reply was delivered into these hands too.
+        reply = out.get("reply") or {}
+        if key and isinstance(reply, dict) and reply.get("seq") is not None:
+            registry.rooms.note_latest(fid, int(reply["seq"]))
+            registry.rooms.mark_read(fid, key, int(reply["seq"]))
         out["floor"] = await _with_working(registry.rooms.floor_state(fid, key))
         # THE DELIVERED VERDICT, on threads too. A session that has gone cannot be
         # woken by any amount of waiting, so the person's tray is the only route
@@ -837,7 +857,8 @@ async def kb_thread_post(
 
 @mcp.tool()
 async def kb_thread_read(
-    thread: str, since: str | None = None, wait_seconds: int = 0, sender: str = ""
+    thread: str, since: str | None = None, wait_seconds: int = 0, sender: str = "",
+    ack_through: int = 0,
 ) -> dict[str, Any]:
     """Read a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
     PREFER wait_seconds=25 over tight polling: it long-polls SERVER-SIDE and returns the
@@ -857,12 +878,23 @@ async def kb_thread_read(
     than as someone who might have left. Without it you are invisible until you speak,
     and a reconnect makes you a stranger.
 
+    `ack_through` is ONLY for a client that fetches on an agent's behalf — a background
+    listener holding this poll outside the model's turn. Pass the highest seq the agent
+    has actually processed and the others see `state: "delivered"` (fetched, not yet in
+    front of anyone) instead of a premature `"read"`. If you are a model reading for
+    yourself, fetching IS consuming: leave it alone and it stays correct.
+
     Returns {thread, status, topic, participants, turns: [{seq, sender, timestamp,
     message}], cursor, closed_by?, floor} — check `floor.do_next`.
     """
     started = time.monotonic()
     key = _speaker_key()
     fid = _thread_floor_id(thread)
+    if fid is not None and key and ack_through >= 0:
+        # Stamped BEFORE the wait, not after: a listener acking turn 7 then parking
+        # for 25s would otherwise leave 7 showing as merely delivered for the whole
+        # poll — the receipt arriving after the thing it receipts.
+        registry.rooms.mark_processed(fid, key, int(ack_through))
     if fid is not None and key:
         registry.rooms.touch_speaker(
             fid, key, _require_room_user().id, name=sender,
@@ -870,15 +902,44 @@ async def kb_thread_read(
                 _wait_window(wait_seconds) + _LISTEN_GRACE_S if wait_seconds > 0 else 0
             ),
         )
-    out = await (await current_store()).kb_thread_read(thread, since, wait_seconds)
+    store = await current_store()
+    if fid is not None and wait_seconds > 0:
+        # WAKE ON THE BUS, not on a clock. Rooms have always returned the instant a
+        # turn lands (an asyncio Condition); threads sat in a 1-second sleep loop, so
+        # the surface a single user with several machines actually uses was the slow
+        # one. Same rendezvous, finally plugged in.
+        #
+        # Still a LOOP, because a wake is not proof of a turn for THIS cursor: our own
+        # post, or an audit turn, notifies too. Returning empty on any wake would turn
+        # a 25-second wait into an instant miss — faster and wrong.
+        deadline = time.monotonic() + _wait_window(wait_seconds)
+        while True:
+            out = await store.kb_thread_read(thread, since, 0)
+            if out.get("turns") or out.get("status") == "closed":
+                break
+            remaining = int(deadline - time.monotonic())
+            if remaining < 1:
+                break
+            await _room_wait(fid, remaining)
+    else:
+        out = await store.kb_thread_read(thread, since, wait_seconds)
     if fid is not None:
+        turns = out.get("turns") or []
+        if turns:
+            # Stamp what was actually HANDED to this reader. Not what exists, not
+            # that they were present — what came back in their hands. Everything
+            # newer stays delivered-but-unread until someone reads it.
+            newest = max(int(t["seq"]) for t in turns if t.get("seq") is not None)
+            registry.rooms.note_latest(fid, newest)
+            if key:
+                registry.rooms.mark_read(fid, key, newest)
         if key and wait_seconds > 0:
-            if out.get("turns"):
+            if turns:
                 registry.rooms.stop_listening(fid, key)
                 registry.rooms.clear_empty_waits(fid, key)
             else:
                 registry.rooms.note_empty_wait(fid, key)
-        elif out.get("turns") and key:
+        elif turns and key:
             registry.rooms.stop_listening(fid, key)
         out["floor"] = await _with_working(registry.rooms.floor_state(fid, key))
     # The server's own elapsed time. Absent here, any timing report a session makes
@@ -3011,6 +3072,22 @@ async def kb_setup_machine() -> dict[str, Any]:
     }
 
 
+# An ALLOWLIST, not a passthrough. `command` is written for a human to paste into
+# a shell, so an arbitrary string here would be a command-injection surface reached
+# through an ordinary-looking argument. Adding a harness is a one-line change; being
+# able to smuggle `; rm -rf ~` through a tool parameter is not a feature.
+_HARNESS_CMD = {"claude": "claude", "pi": "pi"}
+
+
+def _harness_key(harness: str) -> str:
+    key = (harness or "claude").strip().lower()
+    if key not in _HARNESS_CMD:
+        raise ValueError(
+            f"Unknown harness {harness!r}. Known: {', '.join(sorted(_HARNESS_CMD))}."
+        )
+    return key
+
+
 @mcp.tool()
 async def kb_prepare_session(
     project: str,
@@ -3022,6 +3099,7 @@ async def kb_prepare_session(
     exit_condition: str = "",
     base: str = "main",
     name: str = "",
+    harness: str = "claude",
 ) -> dict[str, Any]:
     """Prepare an isolated session for one chunk of work, and hand back the command
     that starts it. Use when the user wants to split work across sessions, or when a
@@ -3043,12 +3121,20 @@ async def kb_prepare_session(
     `repo_path` is REQUIRED and absolute: the server has its own working directory
     and cannot see yours, so there is nothing sensible to default to.
 
+    `harness` names the CLI the returned command launches — 'claude' (default) or
+    'pi'. The lifecycle is harness-agnostic on purpose: a worktree, a pin, a thread
+    and claims mean the same thing whoever does the work, and routing grind to a
+    cheaper harness should not mean giving up the record of it.
+
     Returns {worktree, branch, thread, brief_path, command, warnings}. Give the user
     `command` to run. Only the worktree is a hard failure — if the brain is
     unreachable you still get a working command, with warnings naming what was not
     recorded.
     """
     me = _require_room_user()
+    # BEFORE any side effect. Validating at the return would leave a worktree, a
+    # branch, a thread and claims behind for a typo in an argument.
+    harness_key = _harness_key(harness)
     store = await current_store()
     slug = session_prep.slugify(name or task)
     repo = await to_thread.run_sync(lambda: session_prep.require_repo(repo_path))
@@ -3125,7 +3211,8 @@ async def kb_prepare_session(
         "branch": slug,
         "thread": slug,
         "brief_path": brief_path,
-        "command": f'cd "{dest}" && claude',
+        "command": f'cd "{dest}" && {_HARNESS_CMD[harness_key]}',
+        "harness": harness_key,
         "first_message": "realign",
         "warnings": warnings,
     }

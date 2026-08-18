@@ -17,6 +17,7 @@ import secrets
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
+from collections.abc import Awaitable
 from typing import Any, Callable
 
 import anyio
@@ -2128,6 +2129,7 @@ class KBStore:
         allow_secrets: bool = False,
         wait_for_reply: bool = False,
         wait_seconds: int = 25,
+        on_posted: "Callable[[], Awaitable[None]] | None" = None,
     ) -> dict[str, Any]:
         """Post one turn to a bundle-root cross-session thread (auto-creates it on first
         post). Appends a turn file, adds the sender to participants, regenerates the
@@ -2284,6 +2286,20 @@ class KBStore:
             "goal": state.get("goal", ""),
             "exit_condition": state.get("exit_condition", ""),
         }
+        # WAKE WAITERS THE INSTANT THE TURN IS ON DISK — before the reply-wait below,
+        # never after it. Firing this at the end of the call would mean a poster using
+        # wait_for_reply held every other listener asleep for the whole duration of
+        # their own wait: the two sessions would sit waiting on each other, which is
+        # exactly the deadlock the floor was built to end.
+        #
+        # The store stays ignorant of the coordination DB — it just calls back. That
+        # boundary is deliberate: the brain has one writer and no business importing
+        # the neutral-DB layer.
+        if on_posted is not None:
+            try:
+                await on_posted()
+            except Exception:  # noqa: BLE001 — a failed wake must never fail the post
+                log.debug("thread post wake failed", exc_info=True)
         # Post-and-await: hold the same call open for the other session's reply. A closed
         # thread (we just closed it, or it already was) can't receive a reply, so skip.
         if wait_for_reply and not close and state["status"] != "closed":
@@ -2355,6 +2371,12 @@ class KBStore:
             tmeta = normalize_meta(doc.meta)
             all_turns = self._read_turns(tdir / "turns")
             newest = all_turns[-1]["timestamp"] if all_turns else since
+            # Strictly `>`, so two turns sharing a microsecond would drop the second.
+            # What makes that unreachable is the GIT WRITE LOCK serialising posts —
+            # not the timestamp resolution. Worth naming, because the instant-wake bus
+            # makes "batch or async the posts" a tempting optimisation, and that is
+            # exactly the change that would open this. It would present as a turn that
+            # silently never arrives.
             shown = [t for t in all_turns if not since or t["timestamp"] > since]
             out: dict[str, Any] = {
                 "thread": tid,

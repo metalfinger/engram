@@ -7,6 +7,7 @@ work — whose turn it is, who is listening, who has gone, escalating to the per
 lives in a hidden shadow room: no extra git writes, no duplicated protocol.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -299,3 +300,249 @@ async def test_closing_a_thread_offers_a_precipitate(mu, monkeypatch):
     out = await app_module.kb_thread_post("wrap", "windows", "done", close=True)
     assert "precipitate_instruction" in out
     assert "only on their explicit yes" in out["precipitate_instruction"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_delivered_but_unread_until_someone_reads_it(mu, monkeypatch):
+    """The state that had no name. A session doing real work is deaf until it
+    chooses to look — which used to be indistinguishable from having left, because
+    presence flags say somebody is THERE, never what they have CONSUMED."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("delivery", "windows", "first")
+    # b joins and reads, so both are known speakers.
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("delivery", sender="mac")
+    await app_module.kb_thread_post("delivery", "mac", "second")
+
+    # a speaks again without b having read it.
+    _as_session(monkeypatch, "sess-a")
+    out = await app_module.kb_thread_post("delivery", "windows", "third")
+    floor = out["floor"]
+    assert floor["latest_seq"] >= 2
+    mac = next(s for s in floor["others"] if s["name"] == "mac")
+    assert mac["unread"] >= 1, "mac has not read the newest turn"
+    assert floor["unread_by_others"].get("mac") == mac["unread"]
+
+    # Now mac reads, and the unread collapses — for mac specifically.
+    _as_session(monkeypatch, "sess-b")
+    read = await app_module.kb_thread_read("delivery", sender="mac")
+    me = next(s for s in read["floor"]["speakers"] if s["name"] == "mac")
+    assert me["unread"] == 0
+    assert me["read_through"] == read["floor"]["latest_seq"]
+
+
+@pytest.mark.asyncio
+async def test_your_own_turn_is_never_unread_to_you(mu, monkeypatch):
+    """Otherwise a speaker shows as having unread mail consisting entirely of
+    their own message — which is how a phantom backlog gets reported."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    out = await app_module.kb_thread_post("selfread", "windows", "hello")
+    me = next(s for s in out["floor"]["speakers"] if s["name"] == "windows")
+    assert me["unread"] == 0
+
+
+@pytest.mark.asyncio
+async def test_read_through_never_walks_backwards(mu, monkeypatch):
+    """A read is a high-water mark. A stale or out-of-order call must not
+    resurrect turns someone has already answered — which, on a reconnect, is
+    exactly the call that arrives late."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("watermark", "windows", "one")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("watermark", sender="mac")
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("watermark", "windows", "two")
+    _as_session(monkeypatch, "sess-b")
+    caught_up = await app_module.kb_thread_read("watermark", sender="mac")
+    high = next(s for s in caught_up["floor"]["speakers"]
+                if s["name"] == "mac")["read_through"]
+
+    fid = app_module._thread_floor_id("watermark")
+    app_module.registry.rooms.mark_read(fid, "sess-b", 1)  # a late, stale stamp
+    after = app_module.registry.rooms.floor_state(fid, "sess-b")
+    still = next(s for s in after["speakers"] if s["speaker"] == "sess-b")
+    assert still["read_through"] == high
+
+
+@pytest.mark.asyncio
+async def test_a_turn_landing_between_polls_is_not_lost(mu, monkeypatch):
+    """The reconnect race, asserted rather than reasoned about. A long-poll caps
+    below the host's kill, so there is always a gap between one call returning and
+    the next opening. Turns live in git and are filtered by cursor — they are not
+    delivered-and-discarded — so the next read with the same cursor still gets it."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    empty = await app_module.kb_thread_read("gap", sender="mac", wait_seconds=0)
+    cursor = empty["cursor"]
+
+    # A turn lands while nobody is inside a poll at all.
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("gap", "windows", "landed in the gap")
+
+    _as_session(monkeypatch, "sess-b")
+    late = await app_module.kb_thread_read("gap", sender="mac", since=cursor)
+    assert [t["message"] for t in late["turns"]] == ["landed in the gap"]
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_read_wakes_the_instant_a_turn_lands(mu, monkeypatch):
+    """Threads used to sleep-poll at 1s while rooms woke on a condition variable —
+    the difference between 'fast' and 'realtime', on the surface a single user with
+    several machines actually uses. Same bus now.
+
+    Asserted as latency, because a wake that works but arrives on the old 1s tick
+    would pass any correctness-only test."""
+    import anyio
+
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    first = await app_module.kb_thread_post("wake", "windows", "opening")
+    cursor = first["posted"]
+
+    async def _speak_soon():
+        await anyio.sleep(0.2)
+        _as_session(monkeypatch, "sess-a")
+        await app_module.kb_thread_post("wake", "windows", "here it is")
+
+    started = time.monotonic()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_speak_soon)
+        _as_session(monkeypatch, "sess-b")
+        out = await app_module.kb_thread_read(
+            "wake", sender="mac", since=cursor, wait_seconds=25,
+        )
+    elapsed = time.monotonic() - started
+
+    assert [t["message"] for t in out["turns"]] == ["here it is"]
+    assert elapsed < 1.0, f"woke on a clock, not the bus ({elapsed:.2f}s)"
+
+
+@pytest.mark.asyncio
+async def test_a_wake_that_is_not_for_you_keeps_waiting(mu, monkeypatch):
+    """A notify is not proof of a turn for THIS cursor — our own post wakes the bus
+    too. Returning empty on any wake would turn a 25s wait into an instant miss:
+    faster, and wrong."""
+    import anyio
+
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    seed = await app_module.kb_thread_post("selfwake", "mac", "mine")
+    cursor = seed["posted"]
+
+    started = time.monotonic()
+    _as_session(monkeypatch, "sess-b")
+    out = await app_module.kb_thread_read(
+        "selfwake", sender="mac", since=cursor, wait_seconds=3,
+    )
+    elapsed = time.monotonic() - started
+    assert out["turns"] == []
+    assert elapsed >= 2.0, "returned early on a wake that carried nothing new"
+
+
+@pytest.mark.asyncio
+async def test_a_listener_that_fetched_is_not_the_same_as_an_agent_that_read(
+    mu, monkeypatch,
+):
+    """pi-exec found this in my design, not theirs. Every reader the floor was built
+    against was a model reading for itself, where fetch and consume are one event.
+    Put a background listener in between — it holds the poll outside the model's turn
+    and queues the turn until current work ends — and `read_through` says "read"
+    during exactly the window Hiren wanted made visible."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("acked", "windows", "one")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("acked", sender="mac")
+
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("acked", "windows", "two")
+
+    # mac's LISTENER fetches, but its agent is mid-work and hasn't seen it.
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("acked", sender="mac")
+
+    _as_session(monkeypatch, "sess-a")
+    view = await app_module.kb_thread_post("acked", "windows", "three")
+    mac = next(s for s in view["floor"]["others"] if s["name"] == "mac")
+    assert mac["state"] == "unread", "turn three is with nobody yet"
+
+    # The listener fetches three, then acks only through two.
+    _as_session(monkeypatch, "sess-b")
+    got = await app_module.kb_thread_read("acked", sender="mac")
+    seq_three = max(t["seq"] for t in got["turns"])
+    await app_module.kb_thread_read("acked", sender="mac", ack_through=seq_three - 1)
+
+    _as_session(monkeypatch, "sess-a")
+    after = await app_module.kb_thread_read("acked", sender="windows")
+    mac = next(s for s in after["floor"]["others"] if s["name"] == "mac")
+    assert mac["state"] == "delivered", "the listener has it; the agent does not"
+    assert mac["unread"] == 0 and mac["unprocessed"] >= 1
+
+    # Agent surfaces it.
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("acked", sender="mac", ack_through=seq_three)
+    _as_session(monkeypatch, "sess-a")
+    done = await app_module.kb_thread_read("acked", sender="windows")
+    mac = next(s for s in done["floor"]["others"] if s["name"] == "mac")
+    assert mac["state"] == "read"
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_never_acks_stays_correct(mu, monkeypatch):
+    """Claude Code fetches and consumes in one event, so it must need no change and
+    must never look permanently 'delivered' for want of a stamp it has no reason to
+    send. processed_through falls back to read_through."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("noack", "windows", "hello")
+    _as_session(monkeypatch, "sess-b")
+    out = await app_module.kb_thread_read("noack", sender="mac")
+    me = next(s for s in out["floor"]["speakers"] if s["name"] == "mac")
+    assert me["state"] == "read"
+    assert me["processed_through"] == me["read_through"]
+    assert me["unprocessed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_processed_watermark_never_walks_backwards(mu, monkeypatch):
+    """Needs at least two turns to mean anything: with a single 0-seq turn there is
+    no lower value to send, and the first version of this test 'failed' by acking
+    ABOVE the top — which is a legitimate advance, not a regression."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("ackmono", "windows", "one")
+    await app_module.kb_thread_post("ackmono", "windows", "two")
+    _as_session(monkeypatch, "sess-b")
+    got = await app_module.kb_thread_read("ackmono", sender="mac")
+    top = max(t["seq"] for t in got["turns"])
+    assert top >= 1
+    await app_module.kb_thread_read("ackmono", sender="mac", ack_through=top)
+    await app_module.kb_thread_read("ackmono", sender="mac", ack_through=0)  # stale
+    out = await app_module.kb_thread_read("ackmono", sender="mac")
+    me = next(s for s in out["floor"]["speakers"] if s["name"] == "mac")
+    assert me["processed_through"] == top
+
+
+@pytest.mark.asyncio
+async def test_an_ack_beyond_the_last_turn_is_clamped(mu, monkeypatch):
+    """Monotonic and unbounded is a bad pair: a client acking a seq that has not
+    arrived would mark itself caught up on turns nobody has written, permanently,
+    because the watermark can never come back down."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("ackwild", "windows", "one")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_thread_read("ackwild", sender="mac", ack_through=999)
+    out = await app_module.kb_thread_read("ackwild", sender="mac")
+    me = next(s for s in out["floor"]["speakers"] if s["name"] == "mac")
+    assert me["processed_through"] == out["floor"]["latest_seq"]
+
+    # A later turn is still genuinely unprocessed — the bogus ack bought nothing.
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("ackwild", "windows", "two")
+    view = await app_module.kb_thread_read("ackwild", sender="windows")
+    mac = next(s for s in view["floor"]["others"] if s["name"] == "mac")
+    assert mac["state"] == "unread"
