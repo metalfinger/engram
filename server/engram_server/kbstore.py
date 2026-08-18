@@ -712,10 +712,34 @@ class KBStore:
             return False
 
     def _find_project_dir(self, pid: str) -> str | None:
-        """'projects/<pid>' or 'projects/<folder>/<pid>' — whichever exists."""
+        """'projects/<pid>' or 'projects/<folder>/<pid>' — whichever is REAL.
+
+        The same id can exist in two places, and the top-level one used to win by
+        merely being a directory. That is how an empty `projects/engram/` left over
+        from a July engine retest shadowed `projects/personal/engram/` for six
+        weeks: kb_projects listed the hollow one, kb_load returned
+        `context_md: null`, and every session that oriented on the project got
+        nothing — while search, which walks files rather than the registry, kept
+        finding the real content. A directory that only LOOKS like a project is
+        worse than a missing one, because nothing reports an error.
+
+        A project is its context.md, so that is what decides. The bare-directory
+        fallbacks remain for a project mid-creation, which legitimately has none
+        yet."""
         pdir = self.root / "projects"
         direct = pdir / pid
-        if direct.is_dir() and not self._is_folder_dir(direct):
+        direct_ok = direct.is_dir() and not self._is_folder_dir(direct)
+        if direct_ok and (direct / "context.md").is_file():
+            return f"projects/{pid}"
+        if pdir.is_dir():
+            for child in sorted(pdir.iterdir()):
+                if child.is_dir() and not child.name.startswith(".") and (
+                    child / pid / "context.md"
+                ).is_file():
+                    return f"projects/{child.name}/{pid}"
+        # Nothing has a context.md — fall back to whatever exists, so a project
+        # being created right now still resolves.
+        if direct_ok:
             return f"projects/{pid}"
         if pdir.is_dir():
             for child in sorted(pdir.iterdir()):
