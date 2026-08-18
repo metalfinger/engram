@@ -100,6 +100,7 @@ EXPECTED_TOOLS = frozenset(
         "kb_room_relay_answer",
         "kb_prepare_session",
         "kb_finish_session",
+        "kb_setup_machine",
         "rooms_state",
         "room_transcript",
         "room_reply",

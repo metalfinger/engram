@@ -2826,6 +2826,99 @@ async def kb_room_read(
 
 
 @mcp.tool()
+async def kb_setup_machine() -> dict[str, Any]:
+    """SET THIS MACHINE UP for Engram — call when the user says "set up engram here",
+    "engram setup", on a new computer, or when something looks stale (a skill that
+    doesn't match, hooks that never fire, this machine missing from the roster).
+
+    Returns everything needed and NOTHING you have to ask the user for: the skill
+    and hook bundles to download, where to put them, the settings.json wiring, and a
+    scope-limited token for `~/.engram/upload.json` so this machine's presence
+    reaches the server. The token is minted for the account already on this
+    connection — it can only read notifications and post presence, and is strictly
+    weaker than the access this session already has.
+
+    YOU do the file writes; the server cannot reach this machine. Work through
+    `steps` in order, then report what changed in one line.
+
+    TWO THINGS THAT WASTED A DAY, so do not repeat them:
+      * A file copy CANNOT fix a stale tool list — schemas are cached at connect.
+        If `reconnect_needed` is true, tell the user to run /mcp.
+      * The hooks are failure-soft (they always exit 0), so a broken install looks
+        exactly like a working one. VERIFY with the check in `steps`; never assume.
+
+    Returns {server_url, token, skills, hooks, settings_snippet, steps, notes}.
+    """
+    me = _require_room_user()
+    base = settings.public_url.rstrip("/")
+    token = ""
+    try:
+        token = _dashboard.auth.issue(
+            f"google:{me.email}" if "@" in (me.email or "") else me.handle,
+            me.email or "", me.handle,
+            ttl=30 * 24 * 3600, scope="notify",
+        )
+    except Exception:  # noqa: BLE001 — setup is still useful without presence upload
+        log.warning("could not mint a machine token", exc_info=True)
+
+    skills = []
+    try:
+        for d in sorted(p for p in _SKILLS_ROOT.iterdir() if p.is_dir()):
+            skills.append({"name": d.name, "install_to": f"~/.claude/skills/{d.name}/",
+                           "digest": _dir_digest(d)})
+    except Exception:  # noqa: BLE001
+        log.debug("could not digest skills", exc_info=True)
+
+    return {
+        "server_url": base,
+        "token": token,
+        "skills": skills,
+        "skills_zip": f"{base}/downloads/engram-skill.zip",
+        "hooks": {"zip": f"{base}/downloads/engram-hooks.zip",
+                  "install_to": "~/.claude/hooks/",
+                  "digest": _dir_digest(_HOOKS_DIR)},
+        "upload_config": {
+            "path": "~/.engram/upload.json",
+            "contents": {"url": base, "token": token or "<could not mint — ask Hiren>"},
+            "why": (
+                "Presence is spooled to a local file that only the SERVER's own "
+                "machine can drain. Without this, this machine never appears in the "
+                "roster and its records are stranded rather than queued."
+            ),
+        },
+        "settings_snippet": {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command",
+                                             "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
+                "UserPromptSubmit": [{"hooks": [{"type": "command",
+                                                 "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
+                "SessionEnd": [{"hooks": [{"type": "command",
+                                           "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
+            }
+        },
+        "steps": [
+            "1. Download skills_zip and unpack each skill into ~/.claude/skills/<name>/.",
+            "2. Download hooks zip and unpack into ~/.claude/hooks/; chmod +x the .sh on macOS/Linux.",
+            "3. Merge settings_snippet into ~/.claude/settings.json — APPEND to any existing "
+            "hooks for those events, never replace them. Other tools' hooks live there too.",
+            "4. Write upload_config.contents to upload_config.path (create ~/.engram/ if needed).",
+            "5. VERIFY, do not assume: echo '{\"session_id\":\"setup-check\",\"hook_event_name\":"
+            "\"SessionStart\",\"cwd\":\".\"}' | python3 ~/.claude/hooks/engram_presence_hook.py "
+            "&& then call kb_roster() — this machine should appear. The hooks always exit 0, "
+            "so a broken install is invisible unless you check.",
+            "6. Tell the user to run /mcp if they want tool arguments added since this "
+            "session connected — a file copy cannot refresh cached schemas.",
+        ],
+        "notes": [
+            "Pin each repo with a .engram-project file — an unpinned repo teaches the "
+            "routing table nothing, however well the hooks work.",
+            "Never paste the token into a chat or commit it; ~/.engram/ is where the "
+            "deploy key and CF token already live.",
+        ],
+    }
+
+
+@mcp.tool()
 async def kb_prepare_session(
     project: str,
     task: str,
@@ -4011,7 +4104,11 @@ if settings.github_client_id and settings.github_client_secret:
     _dashboard_idps["github"] = get_idp("github", settings)
 if settings.google_client_id and settings.google_client_secret:
     _dashboard_idps["google"] = get_idp("google", settings)
-register_dashboard(mcp, settings, registry, _dashboard_idps)
+# Held so kb_setup_machine can mint a scope='notify' token for an already-
+# authenticated session. That is strictly LESS power than the caller already
+# has — it holds an OAuth token with full read/write to the brain — so this is
+# not an escalation, it is handing over a weaker credential for a narrow job.
+_dashboard = register_dashboard(mcp, settings, registry, _dashboard_idps)
 
 
 # ------------------------------------------------------------------ entrypoint

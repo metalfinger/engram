@@ -1,0 +1,101 @@
+"""kb_setup_machine — a new computer set up from one pasted prompt.
+
+Hiren works across three machines and adds more. Setting one up has meant being
+walked through curl commands, and the macOS hook fix had to be hand-delivered by
+commit-pinned URL. The session on the new machine can do all of it: it has file
+access, and the server already knows who it is.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+
+import engram_server.app as app_module
+from engram_server.registry import StoreRegistry
+
+
+@pytest.fixture()
+def mu(settings, tmp_path, monkeypatch):
+    s = settings.model_copy(update={
+        "multiuser": True,
+        "users_root": str(tmp_path / "users"),
+        "tenancy_db_path": str(tmp_path / "engram.db"),
+        "dashboard_session_secret": "z" * 40,
+    })
+    registry = StoreRegistry(s)
+    monkeypatch.setattr(app_module, "registry", registry)
+    monkeypatch.setattr(app_module, "settings", s)
+    monkeypatch.setattr(app_module, "_presence_last", {})
+    inv = registry.tenancy.create_invite("alice@example.com")
+    registry.tenancy.accept_invite(inv.token, "alice", "alice@example.com",
+                                   "google", "google:alice@example.com")
+    monkeypatch.setattr(app_module, "get_access_token",
+                        lambda: SimpleNamespace(subject="google:alice@example.com"))
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_setup_returns_everything_without_asking_the_user(mu):
+    out = await app_module.kb_setup_machine()
+    assert out["server_url"]
+    assert {s["name"] for s in out["skills"]} >= {"engram", "chunk-work"}
+    assert out["hooks"]["zip"].endswith("engram-hooks.zip")
+    assert out["upload_config"]["path"] == "~/.engram/upload.json"
+    assert len(out["steps"]) >= 5
+
+
+@pytest.mark.asyncio
+async def test_it_mints_a_token_so_nobody_pastes_a_secret(mu):
+    """The session is already authenticated with full read/write to the brain, so a
+    notify-scope token is strictly LESS power — handing it over is not escalation."""
+    out = await app_module.kb_setup_machine()
+    assert out["token"], "without this the user is back to copying secrets by hand"
+    assert out["upload_config"]["contents"]["token"] == out["token"]
+    assert out["upload_config"]["contents"]["url"] == out["server_url"]
+
+
+@pytest.mark.asyncio
+async def test_the_settings_snippet_covers_the_three_hook_events(mu):
+    out = await app_module.kb_setup_machine()
+    hooks = out["settings_snippet"]["hooks"]
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "SessionEnd"}
+
+
+@pytest.mark.asyncio
+async def test_it_insists_on_verifying_rather_than_assuming(mu):
+    """The hooks always exit 0, so a broken install looks exactly like a working
+    one. That cost an afternoon once already."""
+    out = await app_module.kb_setup_machine()
+    steps = " ".join(out["steps"])
+    assert "VERIFY" in steps and "kb_roster" in steps
+    assert "exit 0" in steps
+
+
+@pytest.mark.asyncio
+async def test_it_warns_that_a_file_copy_cannot_refresh_tool_schemas(mu):
+    out = await app_module.kb_setup_machine()
+    assert "/mcp" in " ".join(out["steps"])
+
+
+@pytest.mark.asyncio
+async def test_it_says_to_append_hooks_not_replace_them(mu):
+    """Other tools' hooks live in the same file; replacing the block would silently
+    disable them."""
+    out = await app_module.kb_setup_machine()
+    assert "APPEND" in " ".join(out["steps"])
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_mint_still_returns_usable_setup(mu, monkeypatch):
+    """Presence upload is one part of setup; losing it must not block the rest."""
+    class _Broken:
+        class auth:
+            @staticmethod
+            def issue(*a, **k):
+                raise RuntimeError("no signing key")
+
+    monkeypatch.setattr(app_module, "_dashboard", _Broken)
+    out = await app_module.kb_setup_machine()
+    assert out["token"] == ""
+    assert out["skills"], "the rest of setup still works"
+    assert "ask Hiren" in out["upload_config"]["contents"]["token"]
