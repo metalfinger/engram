@@ -858,7 +858,12 @@ async def kb_thread_post(
 @mcp.tool()
 async def kb_thread_read(
     thread: str, since: str | None = None, wait_seconds: int = 0, sender: str = "",
-    ack_through: int = 0,
+    # -1, NOT 0. Seq 0 is a real turn, so the guard below is `>= 0` — which made a
+    # default of 0 mean "the agent has processed turn 0" on EVERY read, pinning any
+    # client that never acks at `delivered` forever. Found in live use minutes after
+    # shipping; the test missed it because it used a single 0-seq turn, where
+    # read_through was also 0 and the right and wrong answers coincide.
+    ack_through: int = -1,
 ) -> dict[str, Any]:
     """Read a cross-session thread for new turns — the WAIT half of agent-to-agent chat.
     PREFER wait_seconds=25 over tight polling: it long-polls SERVER-SIDE and returns the
@@ -2920,6 +2925,7 @@ async def kb_setup_machine() -> dict[str, Any]:
     me = _require_room_user()
     base = settings.public_url.rstrip("/")
     token = ""
+    harness_token = ""
     try:
         # The REAL subject, never one synthesized from the email. A token is only
         # usable if its `sub` resolves through tenancy.user_by_subject, and this
@@ -2931,6 +2937,15 @@ async def kb_setup_machine() -> dict[str, Any]:
             me.idp_subject or me.handle,
             me.email or "", me.handle,
             ttl=30 * 24 * 3600, scope="notify",
+        )
+        # A SECOND, separately-scoped token for harness lifecycle calls. Two
+        # tokens rather than one wider one: presence-posting and thread-closing
+        # are different powers, and a machine that only needs the first should
+        # not be handed the second by accident.
+        harness_token = _dashboard.auth.issue(
+            me.idp_subject or me.handle,
+            me.email or "", me.handle,
+            ttl=30 * 24 * 3600, scope=_HARNESS_SCOPE,
         )
     except Exception:  # noqa: BLE001 — setup is still useful without presence upload
         log.warning("could not mint a machine token", exc_info=True)
@@ -2948,6 +2963,29 @@ async def kb_setup_machine() -> dict[str, Any]:
         "token": token,
         "skills": skills,
         "skills_zip": f"{base}/downloads/engram-skill.zip",
+        "harness": {
+            "token": harness_token,
+            "scope": _HARNESS_SCOPE,
+            "why": (
+                "For a HARNESS BOOT HOOK calling Engram from code rather than from a "
+                "model — Pi extensions, or any launcher that must orient a session "
+                "deterministically before its first turn. Separate from the presence "
+                "token on purpose: posting presence and closing a thread are "
+                "different powers."
+            ),
+            "routes": {
+                "realign": f"{base}/api/session/realign",
+                "finish": f"{base}/api/session/finish",
+            },
+            "usage": (
+                "POST JSON with `Authorization: Bearer <harness.token>`. realign takes "
+                "{project?, repo?, cwd?, pin?} and finish takes {thread, project, "
+                "repo_path?, summary?, pr_title?, pr_body?, base?} — the same arguments "
+                "and the same return shapes as the kb_* tools, because they call the "
+                "same code. NOT a general API: model-facing work stays on MCP, where "
+                "tool definitions live on the server and cannot go stale in a copy."
+            ),
+        },
         "hooks": {"zip": f"{base}/downloads/engram-hooks.zip",
                   "install_to": "~/.claude/hooks/",
                   "files": [p.name for p in _owned_hooks(_HOOKS_DIR)],
@@ -4312,6 +4350,138 @@ if settings.google_client_id and settings.google_client_secret:
 # has — it holds an OAuth token with full read/write to the brain — so this is
 # not an escalation, it is handing over a weaker credential for a narrow job.
 _dashboard = register_dashboard(mcp, settings, registry, _dashboard_idps)
+
+
+# ------------------------------------------------- harness lifecycle over HTTP
+#
+# TWO CALLERS WITH GENUINELY DIFFERENT NEEDS.
+#
+#   model-facing  -> MCP.  91 tool definitions whose descriptions and rails live
+#                    on the SERVER, so a change reaches every client at its next
+#                    connect. Copies rot: the skill on Hiren's Mac was six weeks
+#                    stale and nothing surfaced it, which is why setup exists.
+#   code-facing   -> HTTP. A hook calling realign at startup has no model, reads
+#                    no description and negotiates nothing. The handshake is pure
+#                    overhead, and hand-rolling the wire format inside a harness
+#                    is ~150 lines of protocol in the safety-relevant layer —
+#                    "harness plumbing matters AND fails invisibly", exactly.
+#
+# ONE IMPLEMENTATION, TWO DOORS. These call the same functions the MCP tools call
+# — they do not reimplement anything, so there is nothing to drift. The seam is
+# `auth_context_var`: the SDK reads the caller's identity from it, so a plain
+# route can enter the same context a tool body runs in.
+#
+# THE BOUNDARY, and it is the whole reason this is safe: this door is for calls
+# made by CODE at session boundaries. Never for model-facing tools. Two lifecycle
+# routes is a seam; a parallel API is two ways to do everything with no rule for
+# choosing between them.
+_HARNESS_SCOPE = "harness"
+
+
+def _harness_subject(request: Request) -> str:
+    """Resolve a harness token to the subject it was minted for, or ''.
+
+    ITS OWN SCOPE, deliberately not `notify`. That one was minted for "read
+    notifications, post presence" and now sits in a config file on every machine.
+    `kb_finish_session` writes a log, closes a thread and releases claims — so
+    letting `notify` reach it would retroactively upgrade every machine token on
+    every PC beyond what was approved when they were minted. Scopes are only
+    meaningful if widening one requires a decision."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return ""
+    claims = _dashboard.auth.verify(auth[7:].strip(), expected_scope=_HARNESS_SCOPE)
+    if claims is None:
+        return ""
+    subject = str(claims.get("sub") or "")
+    # A token whose subject no longer resolves is a token for a deleted account.
+    if settings.multiuser and registry.tenancy.user_by_subject(subject) is None:
+        return ""
+    return subject
+
+
+@asynccontextmanager
+async def _acting_as(subject: str):
+    """Run a tool body as `subject`, then put the context back exactly as found.
+
+    The reset token is not optional bookkeeping: these routes run on the same
+    worker as everything else, so a leaked context would hand the NEXT request
+    somebody else's identity."""
+    from mcp.server.auth.middleware.auth_context import AuthenticatedUser, auth_context_var
+    from mcp.server.auth.provider import AccessToken
+
+    token = AccessToken(
+        token="harness", client_id="engram-harness", scopes=["mcp"],
+        expires_at=None, subject=subject,
+    )
+    reset = auth_context_var.set(AuthenticatedUser(token))
+    try:
+        yield
+    finally:
+        auth_context_var.reset(reset)
+
+
+async def _harness_call(request: Request, run) -> Response:
+    """Shared shell: authenticate, impersonate, call, serialise. Errors come back
+    as JSON with a message rather than a stack, because the caller is a hook that
+    must decide whether to continue — and a hook that cannot parse the failure
+    will treat it as success."""
+    from starlette.responses import JSONResponse
+
+    subject = _harness_subject(request)
+    if not subject:
+        return JSONResponse(
+            {"error": "A harness-scoped bearer token is required. "
+                      "kb_setup_machine mints one."},
+            status_code=401,
+        )
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "Body must be a JSON object."}, status_code=400)
+    try:
+        async with _acting_as(subject):
+            return JSONResponse(await run(body))
+    except KBError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("harness route failed", exc_info=True)
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+
+@mcp.custom_route("/api/session/realign", ["POST"])
+async def http_session_realign(request: Request) -> Response:
+    """Orientation for a harness boot hook — the same `kb_realign`, no handshake.
+
+    Deterministic BY THE HOOK CALLING IT, which is the point the spec's boundary
+    rule actually makes: preparation and orientation must be identical every time,
+    and prose protocols drift. Both this and the MCP tool run the same code."""
+    return await _harness_call(request, lambda b: kb_realign(
+        project=str(b.get("project") or ""),
+        repo=str(b.get("repo") or ""),
+        cwd=str(b.get("cwd") or ""),
+        pin=str(b.get("pin") or ""),
+    ))
+
+
+@mcp.custom_route("/api/session/finish", ["POST"])
+async def http_session_finish(request: Request) -> Response:
+    """Close a chunk from a harness — the same `kb_finish_session`.
+
+    Still opens nothing on anyone's behalf: pr_title/pr_body go to the person via
+    ask_human exactly as they do through MCP. A second door must not become a
+    quieter one."""
+    return await _harness_call(request, lambda b: kb_finish_session(
+        thread=str(b.get("thread") or ""),
+        project=str(b.get("project") or ""),
+        repo_path=str(b.get("repo_path") or ""),
+        summary=str(b.get("summary") or ""),
+        pr_title=str(b.get("pr_title") or ""),
+        pr_body=str(b.get("pr_body") or ""),
+        base=str(b.get("base") or "main"),
+    ))
 
 
 # ------------------------------------------------------------------ entrypoint

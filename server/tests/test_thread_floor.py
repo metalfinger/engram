@@ -497,13 +497,26 @@ async def test_a_client_that_never_acks_stays_correct(mu, monkeypatch):
     send. processed_through falls back to read_through."""
     _login(monkeypatch)
     _as_session(monkeypatch, "sess-a")
-    await app_module.kb_thread_post("noack", "windows", "hello")
+    # THREE turns, deliberately. The first version of this test used one, whose seq
+    # is 0 — and read_through was 0 too, so a broken default of 0 gave the same
+    # answer as a correct fallback. It passed while the feature was broken in
+    # production, which is the exact failure it was written to prevent.
+    await app_module.kb_thread_post("noack", "windows", "one")
+    await app_module.kb_thread_post("noack", "windows", "two")
+    await app_module.kb_thread_post("noack", "windows", "three")
     _as_session(monkeypatch, "sess-b")
     out = await app_module.kb_thread_read("noack", sender="mac")
     me = next(s for s in out["floor"]["speakers"] if s["name"] == "mac")
+    assert out["floor"]["latest_seq"] >= 2, "need turns past seq 0 to mean anything"
     assert me["state"] == "read"
     assert me["processed_through"] == me["read_through"]
     assert me["unprocessed"] == 0
+
+    # And it stays true across further reads — the bug stamped on EVERY call.
+    await app_module.kb_thread_read("noack", sender="mac")
+    again = await app_module.kb_thread_read("noack", sender="mac")
+    me = next(s for s in again["floor"]["speakers"] if s["name"] == "mac")
+    assert me["state"] == "read"
 
 
 @pytest.mark.asyncio
