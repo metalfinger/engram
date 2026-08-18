@@ -19,6 +19,54 @@ import time
 SPOOL_DIR = os.path.join(os.path.expanduser("~"), ".engram", "presence-spool")
 
 
+UPLOAD_CONF = os.path.join(os.path.expanduser("~"), ".engram", "upload.json")
+
+
+def _upload(record):
+    """POST this record to Engram from a machine that is NOT the server's.
+
+    Returns True when the record was accepted (so the caller skips the spool),
+    False when upload is not configured or did not work — on the server's own
+    machine that is the normal path and the spool takes over.
+
+    Config: ~/.engram/upload.json = {"url": "https://engram.example", "token": "..."}
+    Same place the deploy key and CF token already live. The token is never printed.
+
+    A FAILED UPLOAD IS DROPPED, not queued. This is a heartbeat: the next one is
+    seconds away, and a stale presence record is worse than a missing one — it
+    would claim a session was somewhere it has since left.
+    """
+    try:
+        with open(UPLOAD_CONF, "r", encoding="utf-8") as f:
+            conf = json.load(f)
+        url = str(conf.get("url") or "").rstrip("/")
+        token = str(conf.get("token") or "")
+        if not url or not token:
+            return False
+    except Exception:
+        return False
+
+    try:
+        import urllib.request
+
+        body = json.dumps({"records": [record]}).encode("utf-8")
+        req = urllib.request.Request(
+            url + "/dashboard/api/presence/upload",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + token,
+            },
+            method="POST",
+        )
+        # Short timeout on purpose: this runs on every tool call, and a hook that
+        # hangs is worse than a roster that lags.
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def _git(cwd, *args):
     """Read-only git query; empty string on any failure."""
     try:
@@ -113,6 +161,15 @@ def main():
         "status": status,
         "ts": int(time.time()),
     }
+
+    # REMOTE MACHINES UPLOAD; the server's own machine spools.
+    #
+    # The spool only works where the server can read it — its own disk. That is why
+    # Hiren's Mac never appeared in the roster: its records were not queued, they
+    # were stranded. A machine with upload configured POSTs instead, through the
+    # same batched write path on the server side.
+    if _upload(record):
+        return
 
     try:
         os.makedirs(SPOOL_DIR, exist_ok=True)
