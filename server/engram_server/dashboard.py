@@ -1038,6 +1038,61 @@ class Dashboard:
             return None
         return self.registry.tenancy.user_by_subject(claims.get("sub", ""))
 
+    async def api_machine(self, request: "Request") -> "Response":
+        """What this machine should have installed, and whether it is current.
+
+        Hiren works across three machines and adds more. Today the machine he is
+        sitting at gets updates because a session is there to make them; the
+        others drift. The macOS `python` vs `python3` hook fix had to be
+        hand-delivered by commit-pinned URL, and a Mac session spent an afternoon
+        with a stale SKILL.md. Nothing on those machines could ask "am I current?"
+
+        This is that question, answerable in one call: content digests for the
+        skills and hooks, the server version, and download URLs. A client compares
+        what it has, fetches what differs, and tells the user when a reconnect is
+        needed — because tool SCHEMAS are cached at connect and no file copy fixes
+        that.
+        """
+        from starlette.responses import JSONResponse
+
+        from engram_server.app import _dir_digest, _HOOKS_DIR, _SKILLS_ROOT
+        from engram_server.version import SERVER_VERSION
+
+        user = self._bearer_user(request) or self._session_user(self._session(request) or {})
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+
+        base = self.settings.public_url.rstrip("/")
+        skills = []
+        try:
+            for d in sorted(p for p in _SKILLS_ROOT.iterdir() if p.is_dir()):
+                skills.append({
+                    "name": d.name,
+                    "install_to": f"~/.claude/skills/{d.name}/",
+                    "digest": _dir_digest(d),
+                })
+        except Exception:  # noqa: BLE001
+            log.debug("could not digest skills", exc_info=True)
+        return JSONResponse({
+            "ok": True,
+            "server_version": SERVER_VERSION,
+            "skills": skills,
+            "skills_zip": f"{base}/downloads/engram-skill.zip",
+            "hooks": {
+                "digest": _dir_digest(_HOOKS_DIR),
+                "install_to": "~/.claude/hooks/",
+                "zip": f"{base}/downloads/engram-hooks.zip",
+            },
+            # A file copy cannot fix a stale tool list: schemas are fetched at
+            # connect. Saying so is the difference between a machine that looks
+            # updated and one that is.
+            "note": (
+                "After updating skills or hooks, restart the session. New tool "
+                "ARGUMENTS also need /mcp reconnect — tool schemas are cached at "
+                "connect time and no file copy refreshes them."
+            ),
+        })
+
     async def api_asks(self, request: "Request") -> "Response":
         """What is blocked on Hiren right now, across rooms AND threads.
 
@@ -2654,6 +2709,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     # NOT /dashboard/api/presence — that POST is already the invisible toggle, and
     # registering a second handler on it would silently shadow the tray's.
     mcp.custom_route("/dashboard/api/presence/upload", ["POST"])(dash.api_presence_upload)
+    mcp.custom_route("/dashboard/api/machine", ["GET"])(dash.api_machine)
     mcp.custom_route("/dashboard/api/asks", ["GET"])(dash.api_asks)
     mcp.custom_route("/dashboard/api/asks/answer", ["POST"])(dash.api_answer_ask)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)

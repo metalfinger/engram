@@ -3910,7 +3910,56 @@ async def extension_zip(request: Request) -> Response:
 # exactly the shape the uploader requires. Same live-zip + cache pattern as the
 # extension; public for the same reason.
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "engram"
+_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills"
+_HOOKS_DIR = Path(__file__).resolve().parents[2] / "hooks"
 _skill_zip_cache: dict[str, bytes] = {}
+_hooks_zip_cache: dict[str, bytes] = {}
+
+
+def _dir_digest(d: Path) -> str:
+    """A short content digest of a directory, so a machine can tell in one
+    comparison whether what it has matches what the server has."""
+    import hashlib
+
+    if not d.is_dir():
+        return ""
+    h = hashlib.sha256()
+    for p in sorted(x for x in d.rglob("*") if x.is_file()):
+        h.update(p.relative_to(d).as_posix().encode("utf-8"))
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            continue
+    return h.hexdigest()[:12]
+
+
+@mcp.custom_route("/downloads/engram-hooks.zip", ["GET"])
+async def hooks_zip(request: Request) -> Response:
+    """The presence hooks, so a machine can install or update them without
+    cloning the repo or being talked through curl commands.
+
+    Mirrors the skill zip deliberately: same shape, same mtime-keyed cache. The
+    macOS `python` vs `python3` fix had to be hand-delivered to the Mac by
+    commit-pinned URL because there was no way to just fetch the current one."""
+    import io as _io
+    import zipfile
+
+    if not _HOOKS_DIR.is_dir():
+        return PlainTextResponse("Hooks not bundled on this server.", status_code=404)
+    files = sorted(p for p in _HOOKS_DIR.rglob("*") if p.is_file())
+    stamp = str(max((p.stat().st_mtime_ns for p in files), default=0))
+    if stamp not in _hooks_zip_cache:
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in files:
+                z.write(p, f"hooks/{p.relative_to(_HOOKS_DIR).as_posix()}")
+        _hooks_zip_cache.clear()
+        _hooks_zip_cache[stamp] = buf.getvalue()
+    return Response(
+        _hooks_zip_cache[stamp],
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=engram-hooks.zip"},
+    )
 
 
 @mcp.custom_route("/downloads/engram-skill.zip", ["GET"])
