@@ -57,6 +57,34 @@ Lines starting with `#` are ignored; the first non-empty line wins. This is pure
 **home-room hint** — it never restricts access. Every session can still read any
 project via the `kb_*` tools; the room is just where its character sits.
 
+## Status line (`engram-statusline.sh`)
+
+Optional terminal chrome: project pin · branch · whose turn it is in a room ·
+what's blocked on you · a warning when another session is already in this
+worktree. It reads a cache and spawns a detached refresh, so it never blocks the
+prompt — a status line that stalls is worse than one thirty seconds behind.
+
+**It wraps rather than replaces.** If you already have a status line, name it in
+`~/.engram/statusline.json` and its output is printed above ours, unchanged:
+
+```json
+{ "parent": "python C:/Users/Admin/.claude/statusline-helix.py" }
+```
+
+Then point `settings.json` at ours once — `bash ~/.claude/hooks/engram-statusline.sh` —
+and the same entry works on every PC, because each machine's own
+`statusline.json` decides what else it shows. To undo, restore the old
+`statusLine.command`; nothing else changed.
+
+Live data needs `~/.engram/upload.json` (the server's own machine has no cache
+source and shows the local segments only). `kb_setup_machine` writes all of this.
+
+## Don't digest this whole directory
+
+`~/.claude/hooks/` is **shared** — other tools' hooks live here too. Engram owns
+only the `engram*` files, and the update check compares just those. Digesting the
+whole directory reports "stale" forever on any real machine.
+
 ## Config (server side, all optional, `ENGRAM_` env prefix)
 
 - `PRESENCE_SPOOL_DIR` — spool dir (default `~/.engram/presence-spool`)

@@ -56,6 +56,11 @@ def _upload(record):
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + token,
+                # Cloudflare rejects urllib's default agent outright (error 1010)
+                # before the request ever reaches Engram. With failures dropped by
+                # design, that meant a machine silently never joined the roster —
+                # the exact symptom this upload path was written to fix.
+                "User-Agent": "engram-presence-hook/1.0",
             },
             method="POST",
         )

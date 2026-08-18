@@ -28,7 +28,9 @@ import time
 HOME = os.path.expanduser("~")
 CONF = os.path.join(HOME, ".engram", "upload.json")
 CACHE = os.path.join(HOME, ".engram", "status-cache.json")
+LINECONF = os.path.join(HOME, ".engram", "statusline.json")
 STALE_AFTER = 30  # seconds; a refresh runs detached, this value is never waited on
+PARENT_TIMEOUT = 3  # seconds before we give up on someone else's status line
 
 
 def _read_json(path):
@@ -84,9 +86,57 @@ def _spawn_refresh(session_id):
         pass
 
 
-def _refresh(session_id):
+def _parent_output(raw):
+    """Run whatever status line was here BEFORE Engram, and return its output.
+
+    A status line is personal — Hiren's already carried model, git, context and
+    token counts from helix. Replacing that to show Engram state would be a
+    downgrade dressed as a feature, so we wrap instead of clobber: set
+    ~/.engram/statusline.json to {"parent": "<command>"} and its output is printed
+    above ours, unchanged. One statusLine entry then works on every machine, and
+    each machine's own config decides what else appears — which is the point,
+    since the whole reason this lives in a file is that the setup must be
+    identical across three PCs.
+
+    Empty string on anything going wrong, including a parent that hangs: our own
+    segment is worth more than a prompt that stalls waiting for someone else's.
+    """
+    try:
+        with open(LINECONF, "r", encoding="utf-8") as f:
+            parent = str(json.load(f).get("parent") or "").strip()
+        if not parent:
+            return ""
+        out = subprocess.run(
+            parent, shell=True, input=raw, capture_output=True, text=True,
+            timeout=PARENT_TIMEOUT,
+        )
+        return (out.stdout or "").rstrip("\n")
+    except Exception:
+        return ""
+
+
+def _credentials():
+    """Where the status line gets its url + token, in order of preference.
+
+    `upload.json` is the presence hook's config and is deliberately ABSENT on the
+    server's own machine (spooling beats uploading there — a spooled record
+    survives the server being down). But that left the status line blind on the
+    very machine Hiren works on most: no credentials, no room state, just project
+    and branch. So the status line accepts its own credentials in
+    `statusline.json`, keeping the two concerns apart — reading state is not the
+    same decision as writing presence, and they should not have to share a file.
+    """
+    line = _read_json(LINECONF)
+    url = str(line.get("url") or "").rstrip("/")
+    token = str(line.get("token") or "")
+    if url and token:
+        return url, token
     conf = _read_json(CONF)
-    url, token = str(conf.get("url") or "").rstrip("/"), str(conf.get("token") or "")
+    return str(conf.get("url") or "").rstrip("/"), str(conf.get("token") or "")
+
+
+def _refresh(session_id):
+    url, token = _credentials()
     if not url or not token:
         return
     try:
@@ -96,7 +146,11 @@ def _refresh(session_id):
         q = urllib.parse.urlencode({"speaker": session_id or ""})
         req = urllib.request.Request(
             url + "/dashboard/api/status?" + q,
-            headers={"Authorization": "Bearer " + token},
+            headers={
+                "Authorization": "Bearer " + token,
+                # Cloudflare 1010s urllib's default agent before it reaches Engram.
+                "User-Agent": "engram-statusline/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -127,6 +181,7 @@ def main():
         return
 
     payload = {}
+    raw = ""
     try:
         raw = sys.stdin.read()
         if raw.strip():
@@ -166,7 +221,9 @@ def main():
         who = ", ".join(sorted({str(w.get("session") or "?") for w in others})[:2])
         parts.append("⚠ also here: " + who)
 
-    sys.stdout.write(" · ".join(parts))
+    line = " · ".join(parts)
+    above = _parent_output(raw)
+    sys.stdout.write((above + "\n" + line) if above else line)
 
 
 if __name__ == "__main__":

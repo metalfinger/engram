@@ -2860,8 +2860,14 @@ async def kb_setup_machine() -> dict[str, Any]:
     base = settings.public_url.rstrip("/")
     token = ""
     try:
+        # The REAL subject, never one synthesized from the email. A token is only
+        # usable if its `sub` resolves through tenancy.user_by_subject, and this
+        # guessed "google:<email>" when the account had signed in with GitHub —
+        # so every token setup ever handed out 401'd on the first request. The
+        # presence hook drops failed uploads by design, which made it invisible:
+        # the machine simply never appeared, exactly the symptom setup exists to fix.
         token = _dashboard.auth.issue(
-            f"google:{me.email}" if "@" in (me.email or "") else me.handle,
+            me.idp_subject or me.handle,
             me.email or "", me.handle,
             ttl=30 * 24 * 3600, scope="notify",
         )
@@ -2883,7 +2889,8 @@ async def kb_setup_machine() -> dict[str, Any]:
         "skills_zip": f"{base}/downloads/engram-skill.zip",
         "hooks": {"zip": f"{base}/downloads/engram-hooks.zip",
                   "install_to": "~/.claude/hooks/",
-                  "digest": _dir_digest(_HOOKS_DIR)},
+                  "files": [p.name for p in _owned_hooks(_HOOKS_DIR)],
+                  "digest": _dir_digest(_HOOKS_DIR, _owned_hooks(_HOOKS_DIR))},
         "upload_config": {
             "path": "~/.engram/upload.json",
             "contents": {"url": base, "token": token or "<could not mint — ask Hiren>"},
@@ -2925,11 +2932,39 @@ async def kb_setup_machine() -> dict[str, Any]:
                 "is terminal chrome, so continuous awareness costs nothing."
             ),
             "if_one_exists": (
-                "DO NOT replace it. Ask the user first — a status line is personal, "
-                "and theirs may already carry branch, PR state or CI. Offer to merge: "
-                "call the existing command and append the Engram segment, or leave it "
-                "alone. This part is genuinely optional."
+                "DO NOT replace it — WRAP it, and say what you did. A status line is "
+                "personal: Hiren's already carried model, git, context and token "
+                "counts, and swapping that for ours would be a downgrade dressed as a "
+                "feature. Our script runs the old one first and prints its output "
+                "unchanged above our line, so nothing is lost and it is one file to "
+                "undo. If the user would rather keep theirs untouched, skip this "
+                "entirely — it is the one genuinely optional part of setup."
             ),
+            "needs_credentials": (
+                "The live segments (whose turn, what is blocked on you, who else is "
+                "in this worktree) come from the server, so put `url` and `token` in "
+                "~/.engram/statusline.json — SAME VALUES as upload_config.contents. Do "
+                "this even on the server's own machine, which skips upload.json: "
+                "reading state is not the same decision as writing presence, and "
+                "without this the status line there shows only project and branch."
+            ),
+            "merge": {
+                "path": "~/.engram/statusline.json",
+                "contents": {"parent": "<the existing statusLine.command, verbatim>",
+                             "url": "<server_url>", "token": "<token>"},
+                "then": (
+                    "point settings.json statusLine at "
+                    "~/.claude/hooks/engram-statusline.sh (use a `bash ` prefix if the "
+                    "user's other hook entries do). Their old command keeps running; "
+                    "our line is appended beneath it."
+                ),
+                "undo": "restore the old statusLine.command — nothing else changed.",
+                "why_a_file": (
+                    "The command lives in one place per machine, so the SAME "
+                    "settings.json statusLine entry works on all three PCs while each "
+                    "machine decides what else it shows."
+                ),
+            },
         },
         "steps": [
             "0. CHECK FIRST — this is also the update path. For each skill and for the "
@@ -2939,11 +2974,14 @@ async def kb_setup_machine() -> dict[str, Any]:
             "current: skip it, say so, and do not re-download. Only fetch what differs.",
             "1. Download skills_zip and unpack each STALE skill into ~/.claude/skills/<name>/.",
             "2. If the hooks digest differs, download hooks zip and unpack into "
-            "~/.claude/hooks/; chmod +x the .sh on macOS/Linux.",
+            "~/.claude/hooks/; chmod +x the .sh on macOS/Linux. Overwrite ONLY the files "
+            "in hooks.files — that directory is shared, and other tools' hooks live "
+            "beside ours.",
             "3. Merge settings_snippet into ~/.claude/settings.json — APPEND to any existing "
             "hooks for those events, never replace them. Other tools' hooks live there too. "
             "The statusLine entry is OPTIONAL: if the user already has one, do NOT overwrite "
-            "it — ask, and offer to merge (see status_line.if_one_exists).",
+            "it — WRAP it via status_line.merge (write ~/.engram/statusline.json naming their "
+            "existing command, then point statusLine at ours) and tell them how to undo it.",
             "4. Write upload_config.contents to upload_config.path (create ~/.engram/ if needed).",
             "5. VERIFY, do not assume: echo '{\"session_id\":\"setup-check\",\"hook_event_name\":"
             "\"SessionStart\",\"cwd\":\".\"}' | python3 ~/.claude/hooks/engram_presence_hook.py "
@@ -2953,9 +2991,12 @@ async def kb_setup_machine() -> dict[str, Any]:
             "session connected — a file copy cannot refresh cached schemas.",
         ],
         "local_digest_recipe": (
-            "sha256 over, for each file in the directory sorted by relative POSIX path: "
-            "the path bytes then the file bytes; take the first 12 hex characters. "
-            "Matches the server's `_dir_digest`, so equal digests mean identical trees."
+            "sha256 over, for each file sorted by relative POSIX path: the path bytes "
+            "then the file bytes; take the first 12 hex characters. For a SKILL that is "
+            "every file in its directory — Engram owns that directory outright. For the "
+            "HOOKS it is ONLY the files named in hooks.files, because ~/.claude/hooks/ is "
+            "shared with other tools; digest those names and nothing else, or the "
+            "comparison will differ forever on any machine that has other hooks installed."
         ),
         "notes": [
             "RUN THIS AGAIN ANY TIME to check for updates — it is the same prompt. "
@@ -4061,15 +4102,35 @@ _skill_zip_cache: dict[str, bytes] = {}
 _hooks_zip_cache: dict[str, bytes] = {}
 
 
-def _dir_digest(d: Path) -> str:
+def _owned_hooks(d: Path) -> list[Path]:
+    """The hook files Engram OWNS, by name prefix.
+
+    `~/.claude/hooks/` is a SHARED directory — on Hiren's PC it also holds helix
+    and anatomy hooks and a `__pycache__`. Digesting the whole directory there
+    can never equal a digest of this repo's `hooks/`, so the update check
+    reported "stale" every single time and re-downloaded on every run. That is
+    worse than useless: a signal that is always red is a signal nobody reads.
+    Naming what we own makes the comparison meaningful on a machine that has
+    other tools installed — which is every real machine."""
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.iterdir() if p.is_file() and p.name.startswith("engram"))
+
+
+def _dir_digest(d: Path, files: list[Path] | None = None) -> str:
     """A short content digest of a directory, so a machine can tell in one
-    comparison whether what it has matches what the server has."""
+    comparison whether what it has matches what the server has.
+
+    Pass `files` to digest a named subset (see `_owned_hooks`); otherwise the
+    whole tree, which is right for a directory Engram owns outright like a skill."""
     import hashlib
 
     if not d.is_dir():
         return ""
+    if files is None:
+        files = sorted(x for x in d.rglob("*") if x.is_file())
     h = hashlib.sha256()
-    for p in sorted(x for x in d.rglob("*") if x.is_file()):
+    for p in files:
         h.update(p.relative_to(d).as_posix().encode("utf-8"))
         try:
             h.update(p.read_bytes())
@@ -4091,7 +4152,10 @@ async def hooks_zip(request: Request) -> Response:
 
     if not _HOOKS_DIR.is_dir():
         return PlainTextResponse("Hooks not bundled on this server.", status_code=404)
-    files = sorted(p for p in _HOOKS_DIR.rglob("*") if p.is_file())
+    # Exactly the files the digest covers, so "what you unpack" and "what you
+    # compare" are the same set. Shipping the repo README too would unpack a
+    # stray file into a shared directory and leave the digest permanently unequal.
+    files = _owned_hooks(_HOOKS_DIR)
     stamp = str(max((p.stat().st_mtime_ns for p in files), default=0))
     if stamp not in _hooks_zip_cache:
         buf = _io.BytesIO()
