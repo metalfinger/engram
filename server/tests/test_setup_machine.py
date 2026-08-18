@@ -133,3 +133,22 @@ async def test_the_digest_recipe_matches_what_the_server_actually_does(mu, tmp_p
         h.update(p.relative_to(d).as_posix().encode("utf-8"))
         h.update(p.read_bytes())
     assert _dir_digest(d) == h.hexdigest()[:12]
+
+
+@pytest.mark.asyncio
+async def test_setup_offers_the_status_line(mu):
+    """The status line is the zero-token surface: everything it shows is knowable
+    through tools, but a tool result costs context and terminal chrome does not."""
+    out = await app_module.kb_setup_machine()
+    assert out["settings_snippet"]["statusLine"]["command"].endswith(
+        "engram-statusline.sh")
+    assert "costs nothing" in out["status_line"]["why"]
+
+
+@pytest.mark.asyncio
+async def test_it_refuses_to_clobber_an_existing_status_line(mu):
+    """A status line is personal — his may already carry branch, PR state or CI.
+    Replacing it silently would be the rudest thing setup could do."""
+    out = await app_module.kb_setup_machine()
+    assert "DO NOT replace" in out["status_line"]["if_one_exists"]
+    assert "OPTIONAL" in " ".join(out["steps"])

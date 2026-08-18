@@ -1038,6 +1038,58 @@ class Dashboard:
             return None
         return self.registry.tenancy.user_by_subject(claims.get("sub", ""))
 
+    async def api_status(self, request: "Request") -> "Response":
+        """A compact status for a Claude Code status line.
+
+        Everything Engram knows about a session's situation currently costs
+        CONTEXT to see: a tool call whose result lands in the window. A status line
+        is terminal chrome, so the same information costs nothing at all — which
+        makes it the right home for the things you want continuously rather than
+        occasionally: whose turn it is, whether something is blocked on you, and
+        whether anyone else is in the files you are about to touch.
+
+        Deliberately tiny and read-only. This renders constantly, so it must never
+        be the expensive call — no git, no brain reads, just the coordination
+        tables.
+        """
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request) or self._session_user(self._session(request) or {})
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        speaker = str(request.query_params.get("speaker") or "").strip()
+        your_turn: list[str] = []
+        needs_you: list[str] = []
+        working: list[dict] = []
+        try:
+            rooms = self.registry.rooms
+            for r in rooms.awaiting_human(user.id):
+                name = str(r["name"])
+                needs_you.append(
+                    name[len(_THREAD_FLOOR_PREFIX):]
+                    if name.startswith(_THREAD_FLOOR_PREFIX) else name
+                )
+            if speaker:
+                for row in rooms.list_rooms_for(user.id, include_closed=False):
+                    name = str(row["name"])
+                    if rooms.floor_state(row["id"], speaker).get("is_you"):
+                        your_turn.append(
+                            name[len(_THREAD_FLOOR_PREFIX):]
+                            if name.startswith(_THREAD_FLOOR_PREFIX) else name
+                        )
+            working = [
+                {"path": a["path"], "session": a["session"]}
+                for a in rooms.recent_activity(exclude_session=speaker)
+            ][:10]
+        except Exception:  # noqa: BLE001 — a status line must never be the thing that breaks
+            log.debug("status unavailable", exc_info=True)
+        return JSONResponse({
+            "ok": True,
+            "your_turn": your_turn,
+            "needs_you": needs_you,
+            "working": working,
+        })
+
     async def api_machine(self, request: "Request") -> "Response":
         """What this machine should have installed, and whether it is current.
 
@@ -2726,6 +2778,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     # NOT /dashboard/api/presence — that POST is already the invisible toggle, and
     # registering a second handler on it would silently shadow the tray's.
     mcp.custom_route("/dashboard/api/presence/upload", ["POST"])(dash.api_presence_upload)
+    mcp.custom_route("/dashboard/api/status", ["GET"])(dash.api_status)
     mcp.custom_route("/dashboard/api/machine", ["GET"])(dash.api_machine)
     mcp.custom_route("/dashboard/api/asks", ["GET"])(dash.api_asks)
     mcp.custom_route("/dashboard/api/asks/answer", ["POST"])(dash.api_answer_ask)

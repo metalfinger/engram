@@ -2901,7 +2901,28 @@ async def kb_setup_machine() -> dict[str, Any]:
                                                  "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
                 "SessionEnd": [{"hooks": [{"type": "command",
                                            "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
-            }
+            },
+            # OPTIONAL, and only if nothing else owns the status line already.
+            "statusLine": {"type": "command",
+                           "command": "~/.claude/hooks/engram-statusline.sh"},
+        },
+        "status_line": {
+            "what_it_shows": (
+                "project (from the .engram-project pin) · git branch · whose turn it "
+                "is in any room or thread · what is blocked on you · and a warning "
+                "when another session is already working in this worktree"
+            ),
+            "why": (
+                "Everything here is knowable through kb_* tools, but every tool "
+                "result lands in the model's context and costs tokens. A status line "
+                "is terminal chrome, so continuous awareness costs nothing."
+            ),
+            "if_one_exists": (
+                "DO NOT replace it. Ask the user first — a status line is personal, "
+                "and theirs may already carry branch, PR state or CI. Offer to merge: "
+                "call the existing command and append the Engram segment, or leave it "
+                "alone. This part is genuinely optional."
+            ),
         },
         "steps": [
             "0. CHECK FIRST — this is also the update path. For each skill and for the "
@@ -2913,7 +2934,9 @@ async def kb_setup_machine() -> dict[str, Any]:
             "2. If the hooks digest differs, download hooks zip and unpack into "
             "~/.claude/hooks/; chmod +x the .sh on macOS/Linux.",
             "3. Merge settings_snippet into ~/.claude/settings.json — APPEND to any existing "
-            "hooks for those events, never replace them. Other tools' hooks live there too.",
+            "hooks for those events, never replace them. Other tools' hooks live there too. "
+            "The statusLine entry is OPTIONAL: if the user already has one, do NOT overwrite "
+            "it — ask, and offer to merge (see status_line.if_one_exists).",
             "4. Write upload_config.contents to upload_config.path (create ~/.engram/ if needed).",
             "5. VERIFY, do not assume: echo '{\"session_id\":\"setup-check\",\"hook_event_name\":"
             "\"SessionStart\",\"cwd\":\".\"}' | python3 ~/.claude/hooks/engram_presence_hook.py "
