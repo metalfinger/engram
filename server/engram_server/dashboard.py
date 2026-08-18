@@ -1034,6 +1034,56 @@ class Dashboard:
             return None
         return self.registry.tenancy.user_by_subject(claims.get("sub", ""))
 
+    async def api_presence_upload(self, request: "Request") -> "Response":
+        """Accept presence records from a machine that is NOT the server's.
+
+        Auto-presence has been single-machine by construction: the Claude Code hook
+        writes a spool file locally, and only the server drains it — from the
+        server's own disk. So Hiren's Mac has never appeared in the roster, and its
+        records were not queued but stranded. This is the missing limb: the tray
+        runs on that machine, already holds an OAuth token, and can post what the
+        hook wrote.
+
+        Records go through the SAME batched write path the local ingest uses, so
+        there is still exactly one git writer and one commit per batch. Nothing
+        here bypasses the lock.
+        """
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request)
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+        raw = payload.get("records")
+        if not isinstance(raw, list) or not raw:
+            return JSONResponse(
+                {"ok": False, "error": "records must be a non-empty list"}, status_code=400
+            )
+        # A machine that has been offline can hold a lot; cap so one upload cannot
+        # turn into an unbounded commit.
+        records = [r for r in raw if isinstance(r, dict) and str(r.get("session") or "").strip()]
+        if not records:
+            return JSONResponse({"ok": False, "error": "no valid records"}, status_code=400)
+        records = records[:50]
+
+        try:
+            store = await self.registry.store_for_handle(user.handle)
+            written: list[str] = []
+            await store._locked_commit(  # noqa: SLF001 — same path the local ingest uses
+                lambda: store._presence_write_batch(  # noqa: SLF001
+                    records, self.settings.presence_refresh_minutes, written
+                ),
+                f"workspace: presence upload ({len(records)} from a remote machine)",
+            )
+            return JSONResponse({"ok": True, "ingested": len(written),
+                                 "received": len(records)})
+        except Exception as exc:  # noqa: BLE001 — presence must never 500 a client
+            log.warning("presence upload failed", exc_info=True)
+            return JSONResponse({"ok": False, "error": str(exc)[:200]}, status_code=500)
+
     async def api_notifications(self, request: "Request") -> "Response":
         from starlette.responses import JSONResponse
 
@@ -2520,6 +2570,9 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/contact/add", ["POST"])(csrf(dash.add_contact))
     mcp.custom_route("/dashboard/contact/accept", ["POST"])(csrf(dash.accept_contact))
     mcp.custom_route("/dashboard/notifications/read", ["POST"])(csrf(dash.read_notifications))
+    # NOT /dashboard/api/presence — that POST is already the invisible toggle, and
+    # registering a second handler on it would silently shadow the tray's.
+    mcp.custom_route("/dashboard/api/presence/upload", ["POST"])(dash.api_presence_upload)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(csrf(dash.api_mark_read))
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)
