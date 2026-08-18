@@ -39,6 +39,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 log = logging.getLogger("engram.dashboard")
+
+# Must match app._THREAD_FLOOR_PREFIX — a thread's floor lives in a hidden
+# room under this prefix, and both surfaces have to agree on the name.
+_THREAD_FLOOR_PREFIX = "thread--"
 from urllib.parse import urlsplit
 
 import httpx
@@ -1033,6 +1037,83 @@ class Dashboard:
         if claims is None:
             return None
         return self.registry.tenancy.user_by_subject(claims.get("sub", ""))
+
+    async def api_asks(self, request: "Request") -> "Response":
+        """What is blocked on Hiren right now, across rooms AND threads.
+
+        `ask_human` reaches him well; ANSWERING it has meant opening a page he
+        rarely opens. This is the read half of closing that loop from the tray —
+        the one surface that is alive when no session is."""
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request) or self._session_user(self._session(request) or {})
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        try:
+            rows = self.registry.rooms.awaiting_human(user.id)
+        except Exception:  # noqa: BLE001
+            log.warning("could not list pending questions", exc_info=True)
+            rows = []
+        out = []
+        for r in rows:
+            name = str(r["name"])
+            is_thread = name.startswith(_THREAD_FLOOR_PREFIX)
+            out.append({
+                "name": name[len(_THREAD_FLOOR_PREFIX):] if is_thread else name,
+                "kind": "thread" if is_thread else "room",
+                "question": r["question"],
+                "since": r["since"],
+            })
+        return JSONResponse({"ok": True, "asks": out})
+
+    async def api_answer_ask(self, request: "Request") -> "Response":
+        """Answer a blocked room or thread as the signed-in PERSON.
+
+        Mirrors kb_room_relay_answer, which does the same job from inside a
+        session. Both exist because he is reachable in two different places and
+        should be able to answer from whichever one he is actually in."""
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request) or self._session_user(self._session(request) or {})
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+        name = str(payload.get("name") or "").strip()
+        answer = str(payload.get("answer") or "").strip()
+        if not name or not answer:
+            return JSONResponse(
+                {"ok": False, "error": "name and answer are both required"},
+                status_code=400,
+            )
+        try:
+            room = self.registry.rooms.room_by_name(name.lower())
+            if room is not None:
+                # session="app" marks it as the PERSON, which is what clears the
+                # block and hands the floor back to whoever asked.
+                self.registry.rooms.post_turn(room.id, user.id, answer, session="app")
+                return JSONResponse({"ok": True, "kind": "room", "name": name})
+            # Not a room — a thread, whose floor lives in a shadow room and whose
+            # transcript lives in git, so nothing passes through post_turn to
+            # notice the answer. Hence the explicit unblock.
+            shadow = self.registry.rooms.room_by_name(
+                f"{_THREAD_FLOOR_PREFIX}{name.lower()}"
+            )
+            if shadow is None:
+                return JSONResponse(
+                    {"ok": False, "error": f"no open room or thread named '{name}'"},
+                    status_code=404,
+                )
+            store = await self.registry.store_for_handle(user.handle)
+            await store.kb_thread_post(name, user.handle, answer, False, "", "", "",
+                                       None, False, False, 0)
+            self.registry.rooms.answer_human(shadow.id)
+            return JSONResponse({"ok": True, "kind": "thread", "name": name})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not answer %r", name, exc_info=True)
+            return JSONResponse({"ok": False, "error": str(exc)[:200]}, status_code=500)
 
     async def api_presence_upload(self, request: "Request") -> "Response":
         """Accept presence records from a machine that is NOT the server's.
@@ -2573,6 +2654,8 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     # NOT /dashboard/api/presence — that POST is already the invisible toggle, and
     # registering a second handler on it would silently shadow the tray's.
     mcp.custom_route("/dashboard/api/presence/upload", ["POST"])(dash.api_presence_upload)
+    mcp.custom_route("/dashboard/api/asks", ["GET"])(dash.api_asks)
+    mcp.custom_route("/dashboard/api/asks/answer", ["POST"])(dash.api_answer_ask)
     mcp.custom_route("/dashboard/api/notifications", ["GET"])(dash.api_notifications)
     mcp.custom_route("/dashboard/api/notifications/read", ["POST"])(csrf(dash.api_mark_read))
     mcp.custom_route("/dashboard/ext-auth", ["GET"])(dash.ext_auth)

@@ -1190,13 +1190,43 @@ async def kb_realign(
     it is still the priority, and what's next. If you drifted, SAY SO — the drift is the
     information. Don't quietly reconcile it.
 
+    ALSO TELLS YOU WHO ELSE IS WORKING. `working` lists the paths other sessions have
+    claimed or been writing, and `needs_the_user` names any room or thread blocked on
+    Hiren. Read both before you start: the point of orienting is knowing what NOT to
+    pick up, and a collision you could have seen is worse than one you couldn't.
+
     Returns {resolved, project, resolved_by, phase, open_loops, next_actions, sequence,
     sequence_path, context_path, map_path, last_session, unread_messages, pin_file,
-    pin_content, instruction} — or {resolved: false, candidates, instruction}.
+    pin_content, working, needs_the_user, instruction} — or {resolved: false,
+    candidates, instruction}.
     """
     result = await (await current_store()).kb_realign(project=project, repo=repo, cwd=cwd, pin=pin)
     if result.get("resolved"):
         _presence_project(str(result.get("project") or ""))
+    # Orientation is the moment a session decides what to touch, so it is exactly
+    # when it should learn what everyone else is touching. Same data the floor
+    # block carries; failure-soft, because coordination must never break the one
+    # call a session makes to find its feet.
+    try:
+        working = list(await _working_now())
+        for a in registry.rooms.recent_activity(exclude_session=_speaker_key()):
+            if len(working) >= _CLAIMS_IN_FLOOR:
+                break
+            if a["path"] not in {str(w.get("path")) for w in working}:
+                working.append({"path": a["path"], "session": a["session"],
+                                "via": "activity"})
+        if working:
+            result["working"] = working
+        me = _require_room_user()
+        pending = {
+            (r["name"][len(_THREAD_FLOOR_PREFIX):]
+             if str(r["name"]).startswith(_THREAD_FLOOR_PREFIX) else r["name"]): r["question"]
+            for r in registry.rooms.awaiting_human(me.id)
+        }
+        if pending:
+            result["needs_the_user"] = pending
+    except Exception:  # noqa: BLE001
+        log.debug("could not attach workspace state to realign", exc_info=True)
     return result
 
 

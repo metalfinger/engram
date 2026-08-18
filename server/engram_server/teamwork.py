@@ -724,6 +724,31 @@ class RoomStore:
             self._set_floor_locked(room_id, HUMAN_FLOOR)
             self._conn.commit()
 
+    def awaiting_human(self, user_id: int) -> list[dict[str, Any]]:
+        """Every open room of this user's that is blocked on THEM.
+
+        Includes thread shadow rooms — a thread blocked on the person is the same
+        situation as a room blocked on them, and the caller decides how to present
+        it. Sorted oldest-first: the question that has been waiting longest is the
+        one most likely to be holding work up."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT r.name, r.awaiting_human, r.awaiting_human_for, r.floor_since "
+                "FROM rooms r JOIN room_members m ON m.room_id = r.id "
+                "WHERE m.user_id = ? AND r.status = 'open' AND r.awaiting_human != '' "
+                "ORDER BY r.floor_since ASC",
+                (user_id,),
+            ).fetchall()
+        return [
+            {
+                "name": r["name"],
+                "question": r["awaiting_human"],
+                "asked_by": r["awaiting_human_for"],
+                "since": r["floor_since"],
+            }
+            for r in rows
+        ]
+
     def answer_human(self, room_id: int) -> None:
         """Clear a human block explicitly, for surfaces whose transcript is not in
         the room tables. A thread's turns live in git, so nothing passes through

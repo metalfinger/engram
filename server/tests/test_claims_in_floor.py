@@ -316,3 +316,54 @@ async def test_kb_edit_flags_it_too(mu, monkeypatch):
         "projects/p/notes/edited.md", "append", content="One more line.\n"
     )
     assert any("also wrote to this path" in w for w in res["warnings"])
+
+
+# -- realign carries the workspace ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_realign_says_who_else_is_working(mu, monkeypatch):
+    """Orientation is the moment a session decides what to touch, so it is exactly
+    when it should learn what everyone else is touching."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_claim("mac-a", "app/ui/theme.ts", "reskin")
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_CLAIMS_CACHE", {"at": 0.0, "rows": []})
+    out = await app_module.kb_realign()
+    assert any(w["path"] == "app/ui/theme.ts" for w in out.get("working", []))
+
+
+@pytest.mark.asyncio
+async def test_realign_flags_a_room_blocked_on_the_user(mu, monkeypatch):
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("decide", "needs a person")
+    await app_module.kb_room_post("decide", "stuck", speaker="windows",
+                                  ask_human="Ship or hold?")
+    out = await app_module.kb_realign()
+    assert out.get("needs_the_user", {}).get("decide") == "Ship or hold?"
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_thread_shows_without_its_shadow_prefix(mu, monkeypatch):
+    _login(monkeypatch)
+    monkeypatch.setattr(app_module, "_push_notification", lambda *a, **k: None)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("handover", "windows", "stuck",
+                                    ask_human="Flag or hold?")
+    out = await app_module.kb_realign()
+    assert "handover" in out.get("needs_the_user", {})
+    assert not any(k.startswith("thread--") for k in out.get("needs_the_user", {}))
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_workspace_adds_nothing_to_realign(mu, monkeypatch):
+    """Absent rather than empty — realign already lands a lot in context."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    monkeypatch.setattr(app_module, "_CLAIMS_CACHE", {"at": 0.0, "rows": []})
+    out = await app_module.kb_realign()
+    assert "working" not in out
+    assert "needs_the_user" not in out
