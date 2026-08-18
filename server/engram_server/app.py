@@ -2892,6 +2892,13 @@ async def kb_setup_machine() -> dict[str, Any]:
                 "machine can drain. Without this, this machine never appears in the "
                 "roster and its records are stranded rather than queued."
             ),
+            "skip_if": (
+                "SKIP this file if ~/.engram/brain exists — that means you are ON the "
+                "server's machine, where the spool already works. Uploading from here "
+                "would be a pointless localhost round trip, and strictly worse: a "
+                "spooled record survives the server being down and is ingested when it "
+                "returns, whereas a failed upload is dropped."
+            ),
         },
         "settings_snippet": {
             "hooks": {

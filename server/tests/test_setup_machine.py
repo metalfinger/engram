@@ -152,3 +152,14 @@ async def test_it_refuses_to_clobber_an_existing_status_line(mu):
     out = await app_module.kb_setup_machine()
     assert "DO NOT replace" in out["status_line"]["if_one_exists"]
     assert "OPTIONAL" in " ".join(out["steps"])
+
+
+@pytest.mark.asyncio
+async def test_it_says_to_skip_upload_config_on_the_server_machine(mu):
+    """Uploading from the server's own box is a pointless localhost round trip AND
+    strictly worse: a spooled record survives the server being down and is ingested
+    when it returns, whereas a failed upload is dropped by design."""
+    out = await app_module.kb_setup_machine()
+    skip = out["upload_config"]["skip_if"]
+    assert "~/.engram/brain" in skip
+    assert "dropped" in skip
