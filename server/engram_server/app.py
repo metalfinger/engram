@@ -844,6 +844,19 @@ async def kb_thread_post(
             "conversations end because someone ends them." + aim
         )
     if close:
+        # THE SHADOW ROOM DIES WITH ITS THREAD. It carries floor state for a
+        # conversation that no longer exists — left open, its last floor-holder
+        # shows as a waiting turn in api_status forever, and the prompt-checkpoint
+        # hook nags about a closed thread on every prompt. Found by the hook
+        # itself, on its first live firing, naming pi-harness-setup — closed the
+        # night before. Failure-soft: a stubborn shadow room must not un-close
+        # the thread that owns it.
+        if fid is not None:
+            try:
+                registry.rooms.close_room(fid, _require_room_user().id,
+                                          outcome=f"thread {thread} closed")
+            except Exception:  # noqa: BLE001
+                log.debug("could not close shadow room for %s", thread, exc_info=True)
         # CLOSING SHOULD PRECIPITATE. A room drafts its outcome on close; a thread
         # just stopped, leaving a transcript nobody distils. The transcript is in
         # git either way, but a transcript is not knowledge — the next session has

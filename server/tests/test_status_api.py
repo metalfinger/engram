@@ -92,3 +92,23 @@ async def test_a_parked_holder_is_not_nagged_about(mu, client, monkeypatch):
 
 def test_no_token_no_status(mu, client):
     assert client.get("/dashboard/api/status").status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_closed_thread_stops_claiming_turns(mu, client, monkeypatch):
+    """Found by the prompt-checkpoint hook on its FIRST live firing: it named a
+    thread closed the night before. The shadow room outlived its thread, so the
+    last floor-holder read as a waiting turn on every prompt, forever. The room
+    dies with the thread now."""
+    monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-a")
+    await app_module.kb_thread_post("ghost-turn", "windows", "over to you")
+    monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-b")
+    await app_module.kb_thread_read("ghost-turn", sender="mac")
+    assert "ghost-turn" in _status(client)["your_turn"], "live thread: listed"
+
+    monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-a")
+    await app_module.kb_thread_post("ghost-turn", "windows", "done here", close=True)
+    out = _status(client)
+    assert "ghost-turn" not in out["your_turn"], (
+        "a closed thread must not nag on every prompt for the rest of time"
+    )
