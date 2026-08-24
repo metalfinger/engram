@@ -79,6 +79,24 @@ and the same entry works on every PC, because each machine's own
 Live data needs `~/.engram/upload.json` (the server's own machine has no cache
 source and shows the local segments only). `kb_setup_machine` writes all of this.
 
+## Status-line segments, and what each one means
+
+- `⬢ <project> · <branch>` — the pin and the worktree, always.
+- `⏳ turn waiting: X` — a LIVE session on this account holds the floor in X and
+  is not parked. Actionable soon, by whichever session it belongs to.
+- `🚪 abandoned room: X [room]` — the floor-holder has not been seen for hours;
+  the conversation went home mid-turn. Close it or revive it at leisure. Kept
+  separate from ⏳ because six days of a false "your turn" teaches the reader to
+  ignore the one segment that must never become ignorable.
+- `❓ waiting on you: X` — a conversation is blocked on the PERSON (ask_human).
+- `⚠ also here: <session>` — another session is working in this worktree.
+- Names are threads unless suffixed `[room]` — two field reports in one day
+  chased "empty threads" that were rooms, so the kind now travels with the name.
+
+Everything here is ACCOUNT-level ambient signal at zero token cost; the
+session-level truth is `kb_threads()` / `kb_rooms()` (`waiting_on_you`,
+`your_turn`, `do_next` — computed against that session's own speaker key).
+
 ## Turn awareness (`engram-turns-hook.sh`)
 
 UserPromptSubmit, FOREGROUND — its stdout becomes model context, which is the

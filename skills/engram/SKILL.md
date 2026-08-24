@@ -161,9 +161,13 @@ Four channels, fastest first. Use the fastest one available; never poll.
    floor; the message is only the knock. If you RECEIVE such a knock, read the
    thread — don't reply over SendMessage, the conversation lives in the thread.
 3. **The prompt checkpoint (automatic).** A UserPromptSubmit hook injects
-   `[engram] your turn in thread(s): …` from the local status cache whenever
-   Hiren talks to a session that has a turn waiting. Costs nothing; needs no
-   action from you beyond acting on the line when it appears.
+   `[engram] a turn is waiting somewhere on this account: …` from the local
+   status cache whenever Hiren talks to a session while a conversation waits.
+   Costs nothing. It is ACCOUNT-level — the cache cannot know which session a
+   floor belongs to — so when the line appears, run `kb_threads()` (and
+   `kb_rooms()` for names marked `[room]`): their `waiting_on_you` / `your_turn`
+   are computed against YOUR speaker key and are the session-level truth. The
+   line naming a conversation is a nudge, never proof it is yours.
 4. **The tray (human-speed).** A turn nobody is parked on pushes a notification
    to Hiren. Rested sessions are woken by HIM, not by the server.
 

@@ -934,7 +934,7 @@ async def kb_thread_read(
     """
     started = time.monotonic()
     key = _speaker_key()
-    fid = _thread_floor_id(thread)
+    fid = _thread_floor_lookup(thread)
     if fid is not None and key and ack_through >= 0:
         # Stamped BEFORE the wait, not after: a listener acking turn 7 then parking
         # for 25s would otherwise leave 7 showing as merely delivered for the whole
@@ -968,6 +968,15 @@ async def kb_thread_read(
             await _room_wait(fid, remaining)
     else:
         out = await store.kb_thread_read(thread, since, wait_seconds)
+    if fid is None and out.get("status") != "none":
+        # The thread is REAL but predates its shadow room (or the room was lost).
+        # Only now — with the thread's existence proven — is creating one correct;
+        # creating it on the lookup was how probing a room name as a thread
+        # minted ghosts that haunted every account-level surface.
+        fid = _thread_floor_id(thread)
+        if fid is not None and key:
+            registry.rooms.touch_speaker(fid, key, _require_room_user().id,
+                                         name=sender)
     if fid is not None:
         turns = out.get("turns") or []
         if turns:
@@ -2515,6 +2524,23 @@ _THREAD_TURN_BUDGET = 40
 _THREAD_TURN_CAP = 200
 
 
+def _thread_floor_lookup(thread: str) -> int | None:
+    """The shadow room's id IF IT EXISTS — never creates.
+
+    The READ path must use this: kb_thread_read of a name that was never posted
+    used to CREATE a shadow room and register the reader as a speaker, so probing
+    a room name (or a typo) with the thread tool manufactured a ghost that then
+    haunted every account-level surface. Found in the field twice in one day —
+    the Mac probed two ROOM names as threads and minted two ghosts on the spot.
+    Creation belongs to the POST path alone, where a thread actually begins."""
+    name = f"{_THREAD_FLOOR_PREFIX}{thread.strip().lower()}"[:64]
+    try:
+        existing = registry.rooms.room_by_name(name)
+        return existing.id if existing is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _thread_floor_id(thread: str) -> int | None:
     """The shadow room carrying a thread's floor state, created on first use.
     Returns None if anything goes wrong — coordination must never break the
@@ -3175,9 +3201,13 @@ async def kb_setup_machine() -> dict[str, Any]:
         },
         "status_line": {
             "what_it_shows": (
-                "project (from the .engram-project pin) · git branch · whose turn it "
-                "is in any room or thread · what is blocked on you · and a warning "
-                "when another session is already working in this worktree"
+                "project (from the .engram-project pin) · git branch · ⏳ turns "
+                "waiting on this account (live holders) · 🚪 abandoned rooms "
+                "(holder gone for hours — a different feeling from 'your turn' on "
+                "purpose) · ❓ what is blocked on the person · ⚠ another session "
+                "already in this worktree. Names are threads unless marked "
+                "[room]. ACCOUNT-level ambient signal; per-session truth is "
+                "kb_threads()/kb_rooms()."
             ),
             "why": (
                 "Everything here is knowable through kb_* tools, but every tool "

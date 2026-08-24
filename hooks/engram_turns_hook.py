@@ -57,8 +57,16 @@ def main() -> None:
     turn = [str(t) for t in (cached.get("your_turn") or []) if t]
     if turn:
         parts.append(
-            "your turn in thread(s): " + ", ".join(turn[:3])
-            + " — kb_thread_read(thread, sender=..., wait_seconds=0) to catch up"
+            # ACCOUNT-level nudge, session-level verification. This hook reads a
+            # per-machine cache that cannot know WHICH session a floor belongs to,
+            # so it must not say "your turn" — the session it fires in may never
+            # have joined that conversation. It names the fact and points at the
+            # calls whose answer IS session-accurate: kb_threads()'s
+            # waiting_on_you / floor.is_you are computed against this session's
+            # own speaker key.
+            "a turn is waiting somewhere on this account: " + ", ".join(turn[:3])
+            + " — kb_threads() / kb_rooms() tells you whether it is YOURS "
+            "(waiting_on_you / your_turn per conversation)"
         )
     asks = [str(a) for a in (cached.get("needs_you") or []) if a]
     if asks:

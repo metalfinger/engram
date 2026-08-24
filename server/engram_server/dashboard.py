@@ -1060,6 +1060,7 @@ class Dashboard:
         speaker = str(request.query_params.get("speaker") or "").strip()
         your_turn: list[str] = []
         needs_you: list[str] = []
+        abandoned: list[str] = []
         working: list[dict] = []
         try:
             rooms = self.registry.rooms
@@ -1091,10 +1092,22 @@ class Dashboard:
                                 if sp.get("speaker") == holder), None)
                 if held_by is not None and held_by.get("listening"):
                     continue  # they are parked; the bus will wake them
-                your_turn.append(
-                    name[len(_THREAD_FLOOR_PREFIX):]
-                    if name.startswith(_THREAD_FLOOR_PREFIX) else name
-                )
+                # Threads and rooms share this list, and two field reports in one
+                # day chased "empty threads" that were rooms — the surfaces gave
+                # no way to tell. Threads keep their bare name; rooms say so.
+                shown = (name[len(_THREAD_FLOOR_PREFIX):]
+                         if name.startswith(_THREAD_FLOOR_PREFIX)
+                         else f"{name} [room]")
+                # "Your turn" must mean ACTIONABLE NOW. A holder that has not been
+                # seen for hours is not composing — it went home mid-conversation,
+                # and six days of "⏳ your turn: mcp-auth-connect-debug" teaches
+                # the reader to ignore the segment, which un-ships it. Field case:
+                # two vibechk rooms abandoned on 18 Aug read as "your turn" until
+                # 24 Aug. Stale holders go to `abandoned` — same fact, honest name.
+                if held_by is not None and not held_by.get("live"):
+                    abandoned.append(shown)
+                else:
+                    your_turn.append(shown)
             working = [
                 {"path": a["path"], "session": a["session"]}
                 for a in rooms.recent_activity(exclude_session=speaker)
@@ -1105,6 +1118,7 @@ class Dashboard:
             "ok": True,
             "your_turn": your_turn,
             "needs_you": needs_you,
+            "abandoned": abandoned,
             "working": working,
         })
 

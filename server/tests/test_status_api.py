@@ -112,3 +112,29 @@ async def test_a_closed_thread_stops_claiming_turns(mu, client, monkeypatch):
     assert "ghost-turn" not in out["your_turn"], (
         "a closed thread must not nag on every prompt for the rest of time"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_long_gone_holder_is_abandoned_not_your_turn(mu, client, monkeypatch):
+    """Field case: two vibechk rooms abandoned on 18 Aug read as "⏳ your turn"
+    until 24 Aug. Six days of a false imperative teaches the reader to ignore
+    the one segment that must never become ignorable. Same fact, honest bucket."""
+    monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-a")
+    await app_module.kb_thread_post("gone-holder", "windows", "over to you")
+    monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-b")
+    await app_module.kb_thread_read("gone-holder", sender="mac")  # mac now holds
+
+    out = _status(client)
+    assert "gone-holder" in out["your_turn"], "a LIVE holder is actionable now"
+    assert "gone-holder" not in out["abandoned"]
+
+    # The holder's last_seen ages past the liveness window: same room, new bucket.
+    fid = app_module._thread_floor_id("gone-holder")
+    app_module.registry.rooms._conn.execute(
+        "UPDATE room_speakers SET last_seen = '2026-08-01T00:00:00Z', "
+        "listening_until = '' WHERE room_id = ? AND speaker = 'sess-b'", (fid,))
+    app_module.registry.rooms._conn.commit()
+
+    out = _status(client)
+    assert "gone-holder" in out["abandoned"]
+    assert "gone-holder" not in out["your_turn"]

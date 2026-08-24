@@ -638,3 +638,27 @@ async def test_what_a_session_had_read_survives_a_reconnect(mu, monkeypatch):
     assert after["processed_through"] == top
     assert after["state"] == "read"
     assert after["unread"] == 0
+
+
+@pytest.mark.asyncio
+async def test_probing_a_name_that_is_not_a_thread_mints_no_ghost(mu, monkeypatch):
+    """Field case, twice in one day: the Mac probed two ROOM names with
+    kb_thread_read; the read path created shadow rooms and registered the reader
+    as a speaker — ghosts that then appeared on every account-level surface as
+    conversations waiting on somebody. Reading must never create; only posting
+    begins a thread."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-b")
+    out = await app_module.kb_thread_read("no-such-thread", sender="mac")
+    assert out["status"] == "none"
+    assert app_module._thread_floor_lookup("no-such-thread") is None, (
+        "the probe minted a shadow room"
+    )
+
+    # And the joiner-before-opener flow still works end to end: once the opener
+    # posts, the joiner's next read adopts the (post-created) floor normally.
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("no-such-thread", "windows", "now it exists")
+    _as_session(monkeypatch, "sess-b")
+    joined = await app_module.kb_thread_read("no-such-thread", sender="mac")
+    assert joined["turns"] and "floor" in joined

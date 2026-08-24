@@ -218,10 +218,24 @@ def main():
 
     turn = cached.get("your_turn") or []
     if turn:
-        parts.append("⏳ your turn: " + ", ".join(turn[:2]))
+        # ACCOUNT-level, deliberately not "your turn": the cache cannot know which
+        # local session a floor belongs to (Claude Code session ids and MCP
+        # speaker keys are different namespaces with no join). "Your turn" in a
+        # session that was never even in the room is a false imperative; "turn
+        # waiting" says exactly what is known — somewhere on your side, a
+        # conversation cannot advance. Which session? kb_threads() knows, because
+        # ITS floor.is_you is computed against the session's own speaker key.
+        parts.append("⏳ turn waiting: " + ", ".join(turn[:2]))
     asks = cached.get("needs_you") or []
     if asks:
         parts.append("❓ waiting on you: " + ", ".join(asks[:2]))
+    # A different feeling from "your turn" on purpose: a holder that vanished
+    # days ago is not a conversation to rejoin NOW, it is a room to close or
+    # revive at leisure — and mislabelling it "your turn" for six days teaches
+    # the reader to ignore the one segment that must never be ignorable.
+    gone = cached.get("abandoned") or []
+    if gone:
+        parts.append("🚪 abandoned room: " + ", ".join(gone[:2]))
 
     # The one that prevents real damage: someone else already in this worktree.
     here = os.path.basename(os.path.abspath(cwd))
