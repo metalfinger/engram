@@ -152,7 +152,17 @@ def _refresh(session_id):
                 "User-Agent": "engram-statusline/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        # Same certifi-aware context as the presence hook, same reason: macOS
+        # python.org builds verify nothing without it, and a status line whose
+        # refresh silently fails is a cache that quietly goes stale — which then
+        # silences the turns hook too, since it reads this cache.
+        import ssl
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         data["at"] = time.time()
         tmp = CACHE + ".tmp"

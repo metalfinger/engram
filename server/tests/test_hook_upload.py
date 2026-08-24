@@ -146,3 +146,60 @@ def test_a_malformed_config_falls_back_to_spooling(tmp_path):
     })
     assert proc.returncode == 0
     assert list((home / ".engram" / "presence-spool").glob("*.json"))
+
+
+def test_a_failed_upload_leaves_a_findable_last_error(tmp_path, monkeypatch):
+    """The Mac's diagnosis in one sentence: the hook swallows exceptions by
+    design, which turned a broken SSL stack into weeks of silent roster absence.
+    The last-error file keeps failure-soft while making the failure a
+    thirty-second `cat` instead of a multi-day mystery."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "presence_hook_err",
+        Path(__file__).resolve().parents[2] / "hooks" / "engram_presence_hook.py")
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    err = tmp_path / "presence-upload.err"
+    monkeypatch.setattr(hook, "UPLOAD_ERR", str(err))
+    conf = tmp_path / "upload.json"
+    conf.write_text('{"url": "https://engram.invalid", "token": "t"}',
+                    encoding="utf-8")
+    monkeypatch.setattr(hook, "UPLOAD_CONF", str(conf))
+
+    # engram.invalid never resolves -> urlopen raises -> dropped AND noted.
+    assert hook._upload({"session": "x", "ts": 0}) is False
+    assert err.is_file(), "the drop must leave a one-line trace"
+    line = err.read_text(encoding="utf-8")
+    assert "Error" in line or "error" in line
+
+    # Success clears it, so a stale error can't outlive the problem.
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    assert hook._upload({"session": "x", "ts": 0}) is True
+    assert not err.exists(), "a healed upload must not leave a stale error"
+
+
+def test_the_ssl_context_prefers_certifi_when_present(monkeypatch):
+    """macOS python.org builds wire NO system CA bundle into ssl, so the default
+    context verifies nothing there. certifi, when importable, is the fix; its
+    absence (normal on Windows) must not break anything."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "presence_hook_ssl",
+        Path(__file__).resolve().parents[2] / "hooks" / "engram_presence_hook.py")
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    import ssl
+    ctx = hook._ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED, "verification must NEVER be off"

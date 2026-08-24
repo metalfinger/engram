@@ -20,6 +20,50 @@ SPOOL_DIR = os.path.join(os.path.expanduser("~"), ".engram", "presence-spool")
 
 
 UPLOAD_CONF = os.path.join(os.path.expanduser("~"), ".engram", "upload.json")
+UPLOAD_ERR = os.path.join(os.path.expanduser("~"), ".engram", "presence-upload.err")
+
+
+def _ssl_context():
+    """An SSL context that can actually verify the tunnel's certificate.
+
+    python.org CPython on macOS ships with NO system CA bundle wired into ssl,
+    so urllib fails CERTIFICATE_VERIFY_FAILED on every request — while curl,
+    using the system trust store, succeeds. That skew is why every manual probe
+    of the upload endpoint worked while the hook silently dropped every record:
+    a multi-day mystery, diagnosed on the Mac by running this exact code with
+    exceptions visible. certifi, when importable, provides the bundle; without
+    it the default context is still correct on platforms whose ssl is wired.
+    NEVER disable verification — a presence hook is not worth a MITM hole.
+    """
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001 — certifi missing is the normal case on Windows
+        return ssl.create_default_context()
+
+
+def _note_upload_error(exc):
+    """One line, overwritten, at ~/.engram/presence-upload.err.
+
+    The hook swallows exceptions by design — correct for prompt latency, and
+    exactly what turned a broken SSL stack into weeks of silent roster absence.
+    A last-error file keeps the failure-soft behaviour while making the failure
+    FINDABLE: thirty seconds of `cat`, instead of a multi-day mystery."""
+    try:
+        with open(UPLOAD_ERR, "w", encoding="utf-8") as f:
+            f.write("%s %s: %s" % (
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                type(exc).__name__, exc))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _clear_upload_error():
+    try:
+        os.remove(UPLOAD_ERR)
+    except OSError:
+        pass
 
 
 def _upload(record):
@@ -66,9 +110,13 @@ def _upload(record):
         )
         # Short timeout on purpose: this runs on every tool call, and a hook that
         # hangs is worse than a roster that lags.
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return 200 <= resp.status < 300
-    except Exception:
+        with urllib.request.urlopen(req, timeout=5, context=_ssl_context()) as resp:
+            ok = 200 <= resp.status < 300
+            if ok:
+                _clear_upload_error()
+            return ok
+    except Exception as exc:  # noqa: BLE001
+        _note_upload_error(exc)
         return False
 
 
