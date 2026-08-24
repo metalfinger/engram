@@ -402,7 +402,9 @@ async def test_thread_posted_by_one_tenant_is_invisible_to_another(mu, monkeypat
 
     _login(monkeypatch, "google:bob@example.com")
     threads = await app_module.kb_threads()
-    assert all(t["thread"] != "alice-private-room" for t in threads)
+    # kb_threads returns {threads, waiting_on_you, woke_on} since the watch tool;
+    # the isolation property being asserted is unchanged.
+    assert all(t["thread"] != "alice-private-room" for t in threads["threads"])
 
     read = await app_module.kb_thread_read("alice-private-room")
     assert read["status"] == "none"

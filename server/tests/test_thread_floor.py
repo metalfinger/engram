@@ -559,3 +559,82 @@ async def test_an_ack_beyond_the_last_turn_is_clamped(mu, monkeypatch):
     view = await app_module.kb_thread_read("ackwild", sender="windows")
     mac = next(s for s in view["floor"]["others"] if s["name"] == "mac")
     assert mac["state"] == "unread"
+
+
+@pytest.mark.asyncio
+async def test_every_wait_is_clamped_below_the_host_kill(mu, monkeypatch):
+    """The host hard-kills a tool call at ~60s, so every server-side wait is capped
+    at 45. `wait_for_reply` was the one path that reached the store raw, where the
+    cap is 55 — inside the kill window once overhead counts. The post survives
+    (it commits before the wait) but the reply is lost, which the caller reads as
+    "nobody answered" rather than "we were cut off"."""
+    seen = {}
+
+    real = app_module.current_store
+
+    async def _spy():
+        store = await real()
+
+        async def _post(*a, **kw):
+            seen["wait"] = a[10] if len(a) > 10 else kw.get("wait_seconds")
+            return {"thread": a[0], "seq": 0, "status": "open",
+                    "participants": [], "posted": "2026-01-01T00:00:00Z",
+                    "pushed": False, "warnings": []}
+
+        store.kb_thread_post = _post
+        return store
+
+    monkeypatch.setattr(app_module, "current_store", _spy)
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post(
+        "capped", "windows", "hello", wait_for_reply=True, wait_seconds=3600,
+    )
+    assert seen["wait"] == app_module._MAX_MCP_WAIT_S, (
+        f"asked for 3600, reached the store as {seen['wait']} — must be clamped to "
+        f"{app_module._MAX_MCP_WAIT_S}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_a_session_had_read_survives_a_reconnect(mu, monkeypatch):
+    """OBSERVED LIVE, within an hour of shipping the watermarks. A reconnect gives a
+    session a brand-new speaker key — a server restart is enough — and the new row
+    started at -1, so a session that had read every turn came back reporting 21
+    unread. Absorption already carried the floor and speaking history across; the
+    watermarks were added later and nobody told it.
+
+    The principle, from Buzz (block/buzz) where each agent holds its own keypair:
+    identity is not the connection. Everything keyed to identity must survive the
+    key rotating, or it silently resets on every restart."""
+    _login(monkeypatch)
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_thread_post("reconnect", "windows", "one")
+    await app_module.kb_thread_post("reconnect", "windows", "two")
+
+    _as_session(monkeypatch, "sess-b")
+    got = await app_module.kb_thread_read("reconnect", sender="mac")
+    top = max(t["seq"] for t in got["turns"])
+    await app_module.kb_thread_read("reconnect", sender="mac", ack_through=top)
+
+    before_read = await app_module.kb_thread_read("reconnect", sender="mac")
+    before = next(s for s in before_read["floor"]["speakers"]
+                  if s["name"] == "mac")
+    assert before["read_through"] == top and before["state"] == "read"
+
+    # The connection dies and comes back with a different key, same name.
+    #
+    # It reads WITH ITS CURSOR, so nothing new comes back — which is the whole
+    # point. An earlier version of this test re-read the thread from the start,
+    # so the fresh key re-marked every turn as read and the test passed with the
+    # fix removed. It proved nothing. The only path that can restore the watermark
+    # here is absorption.
+    cursor = before_read["cursor"]
+    _as_session(monkeypatch, "sess-b-reconnected")
+    fresh = await app_module.kb_thread_read("reconnect", sender="mac", since=cursor)
+    assert fresh["turns"] == [], "nothing new — the watermark cannot be re-earned"
+    after = next(s for s in fresh["floor"]["speakers"] if s["name"] == "mac")
+    assert after["read_through"] == top, "a reconnect must not un-read the thread"
+    assert after["processed_through"] == top
+    assert after["state"] == "read"
+    assert after["unread"] == 0

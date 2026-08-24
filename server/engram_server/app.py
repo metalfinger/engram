@@ -762,7 +762,13 @@ async def kb_thread_post(
 
     out = await store.kb_thread_post(
         thread, sender, message, close, topic, goal, exit_condition, refs,
-        allow_secrets, wait_for_reply, wait_seconds,
+        # CLAMPED HERE, like every other wait. This was the one path that reached
+        # the store raw, where it clamps at 55 — inside the host's ~60s kill window
+        # once overhead is counted. The post itself survives (it commits before the
+        # wait), but the reply is lost and the call dies, which reads to the caller
+        # as "nobody answered" rather than "we were cut off". Every other wait goes
+        # through _wait_window for exactly this reason; this one was missed.
+        allow_secrets, wait_for_reply, _wait_window(wait_seconds),
         # Fires the moment the turn is on disk — INSIDE the store call, before any
         # reply-wait. Waking afterwards would let a poster using wait_for_reply hold
         # every listener asleep for the length of their own wait.
@@ -955,14 +961,78 @@ async def kb_thread_read(
 
 
 @mcp.tool()
-async def kb_threads() -> list[dict[str, Any]]:
-    """List active cross-session threads so a session can discover one to join by name, or
-    check what's open. Reach for this when the user says 'join the thread the other session
-    started' without giving its id, or 'what threads are open'. Newest activity first.
+async def kb_threads(wait_seconds: int = 0) -> dict[str, Any]:
+    """List cross-session threads — and, with wait_seconds, WATCH ALL OF THEM AT ONCE.
 
-    Returns [{thread, status, topic, participants, turn_count, last_activity}].
+    Call to discover a thread to join by name ('join the thread the other session
+    started'), to check what's open, or — the important one — to be a LISTENER:
+    pass wait_seconds (~25-45) and this parks until ANY open thread sees a new turn,
+    returning the moment one lands with `woke_on` naming it. One call watches every
+    conversation; without it a session must pick one thread to block on and goes
+    deaf to the rest. Never poll in a loop — the park is free (it sleeps
+    server-side) and the wake is instant, not a timer.
+
+    If something is ALREADY waiting for you — an unread turn, or a floor handed to
+    you — this returns immediately instead of parking: waiting on top of unread
+    turns is how a session misses the message it was called to read. Deal with
+    `waiting_on_you` first; those threads will not advance until you speak.
+
+    Capped at 45s (the host kills longer calls). A timeout is normal: call again to
+    keep listening, or end your turn — a turn that lands while you are away pushes
+    a notification to the user instead.
+
+    Returns {threads: [{thread, status, topic, participants, turn_count,
+    last_activity, your_turn?, unread?, do_next?}], waiting_on_you, woke_on}.
     """
-    return await (await current_store()).kb_threads()
+    key = _speaker_key()
+
+    async def _annotated() -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
+        rows = await (await current_store()).kb_threads()
+        waiting: list[str] = []
+        fids: dict[str, int] = {}
+        for row in rows:
+            if str(row.get("status")) != "open":
+                continue
+            fid = _thread_floor_id(str(row["thread"]))
+            if fid is None:
+                continue  # single-user / rooms unavailable: plain listing still works
+            fids[str(row["thread"])] = fid
+            try:
+                floor = registry.rooms.floor_state(fid, key)
+            except Exception:  # noqa: BLE001 — a broken floor must not hide the thread
+                continue
+            row["your_turn"] = bool(floor.get("is_you"))
+            mine = next((s for s in floor.get("speakers", [])
+                         if s.get("speaker") == key), None)
+            row["unread"] = int(mine["unread"]) if mine else 0
+            row["do_next"] = str(floor.get("do_next") or "")
+            if row["your_turn"]:
+                waiting.append(str(row["thread"]))
+        return rows, waiting, fids
+
+    rows, waiting, fids = await _annotated()
+    woke_on = ""
+    if wait_seconds > 0 and fids:
+        # A PREDICATE LOOP, not a single wait. The condition bus does not queue:
+        # a turn landing between the pending-check and the park is a lost wakeup,
+        # and annotation (git listing + a floor per thread) is a wide enough
+        # window to lose one in. Re-checking state at the top of every iteration
+        # turns that race from "sleeps the full timeout" into "seen on the next
+        # pass" — the same shape kb_thread_read's own wait uses.
+        deadline = time.monotonic() + _wait_window(wait_seconds)
+        while not waiting and not any(r.get("unread") for r in rows):
+            remaining = int(deadline - time.monotonic())
+            if remaining < 1:
+                break
+            woke = await _wait_any_room(list(fids.values()), remaining)
+            before = dict(fids)
+            # Re-list so the caller sees the state that woke it, not the state
+            # it fell asleep on.
+            rows, waiting, fids = await _annotated()
+            if woke is not None:
+                woke_on = next((t for t, f in before.items() if f == woke), "")
+                break
+    return {"threads": rows, "waiting_on_you": waiting, "woke_on": woke_on}
 
 
 @mcp.tool(meta=_meet_meta)
@@ -3050,8 +3120,18 @@ async def kb_setup_machine() -> dict[str, Any]:
             "hooks": {
                 "SessionStart": [{"hooks": [{"type": "command",
                                              "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
-                "UserPromptSubmit": [{"hooks": [{"type": "command",
-                                                 "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command",
+                                "command": "~/.claude/hooks/engram-presence-hook.sh"}]},
+                    # Turn awareness. FOREGROUND and cache-only, unlike presence:
+                    # its stdout becomes model context on UserPromptSubmit, so the
+                    # session learns "thread X is waiting on you" the moment the
+                    # user talks to it — zero tool calls, zero polling. A separate
+                    # hook because presence is backgrounded, and a backgrounded
+                    # hook's stdout goes nowhere.
+                    {"hooks": [{"type": "command",
+                                "command": "~/.claude/hooks/engram-turns-hook.sh"}]},
+                ],
                 "SessionEnd": [{"hooks": [{"type": "command",
                                            "command": "~/.claude/hooks/engram-presence-hook.sh"}]}],
             },

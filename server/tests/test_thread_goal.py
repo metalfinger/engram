@@ -118,6 +118,6 @@ async def test_threads_listing_carries_the_goal(mu, monkeypatch):
     _login(monkeypatch)
     _as_session(monkeypatch, "sess-a")
     await app_module.kb_thread_post("listed", "windows", "hi", goal="Find the bug")
-    rows = await app_module.kb_threads()
-    row = next(r for r in rows if r["thread"] == "listed")
+    out = await app_module.kb_threads()
+    row = next(r for r in out["threads"] if r["thread"] == "listed")
     assert row["goal"] == "Find the bug"

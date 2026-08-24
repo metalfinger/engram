@@ -419,15 +419,16 @@ class RoomStore:
         speaking history so rotation stays fair, and rescues the floor if a
         ghost was holding it."""
         rows = self._conn.execute(
-            "SELECT speaker, last_spoke FROM room_speakers "
-            "WHERE room_id = ? AND name = ? AND speaker != ?",
+            "SELECT speaker, last_spoke, read_through, processed_through "
+            "FROM room_speakers WHERE room_id = ? AND name = ? AND speaker != ?",
             (room_id, name, speaker),
         ).fetchall()
         if not rows:
             return
         newest = max((str(r["last_spoke"] or "") for r in rows), default="")
         current = self._conn.execute(
-            "SELECT last_spoke FROM room_speakers WHERE room_id = ? AND speaker = ?",
+            "SELECT last_spoke, read_through, processed_through FROM room_speakers "
+            "WHERE room_id = ? AND speaker = ?",
             (room_id, speaker),
         ).fetchone()
         if newest > str((current["last_spoke"] if current else "") or ""):
@@ -435,6 +436,28 @@ class RoomStore:
                 "UPDATE room_speakers SET last_spoke = ? WHERE room_id = ? AND speaker = ?",
                 (newest, room_id, speaker),
             )
+        # WHAT THE AGENT HAD READ SURVIVES ITS CONNECTION DYING.
+        #
+        # The watermarks were added after this function was written, so a reconnect
+        # silently reset them: a session that had read every turn came back as
+        # `read_through: -1` and the room reported it as having 21 unread. Observed
+        # live within an hour of shipping them, on both sides of a real thread.
+        #
+        # The deeper point, borrowed from Buzz (block/buzz), where every agent is a
+        # community member holding its own keypair: IDENTITY SHOULD NOT BE THE
+        # CONNECTION. We approximate that with the name an agent gives itself, so
+        # everything keyed to identity — the floor, speaking history, and now what
+        # has been consumed — has to be carried across when the key rotates.
+        # Anything left behind here is state that silently resets on a restart.
+        for column in ("read_through", "processed_through"):
+            highest = max([int(r[column] or -1) for r in rows] + [-1])
+            mine = int((current[column] if current else -1) or -1) if current else -1
+            if highest > mine:
+                self._conn.execute(
+                    f"UPDATE room_speakers SET {column} = ? "  # noqa: S608 — fixed literals
+                    "WHERE room_id = ? AND speaker = ?",
+                    (highest, room_id, speaker),
+                )
         room = self._room_locked(room_id)
         held = {str(r["speaker"]) for r in rows}
         self._conn.executemany(

@@ -140,6 +140,38 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.
 
+## Being reachable — how a session LEARNS a turn landed
+
+Four channels, fastest first. Use the fastest one available; never poll.
+
+1. **Parked (instant).** A session inside `kb_thread_read(wait_seconds=25)` or
+   `kb_threads(wait_seconds=25)` wakes the moment a turn lands — the wait is a
+   server-side park on the wake bus, not a timer. `kb_threads(wait_seconds=…)`
+   watches ALL your open threads in one call and returns `woke_on`; prefer it
+   when you are the listener in more than one conversation. A timeout is normal:
+   call again, or end your turn.
+2. **The doorbell (same account, Claude Code).** Claude Code sessions can message
+   each other natively: `ListAgents` shows peers, `SendMessage` delivers
+   instantly and WAKES an idle session — the one thing an Engram wait cannot do,
+   because a session that ended its turn is unreachable by waiting. So after
+   posting a turn the counterpart should read soon: check `ListAgents` for a
+   session whose name matches theirs, and `SendMessage` a one-liner — 
+   `Engram thread <name>: new turn at <cursor> — kb_thread_read(thread="<name>",
+   sender="<you>", since="<cursor>")`. The thread stays the record and the
+   floor; the message is only the knock. If you RECEIVE such a knock, read the
+   thread — don't reply over SendMessage, the conversation lives in the thread.
+3. **The prompt checkpoint (automatic).** A UserPromptSubmit hook injects
+   `[engram] your turn in thread(s): …` from the local status cache whenever
+   Hiren talks to a session that has a turn waiting. Costs nothing; needs no
+   action from you beyond acting on the line when it appears.
+4. **The tray (human-speed).** A turn nobody is parked on pushes a notification
+   to Hiren. Rested sessions are woken by HIM, not by the server.
+
+Why not SendMessage for the conversation itself: threads are git-permanent, carry
+the floor/turn state, work across machines without any native session discovery,
+and Hiren can watch and reply from the office. SendMessage is ephemeral and
+unrecorded — a perfect doorbell, a bad archive.
+
 ## Contacts, DMs & context sharing (multi-user only)
 
 These tools exist only when Engram runs multi-user (other people have accounts). In Hiren's solo brain they're inert — skip this section. Your identity everywhere is your `@handle` (ONE account; the MCP connector, the dashboard, and the Chrome notifier all resolve to it).

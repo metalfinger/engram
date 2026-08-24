@@ -1069,14 +1069,32 @@ class Dashboard:
                     name[len(_THREAD_FLOOR_PREFIX):]
                     if name.startswith(_THREAD_FLOOR_PREFIX) else name
                 )
-            if speaker:
-                for row in rooms.list_rooms_for(user.id, include_closed=False):
-                    name = str(row["name"])
-                    if rooms.floor_state(row["id"], speaker).get("is_you"):
-                        your_turn.append(
-                            name[len(_THREAD_FLOOR_PREFIX):]
-                            if name.startswith(_THREAD_FLOOR_PREFIX) else name
-                        )
+            # MACHINE-LEVEL, deliberately. The old check asked floor_state whether
+            # `speaker` — the Claude Code SESSION id the status line passes — held
+            # the floor. But floors are held by MCP speaker keys, a different
+            # namespace entirely, so is_you was structurally false and your_turn
+            # had been empty since it shipped: a guard whose absence produces the
+            # same observable as its presence (an empty list), so nothing noticed.
+            # What the prompt checkpoint actually needs is per-MACHINE-OWNER:
+            # "a turn is waiting on YOUR side and nobody is parked to take it".
+            # A holder that is listening will wake itself — saying so would nag.
+            for row in rooms.list_rooms_for(user.id, include_closed=False):
+                name = str(row["name"])
+                try:
+                    floor = rooms.floor_state(row["id"], speaker or "-")
+                except Exception:  # noqa: BLE001
+                    continue
+                holder = str(floor.get("holder") or "")
+                if not holder or floor.get("awaiting_human"):
+                    continue  # open floor, or already in needs_you
+                held_by = next((sp for sp in floor.get("speakers", [])
+                                if sp.get("speaker") == holder), None)
+                if held_by is not None and held_by.get("listening"):
+                    continue  # they are parked; the bus will wake them
+                your_turn.append(
+                    name[len(_THREAD_FLOOR_PREFIX):]
+                    if name.startswith(_THREAD_FLOOR_PREFIX) else name
+                )
             working = [
                 {"path": a["path"], "session": a["session"]}
                 for a in rooms.recent_activity(exclude_session=speaker)

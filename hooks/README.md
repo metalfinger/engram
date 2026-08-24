@@ -79,6 +79,17 @@ and the same entry works on every PC, because each machine's own
 Live data needs `~/.engram/upload.json` (the server's own machine has no cache
 source and shows the local segments only). `kb_setup_machine` writes all of this.
 
+## Turn awareness (`engram-turns-hook.sh`)
+
+UserPromptSubmit, FOREGROUND — its stdout becomes model context, which is the
+whole point (the presence hook is backgrounded, so its stdout goes nowhere).
+Reads only `~/.engram/status-cache.json` (maintained by the status line — no
+network, sub-10ms) and prints one `[engram] your turn in thread(s): …` line when
+a thread or ask is waiting. A Claude Code session that ended its turn cannot be
+woken, so every user prompt doubles as the checkpoint where it finds out.
+Silent on a stale (>3 min) or absent cache: saying nothing beats reporting a
+turn someone already took.
+
 ## Don't digest this whole directory
 
 `~/.claude/hooks/` is **shared** — other tools' hooks live here too. Engram owns
