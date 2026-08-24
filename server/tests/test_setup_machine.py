@@ -42,7 +42,7 @@ async def test_setup_returns_everything_without_asking_the_user(mu):
     out = await app_module.kb_setup_machine()
     assert out["server_url"]
     assert {s["name"] for s in out["skills"]} >= {"engram", "chunk-work"}
-    assert out["hooks"]["zip"].endswith("engram-hooks.zip")
+    assert "engram-hooks.zip?v=" in out["hooks"]["zip"]  # digest-busted URL
     assert out["upload_config"]["path"] == "~/.engram/upload.json"
     assert len(out["steps"]) >= 5
 
@@ -286,3 +286,32 @@ async def test_the_skill_zip_carries_every_skill_in_the_manifest(mu):
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         tops = {n.split("/")[0] for n in z.namelist()}
     assert names <= tops, f"manifest promises {names}, zip carries {tops}"
+
+
+@pytest.mark.asyncio
+async def test_download_urls_carry_their_content_digest(mu):
+    """The Mac's first post-deploy setup installed STALE bundles from an edge
+    cache and reported success — always-green-but-wrong. A ?v=<digest> in the
+    URL makes the cache key change exactly when the content does, so a cached
+    copy is by definition the right one."""
+    out = await app_module.kb_setup_machine()
+    assert "?v=" in out["skills_zip"]
+    assert "?v=" in out["hooks"]["zip"]
+    assert out["hooks"]["zip"].split("?v=")[1] == out["hooks"]["digest"]
+
+
+@pytest.mark.asyncio
+async def test_downloads_are_no_store(mu):
+    from starlette.testclient import TestClient
+    client = TestClient(app_module.mcp.streamable_http_app())
+    for path in ("/downloads/engram-skill.zip", "/downloads/engram-hooks.zip"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store", path
+
+
+@pytest.mark.asyncio
+async def test_setup_teaches_the_stale_bundle_diagnosis(mu):
+    out = await app_module.kb_setup_machine()
+    step0 = out["steps"][0]
+    assert "digest" in step0 and "?v=" in step0

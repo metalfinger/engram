@@ -3127,12 +3127,19 @@ async def kb_setup_machine() -> dict[str, Any]:
                            "digest": _dir_digest(d)})
     except Exception:  # noqa: BLE001
         log.debug("could not digest skills", exc_info=True)
+    skills_digest = _dir_digest(_SKILLS_ROOT)
+    hooks_digest = _dir_digest(_HOOKS_DIR, _owned_hooks(_HOOKS_DIR))
 
     return {
         "server_url": base,
         "token": token,
         "skills": skills,
-        "skills_zip": f"{base}/downloads/engram-skill.zip",
+        # ?v=<digest> BAKED IN. The Mac's first post-deploy setup installed
+        # STALE bundles from an edge cache and reported success — always-green-
+        # but-wrong, the always-red law's evil twin. The digest in the URL makes
+        # the edge cache key change exactly when the content does, so a cached
+        # copy is by definition the right one.
+        "skills_zip": f"{base}/downloads/engram-skill.zip?v={skills_digest}",
         "harness": {
             "token": harness_token,
             "scope": _HARNESS_SCOPE,
@@ -3156,7 +3163,7 @@ async def kb_setup_machine() -> dict[str, Any]:
                 "tool definitions live on the server and cannot go stale in a copy."
             ),
         },
-        "hooks": {"zip": f"{base}/downloads/engram-hooks.zip",
+        "hooks": {"zip": f"{base}/downloads/engram-hooks.zip?v={hooks_digest}",
                   "install_to": "~/.claude/hooks/",
                   "files": [p.name for p in _owned_hooks(_HOOKS_DIR)],
                   "digest": _dir_digest(_HOOKS_DIR, _owned_hooks(_HOOKS_DIR))},
@@ -3250,7 +3257,12 @@ async def kb_setup_machine() -> dict[str, Any]:
             },
         },
         "steps": [
-            "0. CHECK FIRST — this is also the update path. For each skill and for the "
+            "0. CHECK FIRST — this is also the update path. AFTER any download, verify "
+            "the unpacked files' digest against the manifest digest here: a mismatch "
+            "means an edge cache served stale bytes — re-fetch with a fresh ?v= value "
+            "rather than installing them. Installing a bundle that fails its own digest "
+            "is how a machine 'updates' to old code while reporting success. For each "
+            "skill and for the "
             "hooks, compare the `digest` here against what is installed locally (same "
             "recipe: sha256 over each file's relative path + bytes, sorted, first 12 "
             "hex chars — `local_digest_recipe` below). Anything that MATCHES is already "
@@ -4488,7 +4500,11 @@ async def hooks_zip(request: Request) -> Response:
     return Response(
         _hooks_zip_cache[stamp],
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=engram-hooks.zip"},
+        headers={"Content-Disposition": "attachment; filename=engram-hooks.zip",
+                 # The Mac installed stale hooks from an edge cache that ignored
+                 # freshness. These bundles are small and fetched rarely; caching
+                 # them buys milliseconds and costs silent stale installs.
+                 "Cache-Control": "no-store"},
     )
 
 
@@ -4517,7 +4533,8 @@ async def skill_zip(request: Request) -> Response:
     return Response(
         _skill_zip_cache[stamp],
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=engram-skill.zip"},
+        headers={"Content-Disposition": "attachment; filename=engram-skill.zip",
+                 "Cache-Control": "no-store"},
     )
 
 

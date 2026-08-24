@@ -1098,6 +1098,15 @@ class Dashboard:
                 shown = (name[len(_THREAD_FLOOR_PREFIX):]
                          if name.startswith(_THREAD_FLOOR_PREFIX)
                          else f"{name} [room]")
+                # NAME THE DEBTOR. The account-level fact "a turn waits" showed
+                # identically on every machine, so both of Hiren's status lines
+                # said ⏳ for a floor only the Mac held — guilt on the wrong
+                # machine. The floor knows its holder's NAME; carrying it turns
+                # "somebody should act" into "mac owes this", which each machine
+                # can read as mine-or-not without the impossible session join.
+                who = str(floor.get("holder_name") or "").strip()
+                if who:
+                    shown = f"{shown} → {who}"
                 # "Your turn" must mean ACTIONABLE NOW. A holder that has not been
                 # seen for hours is not composing — it went home mid-conversation,
                 # and six days of "⏳ your turn: mcp-auth-connect-debug" teaches

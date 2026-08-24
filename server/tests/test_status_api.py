@@ -66,11 +66,15 @@ async def test_a_waiting_turn_shows_up_without_the_shadow_prefix(mu, client, mon
     await app_module.kb_thread_read("status-check", sender="mac")
 
     out = _status(client)
-    assert "status-check" in out["your_turn"], (
+    assert any(e.startswith("status-check") for e in out["your_turn"]), (
         "a held, un-listened floor is exactly what the prompt checkpoint exists "
         "to surface"
     )
     assert not any(t.startswith("thread--") for t in out["your_turn"])
+    # THE DEBTOR IS NAMED. Both machines showed an identical ⏳ for a floor only
+    # one of them held; carrying the holder's name lets each machine read
+    # mine-or-not without the impossible session join.
+    assert any(e == "status-check → mac" for e in out["your_turn"]), out["your_turn"]
 
 
 @pytest.mark.asyncio
@@ -104,12 +108,12 @@ async def test_a_closed_thread_stops_claiming_turns(mu, client, monkeypatch):
     await app_module.kb_thread_post("ghost-turn", "windows", "over to you")
     monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-b")
     await app_module.kb_thread_read("ghost-turn", sender="mac")
-    assert "ghost-turn" in _status(client)["your_turn"], "live thread: listed"
+    assert any(e.startswith("ghost-turn") for e in _status(client)["your_turn"]),         "live thread: listed"
 
     monkeypatch.setattr(app_module, "_speaker_key", lambda: "sess-a")
     await app_module.kb_thread_post("ghost-turn", "windows", "done here", close=True)
     out = _status(client)
-    assert "ghost-turn" not in out["your_turn"], (
+    assert not any(e.startswith("ghost-turn") for e in out["your_turn"]), (
         "a closed thread must not nag on every prompt for the rest of time"
     )
 
@@ -125,8 +129,8 @@ async def test_a_long_gone_holder_is_abandoned_not_your_turn(mu, client, monkeyp
     await app_module.kb_thread_read("gone-holder", sender="mac")  # mac now holds
 
     out = _status(client)
-    assert "gone-holder" in out["your_turn"], "a LIVE holder is actionable now"
-    assert "gone-holder" not in out["abandoned"]
+    assert any(e.startswith("gone-holder") for e in out["your_turn"]),         "a LIVE holder is actionable now"
+    assert not any(e.startswith("gone-holder") for e in out["abandoned"])
 
     # The holder's last_seen ages past the liveness window: same room, new bucket.
     fid = app_module._thread_floor_id("gone-holder")
@@ -136,5 +140,5 @@ async def test_a_long_gone_holder_is_abandoned_not_your_turn(mu, client, monkeyp
     app_module.registry.rooms._conn.commit()
 
     out = _status(client)
-    assert "gone-holder" in out["abandoned"]
-    assert "gone-holder" not in out["your_turn"]
+    assert any(e.startswith("gone-holder") for e in out["abandoned"])
+    assert not any(e.startswith("gone-holder") for e in out["your_turn"])
