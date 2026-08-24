@@ -266,3 +266,23 @@ async def test_the_token_is_scope_limited(mu):
     dash = app_module._dashboard
     assert dash.auth.verify(out["token"], expected_scope="notify") is not None
     assert dash.auth.verify(out["token"], expected_scope="session") is None
+
+
+@pytest.mark.asyncio
+async def test_the_skill_zip_carries_every_skill_in_the_manifest(mu):
+    """Reported from the Mac's first real setup run: the manifest lists
+    chunk-work with a digest, but the zip only ever carried engram/ — so every
+    machine reported chunk-work MISSING forever. Same law as the hooks digest:
+    a check that can never pass is a check nobody reads."""
+    import io
+    import zipfile
+    from starlette.testclient import TestClient
+
+    out = await app_module.kb_setup_machine()
+    names = {s["name"] for s in out["skills"]}
+    client = TestClient(app_module.mcp.streamable_http_app())
+    r = client.get("/downloads/engram-skill.zip")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        tops = {n.split("/")[0] for n in z.namelist()}
+    assert names <= tops, f"manifest promises {names}, zip carries {tops}"

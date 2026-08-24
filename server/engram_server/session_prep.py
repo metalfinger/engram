@@ -73,7 +73,29 @@ def require_repo(repo_path: str) -> Path:
         )
     repo = Path(raw).expanduser()
     if not repo.is_dir():
-        raise KBError(f"No directory at {repo}.")
+        # SAY THE REAL LIMITATION, not a path error that reads like a typo. This
+        # tool runs where the SERVER runs and prepares worktrees on its disk; a
+        # Mac session passing /Users/... got "No directory at \Users\..." and
+        # spent time double-checking a path that was never going to resolve here.
+        # Hit twice in the field (18 + 20 Aug) before the message was fixed. A
+        # POSIX-absolute path on a Windows server is the giveaway of a caller on
+        # another machine, so name that case explicitly.
+        import os
+        import socket
+        host = socket.gethostname()
+        if raw.startswith("/") and os.name == "nt":
+            raise KBError(
+                f"kb_prepare_session prepares worktrees on the SERVER's machine "
+                f"({host}) only, and {raw!r} looks like a path on YOUR machine. "
+                "The server cannot create a worktree it cannot reach. On another "
+                "machine, do the steps locally instead: git worktree add, write "
+                "the .engram-project pin, then open the thread with "
+                "kb_thread_post(goal=..., exit_condition=...)."
+            )
+        raise KBError(
+            f"No directory at {repo} on {host} (the server's machine — this "
+            "tool prepares worktrees on the server's own disk)."
+        )
     try:
         _git(repo, "rev-parse", "--git-dir")
     except KBError as exc:

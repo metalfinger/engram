@@ -47,3 +47,25 @@ async def test_inbox_slug_collision_gets_suffix(store: KBStore, settings: Settin
 async def test_inbox_rejects_empty(store: KBStore) -> None:
     with pytest.raises(KBError):
         await store.kb_inbox("   ")
+
+
+@pytest.mark.asyncio
+async def test_a_guessed_argument_writes_nothing(store):
+    """Reported from the field: calling kb_inbox with text='true' — the obvious
+    guess for a tool someone mistook for a listing — CREATED inbox/...-true.md
+    and pushed it, junk that had to be archived by hand. A capture tool must
+    never manufacture content out of a guessed argument."""
+    import engram_server.app as app_module
+
+    async def _store():
+        return store
+
+    import unittest.mock as m
+    with m.patch.object(app_module, "current_store", _store):
+        for guess in ("", "true", "True", "list", "none"):
+            out = await app_module.kb_inbox(guess)
+            assert "items" in out and "path" not in out, (
+                f"kb_inbox({guess!r}) must list, not write"
+            )
+        real = await app_module.kb_inbox("call the bank about the invoice")
+        assert "path" in real, "real text still captures"

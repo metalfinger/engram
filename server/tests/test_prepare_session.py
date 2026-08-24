@@ -246,3 +246,33 @@ async def test_orientation_survives_a_broken_chunk_lookup(mu, repo, monkeypatch)
     got = await app_module.kb_realign(cwd=out["worktree"], pin="alt")
     assert got["resolved"] is True, "orientation itself must still succeed"
     assert "chunk" not in got, "the broken lookup contributes nothing, silently"
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_machine_path_gets_the_real_answer(mu):
+    r"""A Mac session passing /Users/... used to get a bare path error
+    — a path error that reads like a typo, double-checked twice in the field
+    before anyone realised the tool is same-machine by design. The refusal now
+    names the limitation and says what to do instead."""
+    import os
+    if os.name != "nt":
+        pytest.skip("the foreign-path heuristic is POSIX-path-on-Windows")
+    with pytest.raises(KBError) as exc:
+        await app_module.kb_prepare_session(
+            "alt", "Some chunk", "/Users/hirenk/Documents/code/vibechk")
+    msg = str(exc.value)
+    assert "SERVER's machine" in msg
+    assert "worktree add" in msg, "the refusal must carry the local fallback"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_brief_warns_loudly(mu, repo):
+    """vibechk, 2026-08-18: four sessions briefed without the locked brand
+    decision — the canon had to be pasted after the fact. The brief's value is
+    its refs; empty ones are almost always forgetting, not minimalism."""
+    out = await app_module.kb_prepare_session("alt", "Reskin something", str(repo))
+    assert any("NO refs" in w for w in out["warnings"])
+    with_refs = await app_module.kb_prepare_session(
+        "alt", "Reskin with canon", str(repo),
+        refs=["projects/alt/decisions/brand.md"])
+    assert not any("NO refs" in w for w in with_refs["warnings"])

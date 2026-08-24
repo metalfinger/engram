@@ -631,17 +631,38 @@ async def kb_search(
 
 
 @mcp.tool()
-async def kb_inbox(text: str) -> dict[str, Any]:
-    """Quick-capture a thought/task/link into the brain's inbox with ZERO ceremony —
-    call whenever the user says 'remember this', 'note this down', 'inbox: ...'. No
-    project, no frontmatter decisions, no links required: it drops the raw text into
-    inbox/YYYY-MM-DD-<slug>.md at the bundle root as an untriaged item and pushes.
-    Triage later moves it to a proper project concept (kb_write) — the morning briefing
-    lists everything still untriaged so nothing captured gets lost.
+async def kb_inbox(text: str = "") -> dict[str, Any]:
+    """CAPTURE into the inbox (this tool WRITES — it does not list). Call when the
+    user says 'remember this', 'note this down', 'inbox: ...'. Zero ceremony: drops
+    the raw text into inbox/YYYY-MM-DD-<slug>.md at the bundle root as an untriaged
+    item and pushes. Triage later moves it to a proper concept (kb_write).
 
-    Returns {path, sha, pushed}.
+    To SEE the inbox, don't call this — kb_search(query, ...) covers inbox items,
+    and the briefing lists everything untriaged.
+
+    Called with no text (or a bare 'true'), it returns the current untriaged
+    listing instead of writing: the most obvious mis-invocation used to CREATE
+    `inbox/2026-08-19-true.md` and push it — a listing tool's worth of intent
+    turned into junk in the brain, cleaned up by hand. A capture tool must never
+    manufacture content out of a guessed argument.
+
+    Returns {path, sha, pushed} on capture; {items: [...]} on a listing fallback.
     """
-    return await (await current_store()).kb_inbox(text)
+    cleaned = (text or "").strip()
+    if cleaned.lower() in ("", "true", "false", "none", "null", "list"):
+        store = await current_store()
+        items = []
+        try:
+            root = store.root / "inbox"
+            if root.is_dir():
+                items = sorted(p.name for p in root.glob("*.md"))
+        except Exception:  # noqa: BLE001
+            log.debug("inbox listing failed", exc_info=True)
+        return {"items": items, "note": (
+            "Nothing was written. This tool CAPTURES text into the inbox; you "
+            "called it with no real text, so here is the listing instead."
+        )}
+    return await (await current_store()).kb_inbox(cleaned)
 
 
 @mcp.tool()
@@ -3312,6 +3333,18 @@ async def kb_prepare_session(
     dest = repo.parent / f"{repo.name}-{slug}"
 
     warnings: list[str] = []
+    if not refs:
+        # From a real miss (vibechk, 2026-08-18): four worktree sessions briefed
+        # with task/order/gates but NOT the locked brand decision — the canon had
+        # to be pasted in after the fact. The brief is a map whose value is its
+        # refs; an empty one is almost always the briefing session forgetting,
+        # not the chunk needing nothing.
+        warnings.append(
+            "This brief has NO refs. The new session will know its task but none "
+            "of the decisions and constraints already paid for — search the brain "
+            "(kb_search) for the canon this chunk must not re-derive, and re-run "
+            "prepare with refs=[...] unless this chunk genuinely needs nothing."
+        )
     existing = await to_thread.run_sync(lambda: session_prep.worktree_paths(repo))
     reused = str(dest.resolve()) in existing
     if not reused:
@@ -4434,15 +4467,21 @@ async def skill_zip(request: Request) -> Response:
     import io as _io
     import zipfile
 
-    if not _SKILL_DIR.is_dir():
+    if not _SKILLS_ROOT.is_dir():
         return PlainTextResponse("Skill not bundled on this server.", status_code=404)
-    files = sorted(p for p in _SKILL_DIR.rglob("*") if p.is_file())
+    # EVERY skill directory, not just engram/. kb_setup_machine's manifest lists
+    # them all with digests, but this zip only ever carried engram/ — so every
+    # setup run on every machine reported chunk-work MISSING, forever. The same
+    # always-red failure as the hooks digest: a check that can never pass is a
+    # check nobody reads, and this one shipped in the very tool built to end that.
+    # Reported from the Mac's first real setup run (2026-08-24).
+    files = sorted(p for p in _SKILLS_ROOT.rglob("*") if p.is_file())
     stamp = str(max((p.stat().st_mtime_ns for p in files), default=0))
     if stamp not in _skill_zip_cache:
         buf = _io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             for p in files:
-                z.write(p, f"engram/{p.relative_to(_SKILL_DIR).as_posix()}")
+                z.write(p, p.relative_to(_SKILLS_ROOT).as_posix())
         _skill_zip_cache.clear()
         _skill_zip_cache[stamp] = buf.getvalue()
     return Response(
