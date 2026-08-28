@@ -74,7 +74,18 @@ fn live_processes() -> HashMap<u32, String> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(res) = Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output() {
+        // CREATE_NO_WINDOW, or a GUI app spawning a console process flashes a
+        // visible terminal — every three seconds, forever. Found by Hiren's
+        // screen within minutes of the live swap ("some terminal keeps
+        // popping!"): the one failure mode a GUI subprocess has that no test
+        // suite will ever see, because it is literally a window.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Ok(res) = Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
             for line in String::from_utf8_lossy(&res.stdout).lines() {
                 let mut cols = line.split("\",\"");
                 let name = cols.next().unwrap_or("").trim_start_matches('"');
