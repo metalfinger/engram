@@ -26,6 +26,17 @@
         </div>
       </header>
 
+      <!-- Local sessions: rendered from ~/.claude/sessions via the Rust
+           side — pure filesystem data, so this section works signed-out
+           too, and that is deliberate: "how many Claudes, any waiting?"
+           should not require an account to answer. -->
+      <section class="section" id="sessions-section" hidden>
+        <h2 class="section-title">This machine
+          <span id="sessions-badge" class="badge warn" hidden></span>
+        </h2>
+        <div id="sessions-list" class="team-list"></div>
+      </section>
+
       <section id="signed-out-panel" class="signed-out-panel" hidden>
         <p>You're signed out.</p>
         <button class="primary-btn" id="btn-sign-in">Sign in&hellip;</button>

@@ -38,8 +38,28 @@ pub fn normal_icon() -> tauri::image::Image<'static> {
     decode_png(TRAY_NORMAL)
 }
 
-pub fn unread_icon() -> tauri::image::Image<'static> {
-    decode_png(TRAY_UNREAD)
+/// The base icon with an amber dot composited bottom-right — "a session on
+/// THIS machine is waiting for you". Drawn at runtime rather than shipped as
+/// a third asset so it can sit on either base (normal or unread) and the two
+/// signals never mask each other. Amber, not red: unread already owns the
+/// alert look, and two identical reds would collapse two different meanings.
+pub fn with_attention_dot(base: &[u8]) -> tauri::image::Image<'static> {
+    let mut img = image::load_from_memory(base)
+        .expect("embedded tray icon PNG must decode")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    let r = (w.min(h) as f32 * 0.22).max(3.0);
+    let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            if dx * dx + dy * dy <= r * r {
+                img.put_pixel(x, y, image::Rgba([255, 176, 0, 255]));
+            }
+        }
+    }
+    tauri::image::Image::new_owned(img.into_raw(), w, h)
 }
 
 pub fn build_menu(app: &AppHandle, snapshot: &RuntimeState) -> tauri::Result<Menu<Wry>> {
@@ -54,6 +74,28 @@ pub fn build_menu(app: &AppHandle, snapshot: &RuntimeState) -> tauri::Result<Men
             .enabled(false)
             .build(app)?,
     );
+
+    if snapshot.sessions.total > 0 {
+        let line = if snapshot.sessions.waiting > 0 {
+            format!(
+                "{} session{} · {} waiting",
+                snapshot.sessions.total,
+                if snapshot.sessions.total == 1 { "" } else { "s" },
+                snapshot.sessions.waiting
+            )
+        } else {
+            format!(
+                "{} session{} running",
+                snapshot.sessions.total,
+                if snapshot.sessions.total == 1 { "" } else { "s" }
+            )
+        };
+        builder = builder.item(
+            &MenuItemBuilder::with_id("sessions_line", line)
+                .enabled(false)
+                .build(app)?,
+        );
+    }
 
     builder = builder.item(&PredefinedMenuItem::separator(app)?);
     builder = builder.item(&MenuItemBuilder::with_id(ID_OPEN_ENGRAM, "Open Engram").build(app)?);
@@ -88,19 +130,29 @@ pub fn refresh_tray(app: &AppHandle, snapshot: &RuntimeState) -> tauri::Result<(
     let menu = build_menu(app, snapshot)?;
     tray.set_menu(Some(menu))?;
 
-    let icon = if snapshot.unread_count > 0 {
-        unread_icon()
+    // Two independent signals, composable: unread picks the BASE icon, a
+    // waiting session adds the amber dot on top of whichever base is showing.
+    let base: &[u8] = if snapshot.unread_count > 0 { TRAY_UNREAD } else { TRAY_NORMAL };
+    let icon = if snapshot.sessions.waiting > 0 {
+        with_attention_dot(base)
     } else {
-        normal_icon()
+        decode_png(base)
     };
     tray.set_icon(Some(icon))?;
 
-    let tooltip = if snapshot.signed_in() {
-        format!("Engram — {} unread", snapshot.unread_count)
+    let mut parts: Vec<String> = Vec::new();
+    if snapshot.sessions.total > 0 {
+        parts.push(format!("{} sessions", snapshot.sessions.total));
+    }
+    if snapshot.sessions.waiting > 0 {
+        parts.push(format!("{} WAITING", snapshot.sessions.waiting));
+    }
+    if snapshot.signed_in() {
+        parts.push(format!("{} unread", snapshot.unread_count));
     } else {
-        "Engram — signed out".to_string()
-    };
-    tray.set_tooltip(Some(tooltip))?;
+        parts.push("signed out".to_string());
+    }
+    tray.set_tooltip(Some(format!("Engram — {}", parts.join(" · "))))?;
 
     Ok(())
 }

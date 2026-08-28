@@ -7,6 +7,7 @@ mod auth;
 mod avatar;
 mod notify;
 mod popup;
+mod sessions;
 mod state;
 mod tray;
 
@@ -113,6 +114,59 @@ async fn poll_once(app: &AppHandle) {
         log::warn!("failed to refresh tray: {e}");
     }
     popup::push_state(app);
+}
+
+/// The LOCAL fast loop: read this machine's session registry every few
+/// seconds and refresh the tray only when the summary actually changed —
+/// rebuilding the menu on every tick would flicker for nothing. Entirely
+/// filesystem + one process listing; never touches the network, so it runs
+/// signed-in or not (the session count is useful either way).
+fn spawn_sessions_loop(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use std::time::Duration;
+        loop {
+            let summary = tokio::task::spawn_blocking(sessions::read)
+                .await
+                .unwrap_or_default();
+            let changed = {
+                let state = app.state::<state::AppState>();
+                let mut rt = state.runtime.lock().unwrap();
+                let changed = rt.sessions != summary;
+                if changed {
+                    // A NEW waiting session deserves a toast — that is the whole
+                    // "know from peripheral vision" ask. Only on the transition
+                    // (waiting count grew), never repeated for the same wait.
+                    if summary.waiting > rt.sessions.waiting {
+                        let names: Vec<String> = summary
+                            .rows
+                            .iter()
+                            .filter(|r| r.status == "waiting")
+                            .map(|r| r.name.clone())
+                            .collect();
+                        notify::toast(
+                            &app,
+                            "Claude is waiting for you",
+                            &names.join(", "),
+                        );
+                    }
+                    rt.sessions = summary.clone();
+                }
+                changed
+            };
+            if changed {
+                let snapshot = {
+                    let state = app.state::<state::AppState>();
+                    let rt = state.runtime.lock().unwrap();
+                    rt.clone()
+                };
+                if let Err(e) = tray::refresh_tray(&app, &snapshot) {
+                    log::warn!("tray refresh (sessions) failed: {e}");
+                }
+                popup::push_state(&app);
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    });
 }
 
 fn spawn_poll_loop(app: AppHandle, poll_seconds: u64) {
@@ -445,6 +499,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            spawn_sessions_loop(app.handle().clone());
             spawn_poll_loop(app.handle().clone(), poll_seconds);
 
             Ok(())

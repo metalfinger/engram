@@ -46,6 +46,22 @@ pub fn notify_new(app: &AppHandle, rt: &mut RuntimeState, unread: &[Notification
     }
 }
 
+/// A plain toast, for callers outside the notification-backfill flow —
+/// e.g. "a session on this machine is waiting for you", which has no id
+/// to dedupe by (the sessions loop fires it on the waiting-count
+/// transition instead).
+pub fn toast(app: &AppHandle, title: &str, body: &str) {
+    let result = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
+    if let Err(e) = result {
+        log::warn!("failed to show toast '{title}': {e}");
+    }
+}
+
 fn fire(app: &AppHandle, item: &NotificationItem) {
     let title = title_for_kind(&item.kind);
     let result = app

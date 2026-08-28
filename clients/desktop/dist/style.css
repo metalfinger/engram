@@ -339,3 +339,20 @@ main#signed-in-panel::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.12);
   border-radius: 3px;
 }
+
+/* v0.4: local-session rows. Amber = waiting, mirroring the tray dot. */
+.badge.warn { background: #b45309; color: #fff; }
+.status-chip {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: #333;
+  color: #bbb;
+  align-self: center;
+}
+.status-chip.status-waiting { background: #b45309; color: #fff; }
+.status-chip.status-busy { background: #1d4ed8; color: #fff; }
+.status-chip.status-idle, .status-chip.status-shell { background: #333; color: #999; }

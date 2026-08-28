@@ -65,6 +65,9 @@ pub struct PopupState {
     pub notifications: Vec<NotificationRow>,
     pub team: Vec<FriendCard>,
     pub me: MeInfo,
+    /// This machine's live Claude sessions (local registry) — waiting first.
+    pub sessions: Vec<crate::sessions::SessionRow>,
+    pub sessions_waiting: u64,
 }
 
 fn avatar_for(cache: &HashMap<String, String>, member: &TeamMember) -> Option<String> {
@@ -123,6 +126,8 @@ pub fn build_state(state: &AppState) -> PopupState {
         notifications,
         team,
         me,
+        sessions: rt.sessions.rows.clone(),
+        sessions_waiting: rt.sessions.waiting,
     }
 }
 

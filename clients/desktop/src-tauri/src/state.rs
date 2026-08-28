@@ -89,6 +89,9 @@ pub struct RuntimeState {
     /// menu only needed the count, but the popup renders each row.
     pub notifications: Vec<NotificationItem>,
     pub team: Vec<TeamMember>,
+    /// This machine's live Claude sessions from the local registry —
+    /// refreshed by its own fast local loop, not the network poll.
+    pub sessions: crate::sessions::SessionsSummary,
     pub autostart_enabled: bool,
     /// Ids already seen since sign-in — first poll after sign-in seeds
     /// this without notifying (backfill rule); every id afterwards that

@@ -108,6 +108,38 @@
     }
 
     // Working now.
+    // This machine's sessions — waiting first (Rust pre-sorts), amber badge
+    // mirrors the tray dot so popup and icon always agree.
+    const sessions = state.sessions || [];
+    el("sessions-section").hidden = sessions.length === 0;
+    const sBadge = el("sessions-badge");
+    const waiting = state.sessions_waiting || 0;
+    sBadge.hidden = waiting === 0;
+    sBadge.textContent = waiting + " waiting";
+    const sList = el("sessions-list");
+    sList.innerHTML = "";
+    for (const sess of sessions) {
+      const row = document.createElement("div");
+      row.className = "team-card";
+      const text = document.createElement("div");
+      text.className = "team-text";
+      const name = document.createElement("div");
+      name.className = "team-name";
+      name.textContent = sess.name || "unnamed";
+      const meta = document.createElement("div");
+      meta.className = "team-meta";
+      const folder = (sess.cwd || "").split(/[\/]/).filter(Boolean).pop() || "";
+      meta.textContent = folder;
+      text.appendChild(name);
+      text.appendChild(meta);
+      const chip = document.createElement("span");
+      chip.className = "status-chip status-" + (sess.status || "idle");
+      chip.textContent = sess.status || "?";
+      row.appendChild(text);
+      row.appendChild(chip);
+      sList.appendChild(row);
+    }
+
     const teamList = el("team-list");
     teamList.innerHTML = "";
     const team = state.team || [];
