@@ -30,6 +30,7 @@ log = logging.getLogger("engram.reconcile")
 _REL_MD = re.compile(r"\]\((?!https?://|mailto:)([^)\s#]*\.md)(?:#[^)\s]*)?\)")
 _REPORT_PATH = "library/reports/brain-health.md"
 _REPORT_DIR = "library/reports"
+NL = chr(10)
 
 
 def _is_index(rel: str) -> bool:
@@ -148,6 +149,10 @@ def _scan(root: Path) -> dict[str, Any]:
         if rel not in artifact_sources:
             dead.append(rel)
 
+    stale = _stale_candidates(
+        root, concept_files, inbound, datetime.now(timezone.utc)
+    )
+
     return {
         "total_files": len(concept_files),
         "frontmatter_violations": sorted(set(frontmatter_violations)),
@@ -155,7 +160,93 @@ def _scan(root: Path) -> dict[str, Any]:
         "index_repairs": sorted(set(index_repairs)),
         "orphans": sorted(orphans),
         "dead": sorted(dead),
+        "stale": stale,
     }
+
+
+# ================================================================ staleness
+# THE PROBLEM, in the field's words: high-relevance memories become confidently
+# wrong after circumstances change. A June decision saying "blocked on the
+# invoice" is retrieved in December with the confidence it had the day it was
+# written. Detection here is pure arithmetic — age, type, confidence, and the
+# inbound-link count this scan already computes. Judgement stays with the human;
+# the server only points.
+#
+# THE RESET IS THE FEATURE. A list that shows the same seven items every night
+# trains the reader to skip it and takes the real signal down with it — the
+# always-red law, observed ten times in two days. `reviewed: YYYY-MM-DD` is read
+# in preference to `updated`, so confirming a concept makes it quiet without
+# editing its body.
+
+_STALE_TYPES = {"decision": 120, "spec": 120, "note": 180, "runbook": 180}
+_STALE_EXCLUDE_DIRS = ("inbox/", "threads/", "workspace/", "library/reports/")
+
+
+def _stale_candidates(
+    root: Path,
+    concept_files: list[str],
+    inbound: dict[str, int],
+    now: datetime,
+    limits: dict[str, int] | None = None,
+    cap: int = 7,
+) -> list[dict[str, Any]]:
+    """Concepts in ACTIVE USE that nobody has confirmed in a long time.
+
+    Load-bearing is required (inbound >= 1) on purpose: a concept nobody links to
+    is an orphan, which this scan reports separately. Staleness is about knowledge
+    still being consulted while possibly no longer true — the orphan case is a
+    different problem with a different answer.
+
+    Artifacts are excluded because they carry their own computed staleness from
+    provenance manifests; logs, indexes, messages and coordination ephemera are
+    excluded because age is what they are FOR."""
+    limits = limits or _STALE_TYPES
+    out: list[dict[str, Any]] = []
+    for rel in concept_files:
+        if _is_anchor(rel) or _in_messages(rel):
+            continue
+        if any(rel.startswith(d) for d in _STALE_EXCLUDE_DIRS):
+            continue
+        links = inbound.get(rel, 0)
+        if links < 1:
+            continue
+        meta = read_meta(root / rel)
+        threshold = limits.get(str(meta.get("type") or ""))
+        if not threshold:
+            continue
+        if str(meta.get("confidence") or "settled") != "settled":
+            continue  # tentative already reads as provisional; superseded is handled
+        stamp = (meta.get("reviewed") or meta.get("updated")
+                 or meta.get("timestamp") or meta.get("created"))
+        dt = _parse_ts(str(stamp or ""))
+        if dt is None:
+            continue  # no usable date is not evidence of age
+        age = (now - dt).days
+        if age < threshold:
+            continue
+        out.append({"path": rel, "age_days": age, "links": links,
+                    "score": age * max(links, 1)})
+    # Load-bearing AND old first: a widely-cited stale decision misleads more
+    # sessions than a barely-referenced one.
+    out.sort(key=lambda c: c["score"], reverse=True)
+    return out[:cap] if cap > 0 else []
+
+
+def _render_stale(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "## Verify these (0)" + NL + NL + "None. ✓" + NL
+    lines = [
+        f"* {_rel_link(c['path'])} — {c['age_days']}d since last confirmed, "
+        f"{c['links']} inbound link(s)"
+        for c in items
+    ]
+    head = f"## Verify these ({len(items)})" + NL + NL
+    blurb = (
+        "Still cited, not confirmed in a long time. Check whether each is still "
+        "true; if it is, stamp `reviewed: <today>` in its frontmatter and it goes "
+        "quiet. If it is not, supersede it."
+    )
+    return head + blurb + NL + NL + NL.join(lines) + NL
 
 
 def _rel_link(target: str) -> str:
@@ -345,6 +436,7 @@ def _render_report(
             _section("Frontmatter violations", [_rel_link(p) for p in scan["frontmatter_violations"]]),
             _section("Index repairs applied", [_rel_link(p) for p in scan["index_repairs"]]),
             _section("Dangling links", dangling_lines),
+            _render_stale(scan.get("stale") or []),
             _section("Orphan concepts (no inbound links)", [_rel_link(p) for p in scan["orphans"]]),
             _section("Dead knowledge (orphan + unsourced by any artifact)", [_rel_link(p) for p in scan["dead"]]),
             _section(
@@ -451,6 +543,7 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         "orphans": len(scan["orphans"]),
         "dead": len(scan["dead"]),
         "similar_pairs": len(similar_pairs),
+        "stale": len(scan.get("stale") or []),
         "pruned_presence": len(housekeeping["pruned_presence"]),
         "staled_handoffs": len(housekeeping["staled_handoffs"]),
         "report_path": _REPORT_PATH,

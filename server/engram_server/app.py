@@ -512,6 +512,32 @@ async def kb_edit(
 
 
 @mcp.tool()
+async def kb_verify(path: str, note: str = "") -> dict[str, Any]:
+    """CONFIRM a concept is still true — stamps `reviewed: <today>` and nothing else.
+
+    Call when you or the user have just checked that a concept's facts still hold:
+    a search result carrying `verify: true`, an item from the brain-health report's
+    "Verify these" section, or simply a decision that came up in conversation and
+    proved current. One call, no body to re-send.
+
+    WHY IT EXISTS. Knowledge does not announce when it stops being true — a June
+    decision saying "blocked on the invoice" is retrieved in December with the
+    confidence it had the day it was written. Engram surfaces such concepts (old,
+    still cited, never confirmed) at retrieval and in the nightly report; this is
+    how one stops being surfaced. Without it the same items appear every night
+    forever, and a list that is always red is a list nobody reads.
+
+    Confirming is not endorsing: it means the FACTS still hold. If they do not,
+    supersede the concept instead (kb_write with `supersedes:`) — that is a
+    different and stronger statement.
+
+    Returns {path, reviewed, sha, pushed, no_change}.
+    """
+    _note_activity(path)
+    return await (await current_store()).kb_verify(path, note)
+
+
+@mcp.tool()
 async def kb_move(old_path: str, new_path: str) -> dict[str, Any]:
     """Rename/relocate a single concept, rewriting every link to it bundle-wide — use
     kb_rename_project for whole projects. Reach for this when the user wants ONE file to

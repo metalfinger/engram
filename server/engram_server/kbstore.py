@@ -1111,12 +1111,19 @@ class KBStore:
             content = _read_text_retry(abs_path)
         except UnicodeDecodeError as exc:
             raise KBError(f"'{rel}' is not a UTF-8 text file — kb_read serves text only.") from exc
+        meta = read_meta(abs_path)
         result: dict[str, Any] = {
             "path": rel,
             "content": content,
-            "meta": read_meta(abs_path),
+            "meta": meta,
             "hash": _sha256(content),
         }
+        # Same flag as search: reading a concept directly should carry the same
+        # warning as finding it through a query.
+        age = self._stale_days(meta)
+        if age is not None:
+            result["age_days"] = age
+            result["verify"] = True
         if depth == 1:
             links = self._neighbor_links(rel, content)
             self._add_supersede_links(rel, result["meta"], links)
@@ -1322,7 +1329,54 @@ class KBStore:
             if reranked:
                 fused = reranked
 
-        return fused[:limit]
+        return self._flag_stale(fused[:limit])
+
+    # ---------------------------------------------------------------- staleness
+
+    # Thresholds mirror reconcile's; kept here rather than imported to avoid a
+    # cycle (reconcile already imports from this module).
+    _STALE_DAYS = {"decision": 120, "spec": 120, "note": 180, "runbook": 180}
+
+    def _stale_days(self, meta: dict[str, Any]) -> int | None:
+        """Days since this concept was last CONFIRMED, if it is the kind of thing
+        that can go quietly wrong; None otherwise.
+
+        `reviewed` wins over `updated` so confirming a fact makes it quiet without
+        editing the body — the reset path is what stops this becoming another
+        always-red signal. Only `confidence: settled` qualifies: tentative already
+        reads as provisional, and superseded is handled by the supersession
+        grammar."""
+        threshold = self._STALE_DAYS.get(str(meta.get("type") or ""))
+        if not threshold:
+            return None
+        if str(meta.get("confidence") or "settled") != "settled":
+            return None
+        stamp = (meta.get("reviewed") or meta.get("updated")
+                 or meta.get("timestamp") or meta.get("created"))
+        dt = _parse_ts(str(stamp or ""))
+        if dt is None:
+            return None
+        age = (datetime.now(timezone.utc) - dt).days
+        return age if age >= threshold else None
+
+    def _flag_stale(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mark search hits that are old, settled and still cited.
+
+        THE WARNING BELONGS AT RETRIEVAL. The failure this addresses is
+        "confidently wrong WHEN RETRIEVED" — a June decision handed to a December
+        session with the confidence it had the day it was written. A nightly
+        digest helps someone gardening; this helps the session about to act.
+        Failure-soft per row: an unreadable file simply carries no flag."""
+        for row in rows:
+            try:
+                meta = read_meta(self.root / str(row.get("path") or ""))
+            except Exception:  # noqa: BLE001
+                continue
+            age = self._stale_days(meta)
+            if age is not None:
+                row["age_days"] = age
+                row["verify"] = True
+        return rows
 
     # ------------------------------------------------------------------ writes
 
@@ -3411,6 +3465,53 @@ class KBStore:
         if parts[0] == "projects" and len(parts) > 1:
             return f"projects/{parts[1]}"
         return parts[0]
+
+    async def kb_verify(self, path: str, note: str = "") -> dict[str, Any]:
+        """Stamp `reviewed: <today>` — "I checked this; it is still true."
+
+        THE RESET PATH for staleness surfacing, and the reason that feature does
+        not decay into another always-red list. Without a cheap way to say
+        "confirmed", the same concepts surface every night forever and the reader
+        learns to skip the section — which then takes the genuine warnings with
+        it.
+
+        Cheap is the point: a session that must re-send a 200-line body through
+        kb_write just to say "still true" will not bother. kb_edit cannot do this
+        either — it is deliberately body-only and refuses frontmatter, a refusal
+        worth keeping.
+
+        Confirming is NOT the same as agreeing the content is optimal; it means
+        the facts still hold. If they do not, supersede instead.
+
+        Returns {path, reviewed, sha, pushed, no_change}."""
+        abs_path, rel = self._resolve(path)
+        if not abs_path.is_file():
+            raise KBError(f"No such concept: '{rel}'.")
+        today = date.today().isoformat()
+
+        # `_locked_commit` returns HEAD's sha for an empty mutation, so "did anything
+        # change" cannot be read off the sha — the flag is set by the mutation itself.
+        changed = {"v": False}
+
+        def _mutate() -> list[str]:
+            doc = split(_read_text_retry(abs_path))
+            if doc is None:
+                raise KBError(f"'{rel}' has no frontmatter — nothing to stamp.")
+            meta = normalize_meta(doc.meta)
+            if str(meta.get("reviewed") or "") == today:
+                return []  # already confirmed today — no empty commit
+            meta["reviewed"] = today
+            if note.strip():
+                meta["reviewed_note"] = note.strip()[:200]
+            _write_text(abs_path, serialize(Doc(meta=meta, body=doc.body)))
+            changed["v"] = True
+            return [rel]
+
+        sha, pushed = await self._locked_commit(_mutate, f"kb: verified {rel}")
+        if changed["v"]:
+            self._schedule_index(upserts=[rel])
+        return {"path": rel, "reviewed": today, "sha": sha, "pushed": pushed,
+                "no_change": not changed["v"]}
 
     async def kb_publish(self, path: str, visibility: str = "public") -> dict[str, Any]:
         """Set a concept's (or a project's, via its context.md) visibility.
