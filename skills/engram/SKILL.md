@@ -136,6 +136,10 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   (Home/Browse/People/Rooms/Office). `kb_app(view=…)` opens it directly; `kb_meetings`,
   `kb_inbox_card`, `kb_explore_card` and `kb_office` all mount the same app on the right
   tab. After it mounts, say ONE short line and stop.
+- **Fork when context is the asset.** Starting new work on a new worktree/branch from a
+  session that already holds the relevant context? Don't drag folders or brief a blank
+  agent — fork this session there: `claude --fork-session --resume <own-session-id>`.
+  Recipe: kb_read `library/runbooks/fork-session-context-handoff.md`.
 - **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
   unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
   (`to=""`), so the next session resumes from the exact state.

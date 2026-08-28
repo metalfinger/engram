@@ -66,6 +66,14 @@ sessions is mostly more spend. Three sessions he can read beats five he cannot.
 
 Tell him what each command will do before he runs it — one line each, not a wall.
 
+**When THIS session's context is the asset, fork instead of preparing a blank session.**
+A chunk that needs what you already hold — the debugging state, the design argument, the
+half-built mental model — loses it in a fresh session's cold start. `claude --fork-session
+--resume <own-session-id>` spawns a copy of this session at the new worktree with
+everything intact. Full recipe (including finding your own session id from inside a Bash
+call): `library/runbooks/fork-session-context-handoff.md` in the brain. Prepare-then-fork
+composes: prepare makes the worktree/thread/claims, the fork carries the context into it.
+
 ## What the prepared session does
 
 It starts cold, types `realign`, and inherits everything: project (from the pin), brief,

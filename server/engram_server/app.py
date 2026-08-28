@@ -3355,6 +3355,12 @@ async def kb_prepare_session(
     `repo_path` is REQUIRED and absolute: the server has its own working directory
     and cannot see yours, so there is nothing sensible to default to.
 
+    WHEN THE CALLING SESSION'S CONTEXT IS THE ASSET, prepare-then-FORK: run this
+    tool for the worktree/thread/claims, then launch with `claude --fork-session
+    --resume <own-session-id>` at the worktree instead of the returned command —
+    the fork carries your context into the isolation. Recipe:
+    library/runbooks/fork-session-context-handoff.md in the brain.
+
     `harness` names the CLI the returned command launches — 'claude' (default) or
     'pi'. The lifecycle is harness-agnostic on purpose: a worktree, a pin, a thread
     and claims mean the same thing whoever does the work, and routing grind to a

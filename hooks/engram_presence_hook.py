@@ -90,10 +90,62 @@ def _upload(record):
     except Exception:
         return False
 
+    ok = _post_records(url, token, [record])
+    if ok:
+        _drain_spool(url, token)
+    return ok
+
+
+def _drain_spool(url, token, cap=50):
+    """One success flushes the backlog.
+
+    A timed-out SessionStart upload used to spool its record and nothing
+    retried until that session's next user prompt — so freshly launched lanes
+    sat invisible on the roster even after the network recovered. Now any
+    session's successful upload also carries its predecessors' stranded
+    records: the spool drains continuously instead of accumulating, which is
+    also what keeps record freshness meaningful (each record carries its own
+    ts; a drain does not reset it). Failure-soft and silent — the files simply
+    stay for the next success."""
+    try:
+        names = sorted(os.listdir(SPOOL_DIR))[:cap]
+    except OSError:
+        return
+    batch, paths = [], []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(SPOOL_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                batch.append(json.load(f))
+            paths.append(path)
+        except Exception:  # noqa: BLE001 — a corrupt spool file is skipped, not fatal
+            continue
+    if not batch:
+        return
+    if _post_records(url, token, batch, timeout=15):
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _post_records(url, token, records, timeout=10):
+    """POST a batch of presence records; True on 2xx.
+
+    TIMEOUT IS 10s, NOT 5. The .err file proved 5s too tight the day after it
+    shipped: cold TLS handshakes through the tunnel from the Mac's network
+    intermittently exceed it, so uploads failed on TimeoutError and freshly
+    launched sessions were invisible on the roster — while Hiren was using the
+    roster to watch exactly those sessions. This is a hook, not a hot path;
+    SessionStart can afford ten seconds far better than the roster can afford
+    a hole."""
     try:
         import urllib.request
 
-        body = json.dumps({"records": [record]}).encode("utf-8")
+        body = json.dumps({"records": records}).encode("utf-8")
         req = urllib.request.Request(
             url + "/dashboard/api/presence/upload",
             data=body,
@@ -108,13 +160,24 @@ def _upload(record):
             },
             method="POST",
         )
-        # Short timeout on purpose: this runs on every tool call, and a hook that
-        # hangs is worse than a roster that lags.
-        with urllib.request.urlopen(req, timeout=5, context=_ssl_context()) as resp:
-            ok = 200 <= resp.status < 300
-            if ok:
-                _clear_upload_error()
-            return ok
+        # ONE immediate retry on failure: the field data says a cold-handshake
+        # timeout succeeds on the second attempt essentially always, and one
+        # retry is far cheaper than a session being invisible until its next
+        # user prompt.
+        last_exc = None
+        for _attempt in (1, 2):
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=timeout, context=_ssl_context()
+                ) as resp:
+                    ok = 200 <= resp.status < 300
+                    if ok:
+                        _clear_upload_error()
+                    return ok
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+        _note_upload_error(last_exc)
+        return False
     except Exception as exc:  # noqa: BLE001
         _note_upload_error(exc)
         return False

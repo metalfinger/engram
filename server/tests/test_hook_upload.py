@@ -203,3 +203,107 @@ def test_the_ssl_context_prefers_certifi_when_present(monkeypatch):
     ctx = hook._ssl_context()
     assert isinstance(ctx, ssl.SSLContext)
     assert ctx.verify_mode == ssl.CERT_REQUIRED, "verification must NEVER be off"
+
+
+def _load_hook(monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "presence_hook_drain",
+        Path(__file__).resolve().parents[2] / "hooks" / "engram_presence_hook.py")
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    conf = tmp_path / "upload.json"
+    conf.write_text('{"url": "https://engram.test", "token": "t"}', encoding="utf-8")
+    monkeypatch.setattr(hook, "UPLOAD_CONF", str(conf))
+    monkeypatch.setattr(hook, "UPLOAD_ERR", str(tmp_path / "up.err"))
+    monkeypatch.setattr(hook, "SPOOL_DIR", str(tmp_path / "spool"))
+    return hook
+
+
+def test_a_timeout_is_retried_once_before_giving_up(tmp_path, monkeypatch):
+    """Field data from the .err file: a cold-handshake timeout succeeds on the
+    second attempt essentially always. One retry is far cheaper than a session
+    invisible on the roster until its next user prompt."""
+    hook = _load_hook(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("The read operation timed out")
+        return _Resp()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _flaky)
+    assert hook._upload({"session": "x", "ts": 1}) is True
+    assert calls["n"] == 2, "exactly one retry"
+    assert not (tmp_path / "up.err").exists(), "a recovered upload leaves no error"
+
+
+def test_one_success_flushes_the_stranded_spool(tmp_path, monkeypatch):
+    """Spool-then-vanish, fixed: a timed-out SessionStart spooled its record and
+    nothing retried until that session's next prompt — lanes sat invisible on
+    the roster after the network recovered. Any success now carries its
+    predecessors' stranded records."""
+    import json as _json
+
+    hook = _load_hook(monkeypatch, tmp_path)
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    for i in range(3):
+        (spool / f"old-{i}.json").write_text(
+            _json.dumps({"session": f"old-{i}", "ts": i}), encoding="utf-8")
+
+    bodies = []
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _ok(req, *a, **k):
+        bodies.append(_json.loads(req.data.decode("utf-8")))
+        return _Resp()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _ok)
+    assert hook._upload({"session": "fresh", "ts": 99}) is True
+
+    drained = [r["session"] for b in bodies[1:] for r in b["records"]]
+    assert {"old-0", "old-1", "old-2"} <= set(drained), "backlog must ride along"
+    assert list(spool.glob("*.json")) == [], "drained records are deleted"
+
+
+def test_a_failed_drain_keeps_the_spool(tmp_path, monkeypatch):
+    import json as _json
+
+    hook = _load_hook(monkeypatch, tmp_path)
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "old.json").write_text(_json.dumps({"session": "old", "ts": 1}),
+                                    encoding="utf-8")
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    calls = {"n": 0}
+
+    def _first_only(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Resp()
+        raise TimeoutError("drain died")
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _first_only)
+    assert hook._upload({"session": "fresh", "ts": 2}) is True
+    assert (spool / "old.json").exists(), "a failed drain must not lose records"
