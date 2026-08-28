@@ -307,3 +307,74 @@ def test_a_failed_drain_keeps_the_spool(tmp_path, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _first_only)
     assert hook._upload({"session": "fresh", "ts": 2}) is True
     assert (spool / "old.json").exists(), "a failed drain must not lose records"
+
+
+def test_waiting_in_the_registry_becomes_blocked_on_the_roster(tmp_path, monkeypatch):
+    """mac-helix's multiplier #1: 'waiting' — the session needs the human — was
+    the registry's most valuable bit and it never left the machine. One vocab
+    mapping makes attention account-wide: roster, office, tray badge, phone."""
+    import json as _json
+    import time as _time
+
+    hook = _load_hook(monkeypatch, tmp_path)
+    reg = tmp_path / "registry"
+    reg.mkdir()
+    monkeypatch.setattr(hook, "REGISTRY_DIR", str(reg))
+    now_ms = _time.time() * 1000
+
+    cases = {"waiting": "blocked", "busy": "working",
+             "idle": "available", "shell": "available"}
+    for raw, mapped in cases.items():
+        (reg / "100.json").write_text(_json.dumps({
+            "sessionId": "sess-1", "status": raw,
+            "statusUpdatedAt": now_ms, "updatedAt": now_ms}), encoding="utf-8")
+        assert hook._registry_status("sess-1") == mapped, raw
+
+    # shell is deliberately NOT working — they shipped that bug locally already.
+    assert cases["shell"] == "available"
+
+
+def test_a_six_hour_old_busy_is_not_trusted(tmp_path, monkeypatch):
+    """statusUpdatedAt is a transition marker, not a heartbeat: a session killed
+    mid-turn never writes idle, and an eternally-'working' roster lane would be
+    the server-side edition of the exact bug the Mac shipped locally."""
+    import json as _json
+    import time as _time
+
+    hook = _load_hook(monkeypatch, tmp_path)
+    reg = tmp_path / "registry"
+    reg.mkdir()
+    monkeypatch.setattr(hook, "REGISTRY_DIR", str(reg))
+    stale = _time.time() * 1000 - 7 * 3600 * 1000
+    (reg / "100.json").write_text(_json.dumps({
+        "sessionId": "sess-1", "status": "busy",
+        "statusUpdatedAt": stale, "updatedAt": stale}), encoding="utf-8")
+    assert hook._registry_status("sess-1") == "", "fall back, don't lie"
+
+
+def test_duplicate_session_ids_resolve_to_the_newest(tmp_path, monkeypatch):
+    """Stale file + restarted session can both claim one sessionId; pids get
+    reused so liveness alone lies. Newest updatedAt wins."""
+    import json as _json
+    import time as _time
+
+    hook = _load_hook(monkeypatch, tmp_path)
+    reg = tmp_path / "registry"
+    reg.mkdir()
+    monkeypatch.setattr(hook, "REGISTRY_DIR", str(reg))
+    now_ms = _time.time() * 1000
+    (reg / "100.json").write_text(_json.dumps({
+        "sessionId": "sess-1", "status": "busy",
+        "statusUpdatedAt": now_ms, "updatedAt": now_ms - 5000}), encoding="utf-8")
+    (reg / "200.json").write_text(_json.dumps({
+        "sessionId": "sess-1", "status": "waiting",
+        "statusUpdatedAt": now_ms, "updatedAt": now_ms}), encoding="utf-8")
+    assert hook._registry_status("sess-1") == "blocked"
+
+
+def test_no_registry_means_event_status_untouched(tmp_path, monkeypatch):
+    """The registry can only IMPROVE a record, never break one — machines
+    without ~/.claude/sessions/ behave exactly as before."""
+    hook = _load_hook(monkeypatch, tmp_path)
+    monkeypatch.setattr(hook, "REGISTRY_DIR", str(tmp_path / "nope"))
+    assert hook._registry_status("sess-1") == ""

@@ -1131,6 +1131,109 @@ class Dashboard:
             "working": working,
         })
 
+    async def api_conversations(self, request: "Request") -> "Response":
+        """Open rooms + threads with recent activity, for helix's live panel.
+
+        Spec: projects/helix-control-panel/specs/rooms-endpoint-spec.md — the
+        client side shipped first and sat dark waiting for this. Contract points
+        honoured: only OPEN conversations with activity in ~24h (closed ones are
+        noise); `holder` from the floor; `needs_hiren` / `waiting_on_you` from the
+        blocked-on-the-human state; `last` = up to 3 most recent turns, oldest
+        first, truncated ~200 chars server-side; every field optional client-side,
+        so a partial answer is a useful one. participants[].path is best-effort
+        and currently EMPTY — speaker→machine correlation is tier-3 host
+        attribution, unbuilt; the spec explicitly blesses shipping without it.
+        Bearer notify-scope, same as /api/status."""
+        import datetime as _dt
+
+        from starlette.responses import JSONResponse
+
+        user = self._bearer_user(request) or self._session_user(self._session(request) or {})
+        if user is None:
+            return JSONResponse({"ok": False, "error": "not signed in"}, status_code=401)
+        cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
+                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _clip(text):
+            text = str(text or "").strip()
+            return text[:200] + ("…" if len(text) > 200 else "")
+
+        rooms_out, threads_out = [], []
+        try:
+            rooms = self.registry.rooms
+            for row in rooms.list_rooms_for(user.id, include_closed=False):
+                name = str(row["name"])
+                is_shadow = name.startswith(_THREAD_FLOOR_PREFIX)
+                last = row.get("last_turn") or {}
+                if str(last.get("created") or "") < cutoff and not is_shadow:
+                    continue
+                try:
+                    floor = rooms.floor_state(row["id"], "-")
+                except Exception:  # noqa: BLE001
+                    floor = {}
+                participants = [
+                    {"speaker": sp.get("name") or sp.get("speaker") or "?", "path": ""}
+                    for sp in floor.get("speakers", [])
+                ]
+                if is_shadow:
+                    continue  # threads are reported from the store, not their shadows
+                with rooms._lock:
+                    turn_rows = rooms._conn.execute(
+                        "SELECT session, body, created FROM room_turns "
+                        "WHERE room_id = ? AND kind = 'message' "
+                        "ORDER BY id DESC LIMIT 3", (row["id"],),
+                    ).fetchall()
+                rooms_out.append({
+                    "name": name,
+                    "needs_hiren": bool(row.get("awaiting_human")
+                                        or floor.get("awaiting_human")),
+                    "holder": str(floor.get("holder_name") or ""),
+                    "participants": participants,
+                    "last": [{"speaker": rooms.speaker_label(str(t["session"])),
+                              "text": _clip(t["body"])}
+                             for t in reversed(turn_rows)],
+                })
+        except Exception:  # noqa: BLE001
+            log.debug("conversations: rooms unavailable", exc_info=True)
+
+        try:
+            store = await self.registry.store_for_handle(user.handle)
+            for row in await store.kb_threads():
+                if str(row.get("status")) != "open":
+                    continue
+                if str(row.get("last_activity") or "") < cutoff:
+                    continue
+                name = str(row["thread"])
+                floor = {}
+                try:
+                    shadow = self.registry.rooms.room_by_name(
+                        f"{_THREAD_FLOOR_PREFIX}{name}"[:64])
+                    if shadow is not None:
+                        floor = self.registry.rooms.floor_state(shadow.id, "-")
+                except Exception:  # noqa: BLE001
+                    pass
+                turns = []
+                try:
+                    info = await store.kb_thread_read(name, None, 0)
+                    turns = (info.get("turns") or [])[-3:]
+                except Exception:  # noqa: BLE001
+                    pass
+                threads_out.append({
+                    "name": name,
+                    "waiting_on_you": bool(floor.get("awaiting_human")),
+                    "holder": str(floor.get("holder_name") or ""),
+                    "participants": [
+                        {"speaker": str(sp), "path": ""}
+                        for sp in (row.get("participants") or [])
+                    ],
+                    "last": [{"speaker": str(t.get("sender") or "?"),
+                              "text": _clip(t.get("message"))} for t in turns],
+                })
+        except Exception:  # noqa: BLE001
+            log.debug("conversations: threads unavailable", exc_info=True)
+
+        return JSONResponse({"ok": True, "rooms": rooms_out, "threads": threads_out})
+
     async def api_machine(self, request: "Request") -> "Response":
         """What this machine should have installed, and whether it is current.
 
@@ -2820,6 +2923,7 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     # registering a second handler on it would silently shadow the tray's.
     mcp.custom_route("/dashboard/api/presence/upload", ["POST"])(dash.api_presence_upload)
     mcp.custom_route("/dashboard/api/status", ["GET"])(dash.api_status)
+    mcp.custom_route("/dashboard/api/conversations", ["GET"])(dash.api_conversations)
     mcp.custom_route("/dashboard/api/machine", ["GET"])(dash.api_machine)
     mcp.custom_route("/dashboard/api/asks", ["GET"])(dash.api_asks)
     mcp.custom_route("/dashboard/api/asks/answer", ["POST"])(dash.api_answer_ask)

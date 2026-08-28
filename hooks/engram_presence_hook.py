@@ -183,6 +183,66 @@ def _post_records(url, token, records, timeout=10):
         return False
 
 
+REGISTRY_DIR = os.path.join(os.path.expanduser("~"), ".claude", "sessions")
+# Registry -> presence vocab, mac-helix's call (they shipped the bugs first):
+# "waiting" is the whole point — the session NEEDS THE HUMAN, which is presence's
+# `blocked`; "shell" is deliberately available, NOT working — the human dropped to
+# a terminal on purpose, it demands nothing and does nothing (they shipped the
+# treats-shell-as-busy bug locally so this hook doesn't have to).
+_REGISTRY_STATUS = {
+    "waiting": "blocked",
+    "busy": "working",
+    "idle": "available",
+    "shell": "available",
+}
+_REGISTRY_TRUST_MS = 6 * 3600 * 1000  # a killed session never writes idle
+
+
+def _registry_status(session_id):
+    """This session's live status from Claude Code's own registry, or ''.
+
+    ~/.claude/sessions/<pid>.json is the per-machine truth about what each
+    session is DOING — and until now its most valuable bit, "waiting" (the
+    session needs the human), never left the machine. Uploading it makes
+    attention account-wide: the roster, the office, the tray badge and a phone
+    notification become one feature with four surfaces.
+
+    Correlation is by sessionId INSIDE the file, not by pid: the hook holds
+    session_id on stdin, and a pid-walk assumes the hook is a descendant of the
+    session process — true today, fragile forever (mac-helix's words). If two
+    files claim the same sessionId (stale file + restarted session), the newest
+    updatedAt wins — pids get reused, so pid-liveness alone lies.
+
+    The ~6h trust cap: statusUpdatedAt is a TRANSITION marker, not a heartbeat.
+    An hour-old "busy" is still busy; a six-hour-old one is a session that was
+    killed mid-turn and never wrote idle. Past the cap — or on any read failure
+    — return '' and let the caller fall back to event-derived status, so this
+    can only ever improve the record, never break it."""
+    try:
+        best = None
+        for name in os.listdir(REGISTRY_DIR):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(REGISTRY_DIR, name), encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:  # noqa: BLE001
+                continue
+            if data.get("sessionId") != session_id:
+                continue
+            if best is None or (data.get("updatedAt") or 0) > (best.get("updatedAt") or 0):
+                best = data
+        if best is None:
+            return ""
+        status = str(best.get("status") or "")
+        updated = float(best.get("statusUpdatedAt") or 0)
+        if status == "busy" and updated and (time.time() * 1000 - updated) > _REGISTRY_TRUST_MS:
+            return ""
+        return _REGISTRY_STATUS.get(status, "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _git(cwd, *args):
     """Read-only git query; empty string on any failure."""
     try:
@@ -252,6 +312,14 @@ def main():
         status = "done"
     else:
         return
+
+    # The registry knows better than the event — a Stop can be a session now
+    # WAITING on the human, which is the one state worth a badge. SessionEnd
+    # stays "done" regardless: the registry file outlives the process.
+    if event != "SessionEnd":
+        better = _registry_status(session_id)
+        if better:
+            status = better
 
     # Read-only git detection (all empty if cwd isn't a repo).
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
