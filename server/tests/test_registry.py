@@ -19,6 +19,7 @@ EXPECTED_TOOLS = frozenset(
         "kb_write",
         "kb_edit",
         "kb_move",
+        "kb_verify",
         "kb_append_log",
         "kb_leave_message",
         "kb_mark_read",

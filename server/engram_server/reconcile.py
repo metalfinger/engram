@@ -56,8 +56,15 @@ def _resolve_link(src_rel: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(posixpath.dirname(src_rel), target))
 
 
-def _scan(root: Path) -> dict[str, Any]:
-    """Read-only walk collecting every finding. Returns a plain dict of lists/counts."""
+def _scan(
+    root: Path,
+    limits: dict[str, int] | None = None,
+    cap: int = 7,
+) -> dict[str, Any]:
+    """Read-only walk collecting every finding. Returns a plain dict of lists/counts.
+
+    `limits`/`cap` tune the staleness section; both default to the conservative
+    built-ins so every existing caller and test keeps its behaviour."""
     concept_files: list[str] = []          # every .md except .git
     frontmatter_violations: list[str] = []  # should-have-frontmatter files that don't parse
     inbound: dict[str, int] = {}            # rel -> count of body links pointing at it
@@ -150,7 +157,8 @@ def _scan(root: Path) -> dict[str, Any]:
             dead.append(rel)
 
     stale = _stale_candidates(
-        root, concept_files, inbound, datetime.now(timezone.utc)
+        root, concept_files, inbound, datetime.now(timezone.utc),
+        limits=limits, cap=cap,
     )
 
     return {
@@ -162,6 +170,165 @@ def _scan(root: Path) -> dict[str, Any]:
         "dead": sorted(dead),
         "stale": stale,
     }
+
+
+# ============================================================ consolidation
+# Inbox captures accumulate and nothing distils them. Other tools auto-summarise;
+# we will not, because a server-side LLM would be writing knowledge nobody asked
+# for (see the no-server-LLM decision). But CLUSTERING IS MATH: the semantic
+# index can group "these six captures are one topic" deterministically, and a
+# session can then OFFER the distillation to the human, who decides. Same rule as
+# room precipitates: the server points, the human disposes.
+#
+# SCOPE IS INBOX ONLY, deliberately. Those items are explicitly untriaged - that
+# is what an inbox IS. Logs are a historical record and merging them would
+# destroy the property that makes them worth keeping; orphan concepts are a
+# different problem this scan already reports.
+#
+# THE RESET: a cluster's signature (its sorted member paths) is remembered
+# OUTSIDE the checkout, so a cluster offered once is never offered again.
+# Declining must mean declined, or the report shows the same suggestion nightly
+# and stops being read - the always-red law again.
+
+_OFFERS_FILE = ".engram-consolidation-offers.json"
+
+
+def _offers_path(root: Path) -> Path:
+    """Beside the checkout, never inside it. An untracked file within the brain
+    would trip the clean-checkout guard and block every write - and this is
+    server-local operational state, not knowledge. Sitting in the store's parent
+    also scopes it per user for free in multiuser mode."""
+    return root.parent / _OFFERS_FILE
+
+
+def _load_offers(root: Path) -> set[str]:
+    try:
+        import json
+        raw = _offers_path(root).read_text(encoding="utf-8")
+        return set(json.loads(raw).get("signatures") or [])
+    except Exception:  # noqa: BLE001 - a lost memory costs one duplicate offer
+        return set()
+
+
+def _save_offers(root: Path, signatures: set[str]) -> None:
+    try:
+        import json
+        # Bounded: keep the most recent 500 so this cannot grow without limit.
+        keep = sorted(signatures)[-500:]
+        _offers_path(root).write_text(
+            json.dumps({"signatures": keep}), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("could not persist consolidation offers", exc_info=True)
+
+
+def _signature(paths: list[str]) -> str:
+    import hashlib
+    return hashlib.sha256("|".join(sorted(paths)).encode("utf-8")).hexdigest()[:16]
+
+
+def _inbox_clusters(
+    root: Path,
+    idx: Any,
+    threshold: float,
+    min_size: int = 3,
+    cap: int = 3,
+) -> list[list[str]]:
+    """Groups of inbox captures that look like one topic.
+
+    Connected components over the similarity graph: if A resembles B and B
+    resembles C, all three belong together even when A and C never matched
+    directly - which is what makes this a cluster rather than a pile of pairs.
+    Min size 3 because two similar captures are a coincidence often enough to be
+    noise. Failure-soft per query, like every other advisory sweep here."""
+    inbox_files = [
+        f.relative_to(root).as_posix()
+        for f in sorted((root / "inbox").rglob("*.md"))
+        if ".git" not in f.parts and not _is_index(f.relative_to(root).as_posix())
+        and "/archive/" not in f.relative_to(root).as_posix()
+    ]
+    if len(inbox_files) < min_size:
+        return []
+
+    known = set(inbox_files)
+    adjacency: dict[str, set[str]] = {rel: set() for rel in inbox_files}
+    for rel in inbox_files:
+        meta = read_meta(root / rel)
+        query = f"{meta.get('title') or ''}. {meta.get('description') or ''}".strip(". ")
+        if not query:
+            try:  # a bare capture may carry no description - use its first line
+                body = (root / rel).read_text(encoding="utf-8").strip().splitlines()
+                query = next((ln for ln in reversed(body) if ln.strip()
+                              and not ln.startswith("---")), "")
+            except OSError:
+                query = ""
+        if not query:
+            continue
+        try:
+            hits = idx.search(query, limit=6) or []
+        except Exception:  # noqa: BLE001
+            continue
+        for hit in hits:
+            other = str(hit.get("path") or "")
+            if other in known and other != rel and float(hit.get("score") or 0.0) >= threshold:
+                adjacency[rel].add(other)
+                adjacency[other].add(rel)
+
+    seen: set[str] = set()
+    clusters: list[list[str]] = []
+    for rel in inbox_files:
+        if rel in seen:
+            continue
+        stack, group = [rel], []
+        seen.add(rel)
+        while stack:
+            cur = stack.pop()
+            group.append(cur)
+            for nxt in adjacency.get(cur, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if len(group) >= min_size:
+            clusters.append(sorted(group))
+    # Biggest first: the pile most worth collapsing.
+    clusters.sort(key=len, reverse=True)
+    return clusters[:cap] if cap > 0 else []
+
+
+def _fresh_clusters(
+    root: Path, idx: Any, threshold: float, min_size: int = 3, cap: int = 3
+) -> list[list[str]]:
+    """Clusters not already offered, and remembering the ones returned.
+
+    Recording happens HERE rather than on acceptance, because there is no
+    acceptance signal to hook: the human may act days later or never. Offering
+    once and letting the report go quiet is the honest behaviour - a suggestion
+    ignored twice was never going to be taken."""
+    found = _inbox_clusters(root, idx, threshold, min_size=min_size, cap=cap)
+    if not found:
+        return []
+    seen = _load_offers(root)
+    fresh = [g for g in found if _signature(g) not in seen]
+    if fresh:
+        _save_offers(root, seen | {_signature(g) for g in fresh})
+    return fresh
+
+
+def _render_clusters(clusters: list[list[str]]) -> str:
+    if not clusters:
+        return "## Consolidation candidates (0)" + NL + NL + "None. ✓" + NL
+    blocks = []
+    for group in clusters:
+        members = NL.join(f"    * {_rel_link(m)}" for m in group)
+        blocks.append(f"* {len(group)} captures that look like one topic:" + NL + members)
+    head = f"## Consolidation candidates ({len(clusters)})" + NL + NL
+    blurb = (
+        "Inbox captures that cluster together. A session can OFFER to distil each "
+        "group into one concept - written only on your yes, with the originals "
+        "moved to `inbox/archive/`, never deleted. Each group is offered once; "
+        "declining is remembered."
+    )
+    return head + blurb + NL + NL + NL.join(blocks) + NL
 
 
 # ================================================================ staleness
@@ -424,8 +591,10 @@ def _render_report(
     semantic_summary: dict | None,
     similar_pairs: list[tuple[str, str, float]] | None = None,
     housekeeping: dict[str, list[str]] | None = None,
+    clusters: list[list[str]] | None = None,
 ) -> str:
     similar_pairs = similar_pairs or []
+    clusters = clusters or []
     dangling_lines = [
         f"{_rel_link(d['source'])} -> `{d['target']}` (missing)" for d in scan["dangling_links"]
     ]
@@ -437,6 +606,7 @@ def _render_report(
             _section("Index repairs applied", [_rel_link(p) for p in scan["index_repairs"]]),
             _section("Dangling links", dangling_lines),
             _render_stale(scan.get("stale") or []),
+            _render_clusters(clusters),
             _section("Orphan concepts (no inbound links)", [_rel_link(p) for p in scan["orphans"]]),
             _section("Dead knowledge (orphan + unsourced by any artifact)", [_rel_link(p) for p in scan["dead"]]),
             _section(
@@ -473,7 +643,17 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
             log.warning("reconcile: pull failed, scanning local checkout: %s", exc)
 
     # 2. Scan (read-only, in a worker thread).
-    scan = await to_thread.run_sync(lambda: _scan(store.root))
+    cfg = getattr(store, "settings", None)
+    stale_limits = {
+        "decision": getattr(cfg, "stale_after_days_decision", 120),
+        "spec": getattr(cfg, "stale_after_days_decision", 120),
+        "note": getattr(cfg, "stale_after_days_note", 180),
+        "runbook": getattr(cfg, "stale_after_days_note", 180),
+    }
+    stale_cap = getattr(cfg, "stale_report_limit", 7)
+    scan = await to_thread.run_sync(
+        lambda: _scan(store.root, limits=stale_limits, cap=stale_cap)
+    )
 
     # 3. Repair index membership in one commit, if needed.
     repairs = list(scan["index_repairs"])
@@ -520,16 +700,25 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
     # near-duplicate concept pairs (possible duplicates or contradictions).
     semantic_summary = None
     similar_pairs: list[tuple[str, str, float]] = []
+    clusters: list[list[str]] = []
     if semantic_index is not None:
         semantic_summary = await to_thread.run_sync(lambda: semantic_index.full_reindex(store.root))
         threshold = float(getattr(store.settings, "dupe_threshold", 0.80))
+        clusters = await to_thread.run_sync(
+            lambda: _fresh_clusters(
+                store.root, semantic_index, threshold,
+                min_size=getattr(cfg, "consolidate_min_cluster", 3),
+                cap=getattr(cfg, "consolidate_max_clusters", 3),
+            )
+        )
         similar_pairs = await to_thread.run_sync(
             lambda: _similar_pairs(store.root, semantic_index, threshold)
         )
 
     # 5. Write the report back (its own commit).
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    md = _render_report(scan, timestamp, semantic_summary, similar_pairs, housekeeping)
+    md = _render_report(scan, timestamp, semantic_summary, similar_pairs, housekeeping,
+                        clusters)
     try:
         await store.kb_write(_REPORT_PATH, md, "reconcile: brain health report")
     except GitError as exc:
@@ -544,6 +733,7 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         "dead": len(scan["dead"]),
         "similar_pairs": len(similar_pairs),
         "stale": len(scan.get("stale") or []),
+        "clusters": len(clusters),
         "pruned_presence": len(housekeeping["pruned_presence"]),
         "staled_handoffs": len(housekeeping["staled_handoffs"]),
         "report_path": _REPORT_PATH,

@@ -88,6 +88,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ENGRAM_SCHEDULER", "ENGRAM_SCHEDULER_ENABLED"),
     )
     reconcile_at: str = "03:30"
+
+    # Knowledge hygiene. Defaults are deliberately conservative: a hygiene report
+    # that cries wolf gets muted, and a muted report is worse than none. Measured
+    # against the real brain on 2026-08-28, 120d surfaced nothing (its oldest
+    # content was 55d) while 45d surfaced ten genuinely old, heavily-cited docs —
+    # so the honest default waits, and the knob is here for tuning once there is
+    # enough history to judge. Set a limit to 0 to switch a section off entirely.
+    stale_after_days_decision: int = 120
+    stale_after_days_note: int = 180
+    stale_report_limit: int = 7
+    consolidate_min_cluster: int = 3
+    consolidate_max_clusters: int = 3
     # v3: the scheduled morning-briefing PUSH is retired — it manufactured its own
     # backlog (each day's "unread" was mostly previous briefings) and, with no
     # server-side LLM, could never be more than counts. The briefing is now a PULL
