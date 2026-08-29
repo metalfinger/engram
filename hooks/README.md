@@ -108,6 +108,35 @@ woken, so every user prompt doubles as the checkpoint where it finds out.
 Silent on a stale (>3 min) or absent cache: saying nothing beats reporting a
 turn someone already took.
 
+## Staying current without remembering (`engram-update.sh`)
+
+Hooks and skills are FILES ON DISK, so unlike everything served over MCP they do
+not follow the server when it changes. That gap bit twice: a skill sat six weeks
+stale on the Mac, and the presence hook sat a version behind for a day — the fix
+deployed and simply never running there, with nothing saying so.
+
+`engram-update.sh` closes it without a Claude session: it compares this machine's
+digests against the server's, downloads only what differs, **verifies the bundle
+hashes to the digest the server advertised before installing** (a stale edge
+cache once served an old bundle while reporting success), and logs one line to
+`~/.engram/update.log`. It writes only `engram*` files into the shared hooks
+directory and the skill dirs the manifest names, and it **never touches
+settings.json** — wiring a hook into the right events is a judgement call that
+stays with `kb_setup_machine` and a human.
+
+Run it by hand, or on a schedule:
+
+```bash
+# macOS / Linux — daily at 9am via cron
+0 9 * * * ~/.claude/hooks/engram-update.sh
+
+# Windows — daily via Task Scheduler
+schtasks /Create /TN "Engram Update" /TR "bash %USERPROFILE%\.claude\hooks\engram-update.sh" /SC DAILY /ST 09:00
+```
+
+The status line also shows `⬆ engram update (run setup)` when digests differ, so
+drift is visible even on a machine with no schedule.
+
 ## Don't digest this whole directory
 
 `~/.claude/hooks/` is **shared** — other tools' hooks live here too. Engram owns
