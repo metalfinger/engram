@@ -137,9 +137,31 @@ def _tree_digest(root):
     return h.hexdigest()[:12]
 
 
+def _safe_join(dest, rel):
+    """Resolve `rel` under `dest`, refusing anything that would escape it.
+
+    ZIP SLIP GUARD. A zip member name is attacker-controlled data the moment
+    the bytes are — and this script's whole premise is downloading bytes from
+    the network. An entry like `../../../.ssh/authorized_keys` or an absolute
+    path, joined naively, writes outside the hooks directory entirely. The
+    digest check earlier in this file guards against a STALE or SWAPPED
+    bundle; it says nothing about a well-formed-but-malicious member inside a
+    bundle that otherwise hashes correctly, which is a different attack this
+    guard exists to close. Returns None (never a path) for anything unsafe, so
+    the caller's contract is simple: no return means no write."""
+    # normpath collapses ../ segments so a traversal attempt is visible as a
+    # path that, once resolved, no longer starts under dest.
+    target = os.path.normpath(os.path.join(dest, rel.replace("/", os.sep)))
+    dest_norm = os.path.normpath(dest)
+    if target != dest_norm and not target.startswith(dest_norm + os.sep):
+        return None
+    return target
+
+
 def _install_zip(raw, dest, want_prefix=None, only_engram=False):
     """Unpack, creating parents. `only_engram` guards the SHARED hooks directory:
-    other tools' hooks live beside ours and must never be overwritten."""
+    other tools' hooks live beside ours and must never be overwritten. Every
+    member is path-checked by `_safe_join` before anything is written."""
     written = []
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         for member in z.namelist():
@@ -151,7 +173,10 @@ def _install_zip(raw, dest, want_prefix=None, only_engram=False):
             base = os.path.basename(rel)
             if only_engram and not base.startswith("engram"):
                 continue
-            target = os.path.join(dest, rel.replace("/", os.sep))
+            target = _safe_join(dest, rel)
+            if target is None:
+                _log("REFUSED zip member outside destination: %r" % member)
+                continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "wb") as f:
                 f.write(z.read(member))
