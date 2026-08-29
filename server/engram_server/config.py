@@ -89,15 +89,22 @@ class Settings(BaseSettings):
     )
     reconcile_at: str = "03:30"
 
-    # Knowledge hygiene. Defaults are deliberately conservative: a hygiene report
-    # that cries wolf gets muted, and a muted report is worse than none. Measured
-    # against the real brain on 2026-08-28, 120d surfaced nothing (its oldest
-    # content was 55d) while 45d surfaced ten genuinely old, heavily-cited docs —
-    # so the honest default waits, and the knob is here for tuning once there is
-    # enough history to judge. Set a limit to 0 to switch a section off entirely.
-    stale_after_days_decision: int = 120
-    stale_after_days_note: int = 180
+    # Knowledge hygiene. STALENESS ONLY MATTERS FOR WORK STILL OPEN — a finished
+    # project's decisions are done, not rotting, and flagging them is the noise
+    # that teaches a reader to skip the section. So the real filter is project
+    # liveness (measured from the newest log entry, never the declared `status:`,
+    # which is itself stale-prone — every project here says "active"), and the
+    # age thresholds only decide how long is long enough within live work.
+    #
+    # Measured against the real brain 2026-08-28: with the liveness gate, 45d
+    # surfaces ten items led by engram's own v1-architecture.md (55d, 10 links) —
+    # about to be superseded by the cloud migration, so exactly the catch this is
+    # for. Dormant projects (stellar-ux, idle since 7 July) correctly drop out.
+    # Set any limit to 0 to switch its section off entirely.
+    stale_after_days_decision: int = 45
+    stale_after_days_note: int = 90
     stale_report_limit: int = 7
+    stale_project_live_days: int = 45
     consolidate_min_cluster: int = 3
     consolidate_max_clusters: int = 3
     # v3: the scheduled morning-briefing PUSH is retired — it manufactured its own

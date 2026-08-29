@@ -1123,12 +1123,27 @@ class Dashboard:
             ][:10]
         except Exception:  # noqa: BLE001 — a status line must never be the thing that breaks
             log.debug("status unavailable", exc_info=True)
+        # THE CURRENT HOOK DIGEST, so a machine can notice it has drifted.
+        # Hiren's presence hook sat a version behind for a day — the attention
+        # upload was deployed and simply never ran there, and nothing said so.
+        # kb_setup_machine can detect drift, but only when someone thinks to run
+        # it; shipping the digest here lets the status line notice by itself and
+        # say "update available" without anyone remembering to check.
+        hooks_digest = ""
+        try:
+            import engram_server.app as _app
+            hooks_digest = _app._dir_digest(_app._HOOKS_DIR,
+                                            _app._owned_hooks(_app._HOOKS_DIR))
+        except Exception:  # noqa: BLE001 — a status line must never be the breakage
+            log.debug("hooks digest unavailable", exc_info=True)
+
         return JSONResponse({
             "ok": True,
             "your_turn": your_turn,
             "needs_you": needs_you,
             "abandoned": abandoned,
             "working": working,
+            "hooks_digest": hooks_digest,
         })
 
     async def api_conversations(self, request: "Request") -> "Response":

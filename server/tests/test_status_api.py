@@ -142,3 +142,17 @@ async def test_a_long_gone_holder_is_abandoned_not_your_turn(mu, client, monkeyp
     out = _status(client)
     assert any(e.startswith("gone-holder") for e in out["abandoned"])
     assert not any(e.startswith("gone-holder") for e in out["your_turn"])
+
+
+@pytest.mark.asyncio
+async def test_status_serves_the_hooks_digest_for_drift_detection(mu, client):
+    """Hiren's presence hook sat a version behind for a day: the attention-upload
+    fix was deployed and simply never ran on his machine, and nothing said so.
+    kb_setup_machine can detect drift but only when someone thinks to run it —
+    serving the digest lets the status line notice by itself."""
+    import engram_server.app as app_module_
+    out = _status(client)
+    assert out["hooks_digest"], "the status feed must carry the current digest"
+    assert out["hooks_digest"] == app_module_._dir_digest(
+        app_module_._HOOKS_DIR, app_module_._owned_hooks(app_module_._HOOKS_DIR)
+    ), "must match the recipe a machine compares against"

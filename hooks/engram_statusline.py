@@ -86,6 +86,26 @@ def _spawn_refresh(session_id):
         pass
 
 
+def _local_hooks_digest():
+    """Digest of the engram-owned hook files installed here, matching the
+    server's recipe exactly (`_owned_hooks` + `_dir_digest`). Only the files
+    Engram owns: ~/.claude/hooks is shared with other tools, and digesting the
+    whole directory would report drift forever."""
+    try:
+        import hashlib
+        d = os.path.join(HOME, ".claude", "hooks")
+        names = sorted(n for n in os.listdir(d)
+                       if n.startswith("engram") and os.path.isfile(os.path.join(d, n)))
+        h = hashlib.sha256()
+        for name in names:
+            h.update(name.encode("utf-8"))
+            with open(os.path.join(d, name), "rb") as f:
+                h.update(f.read())
+        return h.hexdigest()[:12]
+    except Exception:
+        return ""
+
+
 def _parent_output(raw):
     """Run whatever status line was here BEFORE Engram, and return its output.
 
@@ -236,6 +256,14 @@ def main():
     gone = cached.get("abandoned") or []
     if gone:
         parts.append("🚪 abandoned room: " + ", ".join(gone[:2]))
+
+    # DRIFT: the hooks on this machine are older than the server's. Hiren's
+    # presence hook sat a version behind for a day — the fix was deployed and
+    # simply never ran here, and nothing said so. Comparing digests turns that
+    # silence into one word.
+    served = str(cached.get("hooks_digest") or "")
+    if served and served != _local_hooks_digest():
+        parts.append("⬆ engram update (run setup)")
 
     # The one that prevents real damage: someone else already in this worktree.
     here = os.path.basename(os.path.abspath(cwd))

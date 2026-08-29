@@ -21,6 +21,9 @@ from engram_server.kbstore import KBStore
 from engram_server.reconcile import _scan, _stale_candidates
 
 
+NL = chr(10)
+
+
 def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -53,6 +56,20 @@ def _commit(root) -> None:
                        capture_output=True, encoding='utf-8')
 
 
+def _live_project(root, pdir: str) -> None:
+    """A project with recent activity — the liveness gate needs one, and a test
+    that passed only because the gate silently excluded everything would be the
+    always-red law in reverse."""
+    ctx = (
+        "---" + NL + "type: project" + NL + "title: p" + NL
+        + "description: d" + NL + "status: active" + NL + "---" + NL + NL
+        + "About." + NL
+    )
+    _write(root, pdir + "/context.md", ctx)
+    _write(root, pdir + "/log.md",
+           "# Log" + NL + NL + "## " + _old(1)[:10] + NL + NL + "* recent work" + NL)
+
+
 def _concept(root, rel: str, *, type_="decision", days=400, extra="") -> None:
     _write(root, rel, (
         "---\n"
@@ -76,6 +93,7 @@ def _cite(root, rel_from: str, target_basename: str) -> None:
 @pytest.mark.asyncio
 async def test_an_old_cited_decision_is_surfaced(store):
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/old.md", days=400)
     _cite(root, "projects/p/decisions/citer.md", "old.md")
     scan = _scan(root)
@@ -90,6 +108,7 @@ async def test_confirming_it_makes_it_quiet(store):
     """THE RESET. Without this the same items surface every night forever and the
     reader learns to skip the section — taking the real warnings with it."""
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/old.md", days=400)
     _cite(root, "projects/p/decisions/citer.md", "old.md")
     assert any(c["path"].endswith("old.md") for c in _scan(root)["stale"])
@@ -107,6 +126,7 @@ async def test_an_uncited_concept_is_an_orphan_not_a_staleness_case(store):
     """Different problem, different answer: reconcile already reports orphans.
     Staleness is about knowledge still being CONSULTED while possibly wrong."""
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/lonely.md", days=999)
     assert not any(c["path"].endswith("lonely.md") for c in _scan(root)["stale"])
 
@@ -114,6 +134,7 @@ async def test_an_uncited_concept_is_an_orphan_not_a_staleness_case(store):
 @pytest.mark.asyncio
 async def test_recent_and_tentative_and_wrong_type_are_left_alone(store):
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/fresh.md", days=10)
     _cite(root, "projects/p/decisions/c1.md", "fresh.md")
     _concept(root, "projects/p/decisions/unsure.md", days=400,
@@ -133,6 +154,7 @@ async def test_the_list_is_capped_and_ranked(store):
     """Unbounded lists are unread lists. Load-bearing AND old ranks first: a
     widely-cited stale decision misleads more sessions than a lonely one."""
     root = store.root
+    _live_project(root, "projects/p")
     for i in range(12):
         _concept(root, f"projects/p/decisions/d{i}.md", days=300 + i)
         _cite(root, f"projects/p/decisions/c{i}.md", f"d{i}.md")
@@ -147,6 +169,7 @@ async def test_search_and_read_carry_the_flag_at_retrieval(store):
     """The warning belongs where the risk is live — in the session about to act,
     not only in a nightly digest somebody has to remember to read."""
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/invoice.md", days=400)
     _write(root, "projects/p/decisions/invoice.md", (
         "---\ntype: decision\ntitle: Invoice blocked\n"
@@ -171,9 +194,63 @@ async def test_search_and_read_carry_the_flag_at_retrieval(store):
 async def test_verifying_twice_in_a_day_is_a_no_change(store):
     """No empty commits: the brain has one writer and its history is read."""
     root = store.root
+    _live_project(root, "projects/p")
     _concept(root, "projects/p/decisions/x.md", days=400)
     _commit(root)
     first = await store.kb_verify("projects/p/decisions/x.md")
     second = await store.kb_verify("projects/p/decisions/x.md")
     assert first["reviewed"] == second["reviewed"]
     assert second["no_change"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_dormant_project_is_finished_not_stale(store):
+    """Hiren's correction, and the design fix it produced: "it is just for things
+    which are open right?" A dormant project's decisions are DONE, not rotting —
+    flagging them is the noise that teaches a reader to skip the section.
+
+    Measured on the real brain: stellar-ux-exploration (idle since 7 July) was
+    surfacing under the old age-only rule and correctly drops out under this one.
+    """
+    root = store.root
+    # Live project: recent log entry.
+    _live_project(root, "projects/live")
+    _concept(root, "projects/live/decisions/old.md", days=400)
+    _cite(root, "projects/live/decisions/citer.md", "old.md")
+
+    # Dormant project: same-age concept, same citation, but no recent activity.
+    _write(root, "projects/dormant/context.md", (
+        "---\ntype: project\ntitle: d\ndescription: d\nstatus: active\n---\n\nAbout.\n"
+    ))
+    _write(root, "projects/dormant/log.md",
+           f"# Log\n\n## {_old(300)[:10]}\n\n* last touched ages ago\n")
+    _concept(root, "projects/dormant/decisions/old.md", days=400)
+    _cite(root, "projects/dormant/decisions/citer.md", "old.md")
+
+    stale = _scan(root)["stale"]
+    paths = [c["path"] for c in stale]
+    assert any(p.startswith("projects/live/") for p in paths), "live work still flagged"
+    assert not any(p.startswith("projects/dormant/") for p in paths), (
+        "a dormant project's decisions are finished, not stale"
+    )
+
+
+@pytest.mark.asyncio
+async def test_liveness_is_measured_not_declared(store):
+    """Every project in the real brain says `status: active`, including ones
+    untouched for months — a declared status is itself stale-prone, which is the
+    exact problem being solved. So the log's newest entry decides, not the field.
+    """
+    root = store.root
+    _write(root, "projects/claims-active/context.md", (
+        "---\ntype: project\ntitle: c\ndescription: d\nstatus: active\n---\n\nAbout.\n"
+    ))
+    _write(root, "projects/claims-active/log.md",
+           f"# Log\n\n## {_old(300)[:10]}\n\n* nothing since\n")
+    _concept(root, "projects/claims-active/decisions/old.md", days=400)
+    _cite(root, "projects/claims-active/decisions/citer.md", "old.md")
+
+    assert not any(c["path"].startswith("projects/claims-active/")
+                   for c in _scan(root)["stale"]), (
+        "saying active must not be enough — the log decides"
+    )

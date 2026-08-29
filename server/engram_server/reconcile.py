@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import posixpath
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,7 @@ def _scan(
     root: Path,
     limits: dict[str, int] | None = None,
     cap: int = 7,
+    live_days: int = 45,
 ) -> dict[str, Any]:
     """Read-only walk collecting every finding. Returns a plain dict of lists/counts.
 
@@ -158,7 +159,8 @@ def _scan(
 
     stale = _stale_candidates(
         root, concept_files, inbound, datetime.now(timezone.utc),
-        limits=limits, cap=cap,
+        limits=limits, cap=cap, projects=_project_activity(root),
+        live_window_days=live_days,
     )
 
     return {
@@ -347,6 +349,56 @@ def _render_clusters(clusters: list[list[str]]) -> str:
 
 _STALE_TYPES = {"decision": 120, "spec": 120, "note": 180, "runbook": 180}
 _STALE_EXCLUDE_DIRS = ("inbox/", "threads/", "workspace/", "library/reports/")
+_LOG_DATE = re.compile(r"^##\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+
+
+def _project_activity(root: Path) -> dict[str, str]:
+    """project dir -> the date it last showed signs of life.
+
+    STALENESS ONLY MATTERS FOR WORK STILL OPEN. A finished project's decisions
+    are not rotting, they are DONE — flagging them is exactly the noise that
+    teaches a reader to skip the section. Hiren put it plainly: "it is just for
+    things which are open right?"
+
+    Liveness is MEASURED, not declared. Every project in this brain says
+    `status: active`, including ones untouched for months — a declared status is
+    itself stale-prone, which is the very problem being solved. So the signal is
+    the newest dated entry in the project's log (its own record of activity),
+    falling back to the newest frontmatter timestamp among its concepts. Both are
+    content-derived, so they survive a fresh clone — file mtimes would not, and
+    the cloud migration would silently reset them."""
+    out: dict[str, str] = {}
+    for ctx in root.rglob("context.md"):
+        if ".git" in ctx.parts:
+            continue
+        pdir = ctx.parent.relative_to(root).as_posix()
+        newest = ""
+        log = ctx.parent / "log.md"
+        if log.is_file():
+            try:
+                dates = _LOG_DATE.findall(log.read_text(encoding="utf-8"))
+                newest = max(dates) if dates else ""
+            except OSError:
+                pass
+        if not newest:
+            for f in ctx.parent.rglob("*.md"):
+                if ".git" in f.parts:
+                    continue
+                stamp = str(read_meta(f).get("timestamp") or "")[:10]
+                if stamp > newest:
+                    newest = stamp
+        out[pdir] = newest
+    return out
+
+
+def _owning_project(rel: str, projects: dict[str, str]) -> str | None:
+    """The nearest enclosing project dir, longest match wins (a project inside a
+    folder must not resolve to the folder)."""
+    best = None
+    for pdir in projects:
+        if rel.startswith(pdir + "/") and (best is None or len(pdir) > len(best)):
+            best = pdir
+    return best
 
 
 def _stale_candidates(
@@ -356,6 +408,8 @@ def _stale_candidates(
     now: datetime,
     limits: dict[str, int] | None = None,
     cap: int = 7,
+    projects: dict[str, str] | None = None,
+    live_window_days: int = 45,
 ) -> list[dict[str, Any]]:
     """Concepts in ACTIVE USE that nobody has confirmed in a long time.
 
@@ -368,6 +422,8 @@ def _stale_candidates(
     provenance manifests; logs, indexes, messages and coordination ephemera are
     excluded because age is what they are FOR."""
     limits = limits or _STALE_TYPES
+    projects = projects if projects is not None else {}
+    live_cutoff = (now - timedelta(days=live_window_days)).strftime("%Y-%m-%d")
     out: list[dict[str, Any]] = []
     for rel in concept_files:
         if _is_anchor(rel) or _in_messages(rel):
@@ -377,6 +433,11 @@ def _stale_candidates(
         links = inbound.get(rel, 0)
         if links < 1:
             continue
+        # Open work only. A dormant project's decisions are finished, not rotting.
+        if projects:
+            owner = _owning_project(rel, projects)
+            if owner is None or projects.get(owner, "") < live_cutoff:
+                continue
         meta = read_meta(root / rel)
         threshold = limits.get(str(meta.get("type") or ""))
         if not threshold:
@@ -652,7 +713,8 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
     }
     stale_cap = getattr(cfg, "stale_report_limit", 7)
     scan = await to_thread.run_sync(
-        lambda: _scan(store.root, limits=stale_limits, cap=stale_cap)
+        lambda: _scan(store.root, limits=stale_limits, cap=stale_cap,
+                      live_days=getattr(cfg, "stale_project_live_days", 45))
     )
 
     # 3. Repair index membership in one commit, if needed.
