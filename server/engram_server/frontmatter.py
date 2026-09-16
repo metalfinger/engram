@@ -36,6 +36,29 @@ class Doc:
     body: str
 
 
+def _yaml_hint(exc: "yaml.YAMLError") -> str:
+    """A targeted hint for the one YAML mistake that is common and confusing:
+    an unquoted colon inside a plain scalar value, e.g.
+    `description: Editing a form: swap the alt` — PyYAML reads the SECOND colon
+    as starting a new mapping key, which is illegal there, and reports "mapping
+    values are not allowed here" with no indication that punctuation in a VALUE
+    is the actual cause. A session hand-writing frontmatter text has no way to
+    guess that from the raw message alone.
+
+    Deliberately does not change parsing: silently reinterpreting ambiguous YAML
+    is its own risk, so this only clarifies the failure — same shape as every
+    other refusal-with-a-reason built this year (the digest mismatch, the zip
+    member outside its destination, the clean-checkout guard)."""
+    msg = str(exc)
+    if "mapping values are not allowed here" in msg:
+        return (
+            " — likely an unquoted ':' inside a value (e.g. `description: fixing "
+            "the form: swap the alt`). Wrap the whole value in quotes: "
+            '`description: "fixing the form: swap the alt"`.'
+        )
+    return ""
+
+
 def split(text: str) -> Doc | None:
     """Split text into Doc. None when text does not start with a --- fence;
     FrontmatterError when the YAML is invalid, not a mapping, or the closing fence is missing."""
@@ -49,7 +72,9 @@ def split(text: str) -> Doc | None:
         try:
             meta = yaml.safe_load(raw)
         except yaml.YAMLError as exc:
-            raise FrontmatterError(f"Frontmatter is not valid YAML: {exc}") from exc
+            raise FrontmatterError(
+                f"Frontmatter is not valid YAML: {exc}{_yaml_hint(exc)}"
+            ) from exc
         if meta is None:
             meta = {}
         if not isinstance(meta, dict):

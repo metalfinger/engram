@@ -1901,6 +1901,37 @@ async def kb_move_project(project: str, folder: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
+async def kb_merge_project(from_project: str, into_project: str) -> dict[str, Any]:
+    """Fold one project directory into another — the repair for a split project.
+
+    Call when kb_projects/kb_load resolves an id to the WRONG directory while a
+    richer, correct one sits elsewhere (kb_search finds content kb_load doesn't),
+    or when kb_move_project refuses with "already exists" and the right answer is
+    to combine them rather than pick a different folder.
+
+    EITHER ARGUMENT MAY BE A PLAIN ID, OR AN EXACT PATH like
+    'projects/admin-entity-graph'. When two directories genuinely share one id,
+    use the PATH FORM ON BOTH SIDES — plain-id resolution always prefers the
+    top-level directory when both exist, so naming `into_project` by its bare id
+    would resolve to the SAME duplicate you are merging away, not the real one.
+    Use kb_search or a direct kb_read to find the exact path of the copy you mean.
+
+    NEVER SILENTLY OVERWRITES: if any file would land on an existing path in the
+    destination, the WHOLE merge is refused and every collision is named — nothing
+    moves until you resolve them. On success: every concept moves with its links
+    rewritten bundle-wide, log.md history is preserved under today's date with a
+    '[merged from ...]' provenance marker per entry (not discarded — kb_append_log
+    can only add new entries, so this is the only way to bring an existing log's
+    history along), messages/ move as plain files, and the emptied source
+    directory is deleted in the same commit.
+
+    Returns {from, into, concepts_moved, log_entries_merged, messages_moved,
+    links_rewritten, sha, pushed}.
+    """
+    return await (await current_store()).kb_merge_project(from_project, into_project)
+
+
+@mcp.tool()
 async def kb_project_status(project: str, status: str = "", tags: list[str] | None = None) -> dict[str, Any]:
     """Set a project's `status` (and optional free-form `tags`).
 
@@ -1927,7 +1958,15 @@ async def kb_attach_project(project: str = "", description: str = "") -> dict[st
     at the repo root (Claude Code: a one-line file) — that pins this repo to the project
     for this and every future session, so nobody has to be asked again.
 
-    Returns {project, created, pin_file, pin_content, instruction} or {projects: [...]}.
+    An id that ALREADY EXISTS anywhere under `projects/**` — including inside a folder —
+    always resolves to that project (`created: false`, `folder` names where). It never
+    creates a second, competing project sharing the id: that split once went undetected
+    for most of a session, with id-based tools (this one, kb_load, kb_append_log) and
+    path-based tools (kb_read, kb_write) silently disagreeing about which directory was
+    "the project."
+
+    Returns {project, created, folder, pin_file, pin_content, instruction} or
+    {projects: [...]}.
     """
     store = await current_store()
     if not project:

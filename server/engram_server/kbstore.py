@@ -3632,7 +3632,12 @@ class KBStore:
             old_dir = self.root / old_rel
             new_dir = self.root / new_rel
             if new_dir.exists():
-                raise KBError(f"{new_rel} already exists.")
+                raise KBError(
+                    f"{new_rel} already exists — that's a genuine second project "
+                    f"sharing an id, not just a name clash. Use kb_merge_project"
+                    f"('{old_rel}', '{new_rel}') to fold them together, or move "
+                    "one of them somewhere else first."
+                )
             # Refuse to bury a project under something that is itself a project.
             if dest_folder:
                 holder = self.root / "projects" / dest_folder
@@ -3656,6 +3661,214 @@ class KBStore:
         )
         return {"project": pid, "folder": dest_folder, "from": old_rel, "to": new_rel,
                 "links_rewritten": state["links"], "sha": sha, "pushed": pushed}
+
+    def _resolve_project_ref(self, ref: str) -> str:
+        """Resolve a project reference that may be an ID or an EXACT PATH.
+
+        Ordinary resolution (`_project_rel`) is id-only, which is exactly what
+        breaks when two directories share one id — the 2026-09-16 incident's own
+        shape. There, `_project_rel('admin-entity-graph')` can only ever name ONE
+        of the two colliding directories (top-level wins), so a merge tool that
+        only accepted ids could never address the other side of the very split it
+        exists to repair. A path containing '/' is therefore taken literally and
+        validated as a real project directory (has its own `context.md`), never
+        resolved through the id registry — the escape hatch the incident's own
+        write-up asked for verbatim ("from_id_or_path")."""
+        ref = (ref or "").strip()
+        if "/" in ref:
+            rel = ref[len("projects/"):] if ref.startswith("projects/") else ref
+            rel = f"projects/{rel}".rstrip("/")
+            if not (self.root / rel / "context.md").is_file():
+                raise KBError(f"No project directory with a context.md at '{rel}'.")
+            return rel
+        return self._project_rel(ref)
+
+    async def kb_merge_project(self, from_project: str, into_project: str) -> dict[str, Any]:
+        """Fold one project directory into another — id or a repair, whichever is needed.
+
+        THE 2026-09-16 REPAIR TOOL. `kb_attach_project` no longer creates a duplicate
+        id (see `ensure_project`), but a brain can still end up split some other way,
+        and this is how it gets put back together without hand-editing git. Either
+        argument may be a plain project id, OR an exact path like
+        'projects/admin-entity-graph' — the path form exists because two colliding
+        directories can share the SAME id, and id-based resolution can only ever
+        name one of them (top-level wins), which would make the other side of a
+        duplicate unreachable to this very tool.
+
+        NEVER SILENTLY OVERWRITES. Every concept file keeps its relative sub-path
+        under the destination; if that path is already occupied there, the WHOLE
+        merge is refused and every colliding path is listed — no partial merge, no
+        guessing which copy should win. Re-run after resolving the collisions
+        yourself (kb_move one side out of the way, or decide which file wins).
+
+        What moves: every concept file (link-rewritten across the WHOLE bundle, not
+        just within the two directories, so cross-references anywhere keep working).
+        log.md history is preserved, not discarded — each of the source's dated
+        entries is re-inserted under TODAY in the destination's log, marked
+        '[merged from <source>, originally logged <date>]', because kb_append_log
+        only prepends new entries and cannot otherwise ingest a whole existing log.
+        messages/ move as plain files (they have their own tools and are exempt from
+        link-rewriting, same as kb_move already treats them). The now-empty source
+        directory is deleted in the SAME commit — a real merge should not need a
+        stub left behind.
+
+        Refuses: identical source and destination; either naming 'metalfinger' (a
+        fixed, non-project tree, same rule as kb_move_project).
+
+        Returns {from, into, concepts_moved, log_entries_merged, messages_moved,
+        links_rewritten, sha, pushed}.
+        """
+        from_rel = self._resolve_project_ref(from_project)
+        into_rel = self._resolve_project_ref(into_project)
+        if from_rel == into_rel:
+            raise KBError("from_project and into_project resolve to the same directory.")
+        for rel_ in (from_rel, into_rel):
+            if rel_ == "metalfinger":
+                raise KBError("metalfinger is a fixed top-level tree and cannot be merged.")
+        state: dict[str, Any] = {"concepts": 0, "log_entries": 0, "messages": 0, "links": 0}
+
+        def _mutate() -> list[str]:
+            from_dir = self.root / from_rel
+            into_dir = self.root / into_rel
+            if not from_dir.is_dir() or not into_dir.is_dir():
+                raise KBError("Both projects must exist before merging.")
+
+            # ---- 1. Plan every concept move, and refuse EARLY on any collision.
+            # No partial merge: either the whole thing is safe, or nothing moves.
+            moves: dict[str, str] = {}  # old bundle-rel -> new bundle-rel
+            collisions: list[str] = []
+            for f in sorted(from_dir.rglob("*.md")):
+                if ".git" in f.parts:
+                    continue
+                sub = f.relative_to(from_dir).as_posix()
+                base = posixpath.basename(sub)
+                if base in ("context.md", "log.md", "index.md"):
+                    continue
+                if "messages" in sub.split("/")[:-1]:
+                    continue
+                old_rel = f"{from_rel}/{sub}"
+                new_rel = f"{into_rel}/{sub}"
+                if (self.root / new_rel).exists():
+                    collisions.append(new_rel)
+                else:
+                    moves[old_rel] = new_rel
+            if collisions:
+                raise KBError(
+                    "Merge refused — the destination already has a file at "
+                    + ", ".join(f"'{c}'" for c in sorted(collisions))
+                    + ". Move or rename the colliding file(s) first, then retry; "
+                    "nothing was changed."
+                )
+
+            touched: set[str] = {from_rel, into_rel}
+
+            # ---- 2. Move every concept file, rebasing ITS OWN links (kb_move's logic).
+            for old_rel, new_rel in moves.items():
+                old_abs, new_abs = self.root / old_rel, self.root / new_rel
+                content = _read_text_retry(old_abs)
+                content = _rewrite_frontmatter_refs(
+                    _rebase_body_links(content, old_rel, new_rel), old_rel, new_rel
+                )
+                new_abs.parent.mkdir(parents=True, exist_ok=True)
+                _write_text(new_abs, content)
+                old_abs.unlink()
+                meta = read_meta(new_abs)
+                touched.update(
+                    ensure_indexed(self.root, new_rel, str(meta.get("title") or ""),
+                                   str(meta.get("description") or ""))
+                )
+                state["concepts"] += 1
+
+            # ---- 3. ONE bundle-wide pass rewrites every file that pointed at any
+            # moved concept — a single read+write per file, however many concepts
+            # moved, rather than re-scanning the whole bundle once per file (what
+            # kb_move does for a single move; here there can be dozens).
+            if moves:
+                for f in self.root.rglob("*.md"):
+                    if ".git" in f.parts:
+                        continue
+                    f_rel = f.relative_to(self.root).as_posix()
+                    if f_rel in moves.values():
+                        continue  # already rewritten as part of its own move, above
+                    text = _read_text_retry(f)
+                    orig = text
+                    for old_rel, new_rel in moves.items():
+                        text, n = _retarget_body_links(text, posixpath.dirname(f_rel), old_rel, new_rel)
+                        state["links"] += n
+                        text = _rewrite_frontmatter_refs(text, old_rel, new_rel)
+                    if text != orig:
+                        _write_text(f, text)
+                        touched.add(f_rel)
+
+            # ---- 4. Log history: re-insert every dated entry under TODAY in the
+            # destination, marked with its true origin and original date. Reuses
+            # the exact bullet-placement primitive kb_append_log itself uses.
+            src_log = from_dir / "log.md"
+            if src_log.is_file():
+                entries = _parse_log_entries(_read_text_retry(src_log))
+                today = _utcnow().strftime("%Y-%m-%d")
+                dest_log = into_dir / "log.md"
+                dest_text = _read_text_retry(dest_log) if dest_log.is_file() else (
+                    f"# Log — {into_dir.name}\n"
+                )
+                # Oldest source date first: each _insert_log_bullet places its bullet
+                # immediately below today's heading, so inserting oldest-to-newest
+                # leaves the NEWEST source entry at the top — "newest first" holds.
+                for entry in sorted(entries, key=lambda e: e.get("date") or ""):
+                    marker = (
+                        f"* **[merged from {from_rel}, originally logged "
+                        f"{entry.get('date') or 'an unknown date'}]** {entry['title']}"
+                    )
+                    block = marker if not entry["body"] else f"{marker}\n{entry['body']}"
+                    dest_text = _insert_log_bullet(dest_text, block, today)
+                    state["log_entries"] += 1
+                _write_text(dest_log, dest_text)
+                touched.add(f"{into_rel}/log.md")
+
+            # ---- 5. Messages: plain move, no link rewriting (kb_move exempts them
+            # for the same reason — they are managed by the messaging tools).
+            src_messages = from_dir / "messages"
+            if src_messages.is_dir():
+                dest_messages = into_dir / "messages"
+                for f in sorted(src_messages.rglob("*.md")):
+                    if f.name == "index.md":
+                        continue  # server-maintained at every level under messages/
+                                  # too (messages/index.md, messages/archive/index.md)
+                                  # — moving it as a "message" would fight the real
+                                  # indexer instead of letting it regenerate cleanly
+                    sub = f.relative_to(src_messages).as_posix()
+                    dest = dest_messages / sub
+                    if dest.exists():
+                        continue  # a message-id collision is exceedingly unlikely and
+                                  # non-destructive to skip; concepts already refused above
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    f.rename(dest)
+                    touched.add(f"{into_rel}/messages/{sub}")
+                    state["messages"] += 1
+
+            # ---- 6. Remove the now-empty source: no stub, a real merge needs none.
+            removed = _remove_index_bullet(self.root, f"{from_rel}/context.md")
+            if removed:
+                touched.add(removed)
+            import shutil as _shutil
+            _shutil.rmtree(from_dir)
+            touched.add(from_rel)
+
+            return sorted(touched)
+
+        sha, pushed = await self._locked_commit(
+            _mutate, f"kb: merge {from_rel} -> {into_rel}"
+        )
+        self._log_mutation("kb_merge_project", [from_rel, into_rel], sha, pushed)
+        self._schedule_index(upserts=[into_rel])
+        return {
+            "from": from_rel, "into": into_rel,
+            "concepts_moved": state["concepts"],
+            "log_entries_merged": state["log_entries"],
+            "messages_moved": state["messages"],
+            "links_rewritten": state["links"],
+            "sha": sha, "pushed": pushed,
+        }
 
     def _relink_after_move(self, old_rel: str, new_rel: str) -> list[str]:
         """Rewrite every relative markdown link so it still points at the same concept.
@@ -4188,14 +4401,25 @@ class KBStore:
 
     async def ensure_project(self, project: str, description: str) -> dict[str, Any]:
         """Create a project's scaffold (context.md) if it doesn't exist yet. Idempotent —
-        an existing project is returned untouched. Returns {project, created}."""
+        an existing project is returned untouched. Returns {project, created, folder}.
+
+        SEARCHES THE WHOLE TREE before creating, via `_find_project_dir` — the same
+        resolver `kb_read`/`kb_load` already use. This used to check only the literal
+        top-level path, so an id that existed inside a folder (e.g.
+        `projects/vibechk-suite/admin-entity-graph`) was invisible to it: a second
+        session naming that same id got a brand-new top-level duplicate instead of the
+        real project. Every id-based tool then preferred the new duplicate (top-level
+        wins when both exist), silently orphaning the real one for the rest of the
+        session. Incident: 2026-09-16, `admin-entity-graph`."""
         pid = (project or "").strip().lower()
         if not _PROJECT_ID_RE.fullmatch(pid):
             raise KBError(
                 f"Invalid project id {project!r} — use lowercase letters, digits and hyphens."
             )
-        if (self.root / "projects" / pid).is_dir():
-            return {"project": pid, "created": False}
+        found = self._find_project_dir(pid)
+        if found is not None:
+            folder = found.split("/")[1] if found.count("/") == 2 else ""
+            return {"project": pid, "created": False, "folder": folder}
         scaffold = (
             f"---\ntype: project\ntitle: {_title_case(pid)}\n"
             f"description: {description or pid}\nstatus: active\n---\n\n"
@@ -4206,7 +4430,7 @@ class KBStore:
             "# Next Actions\n\n- [ ] Decide what to do first\n"
         )
         await self.kb_write(f"projects/{pid}/context.md", scaffold, f"feat: start {pid}")
-        return {"project": pid, "created": True}
+        return {"project": pid, "created": True, "folder": ""}
 
     async def kb_public(self) -> dict[str, Any]:
         """Audit: every concept currently visible beyond you, with its effective visibility.

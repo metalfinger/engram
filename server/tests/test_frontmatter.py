@@ -257,3 +257,44 @@ def test_read_meta_invalid_yaml(tmp_path):
     p = tmp_path / "bad.md"
     p.write_text("---\ntype: [unclosed\n---\nbody\n", encoding="utf-8", newline="\n")
     assert read_meta(p) == {}
+
+
+def test_an_unquoted_colon_in_a_value_gets_a_targeted_hint():
+    """The 2026-09-16 incident, verbatim: `description: Editing a form's parts
+    from the admin console: swap the alt...` fails with PyYAML's generic
+    "mapping values are not allowed here" — accurate but gives no clue that
+    punctuation inside a VALUE, not a structural problem, is the cause."""
+    text = (
+        "---\ntype: note\n"
+        "description: Editing a form's parts from the admin console: swap the alt\n"
+        "---\n\nbody\n"
+    )
+    with pytest.raises(FrontmatterError) as exc_info:
+        split(text)
+    msg = str(exc_info.value)
+    assert "mapping values are not allowed here" in msg
+    assert "unquoted ':'" in msg
+    assert "quotes" in msg
+
+
+def test_quoting_the_value_actually_fixes_it():
+    """The hint's own suggested fix must genuinely work — not just sound
+    plausible."""
+    text = (
+        "---\ntype: note\n"
+        'description: "Editing a form'"'"'s parts from the admin console: swap the alt"\n'
+        "---\n\nbody\n"
+    )
+    doc = split(text)
+    assert doc is not None
+    assert "swap the alt" in doc.meta["description"]
+
+
+def test_an_unrelated_yaml_error_gets_no_false_hint():
+    """The hint is TARGETED — an unrelated YAML mistake (an unclosed flow
+    sequence) must not get a colon-quoting suggestion that has nothing to do
+    with the actual problem."""
+    text = "---\ntype: [unclosed\n---\n\nbody\n"
+    with pytest.raises(FrontmatterError) as exc_info:
+        split(text)
+    assert "unquoted ':'" not in str(exc_info.value)

@@ -162,6 +162,7 @@ def _scan(
         limits=limits, cap=cap, projects=_project_activity(root),
         live_window_days=live_days,
     )
+    duplicate_projects = _duplicate_project_ids(root)
 
     return {
         "total_files": len(concept_files),
@@ -171,7 +172,60 @@ def _scan(
         "orphans": sorted(orphans),
         "dead": sorted(dead),
         "stale": stale,
+        "duplicate_projects": duplicate_projects,
     }
+
+
+def _duplicate_project_ids(root: Path) -> list[dict[str, Any]]:
+    """A project id that resolves to MORE THAN ONE real directory.
+
+    THE 2026-09-16 INCIDENT, so it never runs undetected again. `kb_projects` and
+    `_find_project_dir` both de-duplicate by id and silently PREFER one directory —
+    correct for ordinary resolution, wrong for auditing, because it means the
+    registry-facing tools can never see the split they are hiding. This walks the
+    filesystem directly instead: every directory holding a real `context.md`,
+    grouped by its basename (the id). Two or more real directories for one id is
+    exactly the state that let id-based and path-based tools silently disagree
+    about where a project lives — data-integrity, not knowledge hygiene, so it is
+    reported ahead of the gardening sections, not folded into them.
+
+    Excludes `metalfinger` (a fixed, non-project top-level tree, exempt from this
+    id space entirely) and anything under `.git`."""
+    by_id: dict[str, list[str]] = {}
+    projects_dir = root / "projects"
+    if not projects_dir.is_dir():
+        return []
+    for ctx in projects_dir.rglob("context.md"):
+        if ".git" in ctx.parts:
+            continue
+        pdir = ctx.parent
+        pid = pdir.name
+        if pid == "metalfinger":
+            continue
+        by_id.setdefault(pid, []).append(pdir.relative_to(root).as_posix())
+    return [
+        {"id": pid, "paths": sorted(paths)}
+        for pid, paths in sorted(by_id.items())
+        if len(paths) > 1
+    ]
+
+
+def _render_duplicate_projects(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "## Duplicate project ids (0)" + NL + NL + "None. ✓" + NL
+    lines = []
+    for d in items:
+        paths = ", ".join(f"`{p}`" for p in d["paths"])
+        lines.append(f"* **{d['id']}** — {len(d['paths'])} directories: {paths}")
+    head = f"## ⚠ Duplicate project ids ({len(items)})" + NL + NL
+    blurb = (
+        "Each of these ids resolves to MORE THAN ONE real project directory. "
+        "id-based tools (kb_load, kb_append_log, kb_attach_project) and "
+        "path-based tools (kb_read, kb_write) can silently disagree about which "
+        "one they mean — see the 2026-09-16 incident. Use `kb_merge_project` to "
+        "fold the duplicates into the one that should survive."
+    )
+    return head + blurb + NL + NL + NL.join(lines) + NL
 
 
 # ============================================================ consolidation
@@ -663,6 +717,11 @@ def _render_report(
         [
             f"Regenerated {timestamp}. Scanned {scan['total_files']} files.",
             "",
+            # DATA-INTEGRITY FIRST, ahead of everything else — a project split
+            # across two directories is worse than any content-quality finding
+            # below it, and burying it under frontmatter typos is how the
+            # 2026-09-16 incident would still go unnoticed in this very report.
+            _render_duplicate_projects(scan.get("duplicate_projects") or []),
             _section("Frontmatter violations", [_rel_link(p) for p in scan["frontmatter_violations"]]),
             _section("Index repairs applied", [_rel_link(p) for p in scan["index_repairs"]]),
             _section("Dangling links", dangling_lines),
