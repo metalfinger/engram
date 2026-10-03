@@ -845,7 +845,7 @@ async def kb_thread_post(
         # with several machines will actually use was the one that stayed silent.
         # Threshold is GONE, not "not parked right now", and one ping per person.
         gone = [o for o in out["floor"]["others"]
-                if not o["live"] and not o["listening"]]
+                if not o["live"] and not o["listening"] and not _is_throwaway_ghost(o)]
         for uid in dict.fromkeys(int(o["user_id"]) for o in gone):
             asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
             _push_notification(
@@ -1582,6 +1582,21 @@ def _require_user():
             f"{settings.public_url}/ and sign in, then try again."
         )
     return user
+
+
+def _is_throwaway_ghost(speaker: dict[str, Any]) -> bool:
+    """An anonymous one-shot connection: no name was ever set (its display name
+    fell back to its raw session key) and it never posted a turn. Real-world
+    cause, found 2026-10-03: a client that opens a fresh MCP connection per poll
+    without a stable `sender`/`speaker` mints one of these on EVERY call —
+    one parked thread accumulated 456 of them over a week, all empty-named,
+    each seen exactly once. Naming one in a 'turn is waiting for' notification
+    names nobody; it is noise, not a person who owes a reply. This is narrowly
+    scoped to notification content — it does not touch floor_state's `others`,
+    so turn-taking (holder_gone, do_next, alone, stalled) is unaffected. The
+    bigger question — garbage-collecting these rows at all, and finding
+    whatever still polls that thread — is the separate Tier 4 sweep, not this."""
+    return speaker.get("name") == speaker.get("speaker") and not speaker.get("last_spoke")
 
 
 def _format_asleep(names: list[str]) -> str:
@@ -3014,7 +3029,8 @@ async def kb_room_post(
     # reaches them when no session can. A quiet channel is the feature.
     #
     # One notification per PERSON: several sessions of one user are one tray.
-    gone = [o for o in floor["others"] if not o["live"] and not o["listening"]]
+    gone = [o for o in floor["others"]
+            if not o["live"] and not o["listening"] and not _is_throwaway_ghost(o)]
     for uid in dict.fromkeys(int(o["user_id"]) for o in gone):
         asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
         _push_notification(

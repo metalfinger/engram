@@ -224,6 +224,39 @@ async def test_a_turn_for_a_session_that_has_gone_reaches_the_human(mu, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_an_anonymous_one_shot_reader_is_not_named_as_asleep(mu, monkeypatch):
+    """2026-10-03: a client that opens a fresh connection per poll with no stable
+    `speaker` mints a brand-new, never-returning, never-named ghost on every call
+    — one real thread accumulated 456 of them in a week. A ghost like that owes
+    nobody a reply, so it must not be named in a 'turn is waiting for' notification
+    — but a real named stale speaker (mac-a) still must be."""
+    _login(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        app_module, "_push_notification",
+        lambda uid, kind, body, ref=None: sent.append((kind, body)),
+    )
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_open("pairing", "one real listener, one ghost")
+    _as_session(monkeypatch, "sess-b")
+    await app_module.kb_room_read("pairing", speaker="mac-a")
+    rid = mu.rooms.room_by_name("pairing").id
+    alice_id = mu.tenancy.user_by_handle("alice").id
+    mu.rooms.touch_speaker(rid, "ghost1", alice_id, name="")  # anonymous one-shot
+    with mu.rooms._lock:  # noqa: SLF001 — age both out of the live window
+        mu.rooms._conn.execute(
+            "UPDATE room_speakers SET last_seen = '2000-01-01T00:00:00Z' "
+            "WHERE room_id = ? AND (name = 'mac-a' OR speaker = 'ghost1')", (rid,),
+        )
+        mu.rooms._conn.commit()
+    _as_session(monkeypatch, "sess-a")
+    await app_module.kb_room_post("pairing", "are you there?", speaker="windows")
+    bodies = [b for k, b in sent if k == "room_turn"]
+    assert bodies and "mac-a" in bodies[0]
+    assert "ghost1" not in bodies[0]
+
+
+@pytest.mark.asyncio
 async def test_a_session_merely_between_polls_is_not_notified(mu, monkeypatch):
     """Two agents mid-conversation are between polls most of the time. Notifying on
     that produced 22 unread pings in one afternoon — five for a single turn — which
