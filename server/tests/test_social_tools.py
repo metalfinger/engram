@@ -59,6 +59,31 @@ async def test_contact_request_accept_then_dm_and_notify(mu, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_notifications_limit_and_kind_filter(mu, monkeypatch):
+    """The 2026-10-03 incident: a busy account's kb_notifications call came back
+    at 90k+ chars because nothing capped it. `limit` bounds the row count and
+    `kind` narrows to one kind — both needed once one kind (room_turn) can drown
+    out everything else."""
+    _login(monkeypatch, "alice@example.com")
+    r = await app_module.kb_add_contact("bob")
+    assert r["status"] == "pending"
+    # bob already has one contact_request notification; add distinguishable ones
+    bob_id = mu.tenancy.user_by_handle("bob").id
+    for i in range(5):
+        mu.social.create_notification(bob_id, "room_turn", f"turn {i}")
+
+    _login(monkeypatch, "bob@example.com")
+    all_notes = await app_module.kb_notifications(limit=3)
+    assert len(all_notes["unread"]) == 3, "limit must cap the rows returned"
+    assert all_notes["counts"]["notifications"] >= 6, "counts stay true regardless of limit"
+
+    only_requests = await app_module.kb_notifications(limit=50, kind="contact_request")
+    assert only_requests["unread"] and all(
+        n["kind"] == "contact_request" for n in only_requests["unread"]
+    ), "kind filter must exclude the room_turn backlog, not just the first page of it"
+
+
+@pytest.mark.asyncio
 async def test_dm_requires_contact(mu, monkeypatch):
     _login(monkeypatch, "alice@example.com")
     with pytest.raises(KBError, match="contact"):

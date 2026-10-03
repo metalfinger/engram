@@ -850,7 +850,7 @@ async def kb_thread_post(
             asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
             _push_notification(
                 uid, "room_turn",
-                f"Thread '{thread}' — a turn is waiting for {', '.join(asleep)}: "
+                f"Thread '{thread}' — a turn is waiting for {_format_asleep(asleep)}: "
                 f"{message[:120]}",
                 ref=thread,
             )
@@ -1584,6 +1584,17 @@ def _require_user():
     return user
 
 
+def _format_asleep(names: list[str]) -> str:
+    """Cap the names shown in a 'turn is waiting for' notification body. A room or
+    thread can accumulate many stale/ghost listeners (e.g. an orphaned shadow room
+    nobody ever left), and joining all of them made a single notification body
+    thousands of characters — 50 of those is what blew kb_notifications past 90k
+    chars on a real account. The names are a courtesy, not the payload."""
+    shown = names[:5]
+    rest = len(names) - len(shown)
+    return ", ".join(shown) + (f", and {rest} more" if rest > 0 else "")
+
+
 def _push_notification(user_id: int, kind: str, body: str, ref: str | None = None) -> None:
     """Persist a notification and fan it out (email/telegram) best-effort, off the
     caller's critical path. Fanout never raises; a failed push never fails the tool."""
@@ -1744,17 +1755,27 @@ async def kb_messages(with_handle: str = "", since: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
-async def kb_notifications(mark_read: bool = False) -> dict[str, Any]:
+async def kb_notifications(
+    mark_read: bool = False, limit: int = 20, kind: str = ""
+) -> dict[str, Any]:
     """List your unread Engram notifications (new DMs, contact requests, invite
-    acceptances). Pass mark_read=True to mark them all read after showing them.
-    Call at session start to surface what happened while you were away.
+    acceptances, room/thread turns waiting on you). Pass mark_read=True to mark them
+    all read after showing them. Call at session start to surface what happened
+    while you were away.
+
+    `limit` caps how many rows come back (default 20 — raise it to see further
+    back). `kind` narrows to one kind (e.g. 'room_turn', 'dm', 'room_question') when
+    a busy account's backlog in one kind is drowning out the others; `counts`
+    always reflects the true unread total regardless of these filters.
 
     Returns {unread: [{kind, body, at}...], counts: {dms, notifications}}.
     """
     me = _require_user()
     if me is None:
         return {"unread": [], "counts": {"dms": 0, "notifications": 0}, "note": "single-user mode"}
-    notes = registry.social.list_notifications(me.id, unread_only=True)
+    notes = registry.social.list_notifications(
+        me.id, unread_only=True, limit=limit, kind=kind or None
+    )
     counts = registry.social.unread_counts(me.id)
     if mark_read:
         registry.social.mark_notifications_read(me.id)
@@ -2998,7 +3019,7 @@ async def kb_room_post(
         asleep = [o["name"] for o in gone if int(o["user_id"]) == uid]
         _push_notification(
             uid, "room_turn",
-            f"Room '{r.name}' — a turn is waiting for {', '.join(asleep)}: "
+            f"Room '{r.name}' — a turn is waiting for {_format_asleep(asleep)}: "
             f"{message[:120]}",
             ref=r.name,
         )

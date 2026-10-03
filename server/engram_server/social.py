@@ -457,20 +457,23 @@ class SocialStore:
         return self._notification(row)  # type: ignore[return-value]
 
     def list_notifications(
-        self, user_id: int, unread_only: bool = False, limit: int = 50
+        self, user_id: int, unread_only: bool = False, limit: int = 50,
+        kind: str | None = None,
     ) -> list[Notification]:
+        clauses = ["user_id = ?"]
+        params: list[object] = [user_id]
+        if unread_only:
+            clauses.append("read = 0")
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        params.append(limit)
         with self._lock:
-            if unread_only:
-                rows = self._conn.execute(
-                    "SELECT * FROM notifications WHERE user_id = ? AND read = 0 "
-                    "ORDER BY id DESC LIMIT ?",
-                    (user_id, limit),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-                    (user_id, limit),
-                ).fetchall()
+            rows = self._conn.execute(
+                f"SELECT * FROM notifications WHERE {' AND '.join(clauses)} "
+                "ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
         return [self._notification(r) for r in rows]  # type: ignore[misc]
 
     def mark_notifications_read(self, user_id: int, ids: list[int] | None = None) -> int:

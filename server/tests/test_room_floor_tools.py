@@ -180,6 +180,21 @@ async def test_kb_rooms_returns_immediately_when_there_is_unread(mu, monkeypatch
     assert listing["rooms"][0]["unread"] >= 1
 
 
+def test_format_asleep_caps_a_long_name_list():
+    """2026-10-03 incident: one room/thread had ~90 stale listeners, and every
+    queued notification joined ALL of their names — 50 of those rows alone made
+    kb_notifications come back at 90k+ chars. The names are a courtesy, not the
+    payload, so the list must stay short regardless of how many are asleep."""
+    many = [f"sess-{i}" for i in range(90)]
+    out = app_module._format_asleep(many)
+    assert len(out) < 120
+    assert "and 85 more" in out
+
+
+def test_format_asleep_leaves_a_short_list_alone():
+    assert app_module._format_asleep(["mac", "windows"]) == "mac, windows"
+
+
 @pytest.mark.asyncio
 async def test_a_turn_for_a_session_that_has_gone_reaches_the_human(mu, monkeypatch):
     """Parked → instant off the bus. GONE → unreachable by any wait, so the only
