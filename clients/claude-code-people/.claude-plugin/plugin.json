@@ -1,0 +1,21 @@
+{
+  "name": "engram-people",
+  "version": "0.1.0",
+  "description": "People pane: check in, see who in your space works on what, where you overlap, and message them, all through your Engram connector.",
+  "author": { "name": "Hiren Kangad" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "server": {
+      "type": "string",
+      "title": "Engram MCP server",
+      "description": "The MCP server name as /mcp lists it. 'claude.ai engram' for the claude.ai connector; 'engram' for a local connector signed in as another account.",
+      "default": "claude.ai engram"
+    },
+    "space": {
+      "type": "string",
+      "title": "Space",
+      "description": "The space your card joins. Everyone whose card names the same space appears in your pane.",
+      "default": "vibechk"
+    }
+  }
+}
