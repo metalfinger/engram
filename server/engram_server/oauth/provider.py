@@ -45,8 +45,10 @@ class ProxyOAuthProvider:
         allowed_logins: frozenset[str] = frozenset(),
         allow_subject: Callable[[str], bool] | None = None,
         token_factory: Callable[..., str] = secrets.token_urlsafe,
+        api_key_subject: Callable[[str], str | None] | None = None,
     ):
         self.store = store
+        self._api_key_subject = api_key_subject
         self.idp = idp
         self.public_url = public_url.rstrip("/")
         self.callback_path = callback_path
@@ -192,11 +194,25 @@ class ProxyOAuthProvider:
     async def load_access_token(self, token: str) -> AccessToken | None:
         at = self.store.get_access(token)
         if at is None:
-            return None
+            return self._api_key_access(token)
         if at.expires_at is not None and at.expires_at < int(time.time()):
             self.store.del_access(token)
             return None
         return at
+
+    def _api_key_access(self, token: str) -> AccessToken | None:
+        """Dashboard-minted API keys, for apps that take a bearer token but can't run
+        the OAuth flow (or can't refresh an hour-long access token). The allow
+        predicate is re-applied on every request, the same check a refresh gets, so
+        a suspended account fails closed even while its keys are still live."""
+        if self._api_key_subject is None:
+            return None
+        subject = self._api_key_subject(token)
+        if subject is None or not self._allow_subject(subject):
+            return None
+        return AccessToken(
+            token=token, client_id="api-key", scopes=["mcp"], expires_at=None, subject=subject
+        )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         self.store.del_access(token.token)

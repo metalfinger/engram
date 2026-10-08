@@ -202,6 +202,13 @@ def _allow_subject(subject: str) -> bool:
     return user is not None and user.status == "active"
 
 
+def _api_key_subject(token: str) -> str | None:
+    # Keys are minted from the dashboard, which only exists in multiuser.
+    if not settings.multiuser:
+        return None
+    return registry.tenancy.subject_for_api_key(token)
+
+
 if _AUTH_ENABLED:
     _oauth_store = InMemoryOAuthStore(path=settings.oauth_store_path or None)
     _idp = get_idp(settings.oauth_provider, settings)
@@ -211,6 +218,7 @@ if _AUTH_ENABLED:
         public_url=settings.public_url,
         callback_path=settings.oauth_callback_path,
         allow_subject=_allow_subject,
+        api_key_subject=_api_key_subject,
     )
     _auth_kwargs = {
         "auth_server_provider": _provider,

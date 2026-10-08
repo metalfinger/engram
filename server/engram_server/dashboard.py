@@ -1840,7 +1840,8 @@ class Dashboard:
         )
         # Account menu: person-scoped destinations live behind the avatar, not in
         # the nav. Pure CSS (details/summary) — no JS to break.
-        menu_links = "<a href='/dashboard'>Profile &amp; account</a><a href='/dashboard/setup'>Setup</a>"
+        menu_links = ("<a href='/dashboard'>Profile &amp; account</a><a href='/dashboard/setup'>Setup</a>"
+                      "<a href='/dashboard/keys'>API keys</a>")
         if is_owner:
             menu_links += "<a href='/dashboard/ops'>Ops</a>"
         account = (
@@ -2732,6 +2733,10 @@ class Dashboard:
             "<div class=card><h2>ChatGPT</h2>"
             f"<p>Settings → Connectors → add <span class=mono>{esc(url)}</span> "
             "(needs a plan with custom MCP connectors).</p></div>"
+            "<div class=card><h2>Other apps (API key)</h2>"
+            "<p>An app that asks for an API key or bearer token instead of letting you sign in: "
+            "<a href='/dashboard/keys'><b>create a key</b></a> and paste it there with "
+            f"<span class=mono>{esc(url)}</span>.</p></div>"
             # THE MACHINE ITSELF — distinct from connecting a client. Skills, hooks
             # and presence config live on the box, and until now they were installed
             # by walking someone through curl commands. Placed AFTER Claude Code
@@ -2800,6 +2805,94 @@ class Dashboard:
         )
         return HTMLResponse(await self._social_shell(
             session, "Setup", body, [("home", "/dashboard"), ("setup", "/dashboard/setup")]))
+
+    # -- API keys (for apps that can't run the OAuth flow) --------------------
+
+    async def _render_keys(self, session: dict, *, new_key: str = "", new_name: str = "",
+                           notice: str = "", error: str = "") -> str:
+        from engram_server.explorer.html import esc
+
+        me = self._session_user(session)
+        keys = self.registry.tenancy.list_api_keys(me.id) if me else []
+        url = f"{self.settings.public_url}/mcp"
+        banner = ""
+        if error:
+            banner = f"<p class=error>{esc(error)}</p>"
+        elif notice:
+            banner = f"<p class=meta>{esc(notice)}</p>"
+        reveal = ""
+        if new_key:
+            reveal = (
+                f"<div class=card><h2>Your new key: {esc(new_name)}</h2>"
+                "<p><b>Copy it now — it won't be shown again.</b> Engram keeps only a hash.</p>"
+                f"<div class=codebox style='user-select:all;word-break:break-all'>{esc(new_key)}</div>"
+                f"<p class=meta>In the app, set the MCP server URL to <span class=mono>{esc(url)}</span> "
+                "and paste this as the API key / bearer token.</p></div>"
+            )
+        rows = "".join(
+            f"<li style='margin:.4rem 0'><b>{esc(k.name)}</b> "
+            f"<span class=mono>{esc(k.prefix)}…</span> · created {esc(k.created[:10])} · "
+            + (f"last used {esc(k.last_used[:16].replace('T', ' '))}" if k.last_used else "never used")
+            + f" <form style='display:inline' method=post action='/dashboard/keys/revoke'>"
+            f"<input type=hidden name=id value='{k.id}'>"
+            "<button type=submit>revoke</button></form></li>"
+            for k in keys
+        ) or "<li>No keys yet.</li>"
+        body = (
+            "<div class='page-head'><div><p class='eyebrow'>Connect</p><h1>API keys</h1></div></div>"
+            + banner + reveal +
+            "<div class=card><h2>Create a key</h2>"
+            "<p>For apps that connect to an MCP server with an API key or bearer token instead "
+            "of signing in. A key has <b>full access to your Engram</b> as "
+            f"<span class=mono>@{esc(me.handle if me else '?')}</span> until you revoke it.</p>"
+            "<form method=post action='/dashboard/keys/create'>"
+            "<p><input name=name placeholder='name, e.g. hark' maxlength=60 required> "
+            "<button type=submit>Create key</button></p></form></div>"
+            "<div class=card><h2>Your keys</h2><ul>" + rows + "</ul>"
+            "<p class=meta>Revoking takes effect on the app's next request.</p></div>"
+        )
+        return await self._social_shell(
+            session, "API keys", body, [("home", "/dashboard"), ("setup", "/dashboard/setup"),
+                                        ("keys", "/dashboard/keys")])
+
+    async def keys_view(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        return HTMLResponse(await self._render_keys(session))
+
+    async def create_key(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        if me is None:
+            return PlainTextResponse("No account.", status_code=403)
+        form = await request.form()
+        name = str(form.get("name", ""))
+        try:
+            key, raw = self.registry.tenancy.create_api_key(me.id, name)
+        except TenancyError as exc:
+            return HTMLResponse(await self._render_keys(session, error=str(exc)), status_code=400)
+        # The raw key is in this body: keep it out of the browser cache and history.
+        return HTMLResponse(
+            await self._render_keys(session, new_key=raw, new_name=key.name),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def revoke_key(self, request: "Request") -> "Response":
+        session = self._session(request)
+        if session is None:
+            return RedirectResponse("/dashboard/login", status_code=302)
+        me = self._session_user(session)
+        if me is None:
+            return PlainTextResponse("No account.", status_code=403)
+        form = await request.form()
+        try:
+            self.registry.tenancy.revoke_api_key(me.id, int(str(form.get("id", "0")) or 0))
+        except (TenancyError, ValueError) as exc:
+            return HTMLResponse(await self._render_keys(session, error=str(exc)), status_code=400)
+        return HTMLResponse(await self._render_keys(session, notice="Key revoked."))
 
     # -- ops (owner-only) ------------------------------------------------------
 
@@ -2957,5 +3050,8 @@ def register_dashboard(mcp, settings: "Settings", registry: "StoreRegistry", idp
     mcp.custom_route("/dashboard/office", ["GET"])(dash.office_view)
     mcp.custom_route("/dashboard/artifacts", ["GET"])(dash.artifacts_view)
     mcp.custom_route("/dashboard/setup", ["GET"])(dash.setup_view)
+    mcp.custom_route("/dashboard/keys", ["GET"])(dash.keys_view)
+    mcp.custom_route("/dashboard/keys/create", ["POST"])(csrf(dash.create_key))
+    mcp.custom_route("/dashboard/keys/revoke", ["POST"])(csrf(dash.revoke_key))
     mcp.custom_route("/dashboard/ops", ["GET"])(dash.ops_view)
     return dash

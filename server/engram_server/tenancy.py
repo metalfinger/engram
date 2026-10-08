@@ -19,6 +19,7 @@ process-wide lock, safe to call from async code without a threadpool.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import re
 import secrets
 import sqlite3
@@ -150,7 +151,42 @@ CREATE TABLE IF NOT EXISTS invites (
     revoked INTEGER NOT NULL DEFAULT 0,
     bind_subject TEXT
 );
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL,
+    created TEXT NOT NULL,
+    last_used TEXT,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
 """
+
+API_KEY_PREFIX = "egk_"
+_MAX_LIVE_KEYS = 20
+# Bumping last_used on every request would put a write on every MCP call.
+_LAST_USED_GRANULARITY = dt.timedelta(minutes=5)
+
+
+def _hash_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ApiKey:
+    """A long-lived key for apps that take a bearer token but can't do OAuth.
+
+    Acts as the owning account with full access. Only the SHA-256 is stored; the raw
+    key exists once, in the response that minted it."""
+
+    id: int
+    user_id: int
+    name: str
+    prefix: str
+    created: str
+    last_used: str | None
+    revoked: bool
 
 
 class TenancyStore:
@@ -425,3 +461,86 @@ class TenancyStore:
             )
             self._conn.commit()
         return user
+
+    # -- API keys ------------------------------------------------------------
+
+    def _api_key(self, row: sqlite3.Row) -> ApiKey:
+        return ApiKey(
+            id=row["id"], user_id=row["user_id"], name=row["name"],
+            prefix=row["prefix"], created=row["created"],
+            last_used=row["last_used"], revoked=bool(row["revoked"]),
+        )
+
+    def create_api_key(self, user_id: int, name: str) -> tuple[ApiKey, str]:
+        """Mint a key for `user_id`. Returns (record, raw_key) — the raw key is not
+        recoverable afterwards, so the caller must show it exactly once."""
+        label = " ".join(name.split())[:60]
+        if not label:
+            raise TenancyError("Give the key a name, e.g. the app it's for.")
+        raw = API_KEY_PREFIX + secrets.token_urlsafe(32)
+        with self._lock:
+            live = self._conn.execute(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0",
+                (user_id,),
+            ).fetchone()[0]
+            if live >= _MAX_LIVE_KEYS:
+                raise TenancyError(
+                    f"You already have {live} keys — revoke ones you no longer use first."
+                )
+            cur = self._conn.execute(
+                "INSERT INTO api_keys (user_id, name, key_hash, prefix, created) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, label, _hash_key(raw), raw[:12], _now()),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM api_keys WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+            self._conn.commit()
+        return self._api_key(row), raw
+
+    def list_api_keys(self, user_id: int) -> list[ApiKey]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM api_keys WHERE user_id = ? AND revoked = 0 ORDER BY id DESC",
+                (user_id,),
+            ).fetchall()
+        return [self._api_key(r) for r in rows]
+
+    def revoke_api_key(self, user_id: int, key_id: int) -> None:
+        """Scoped to `user_id`, so nobody can revoke (or probe for) another account's key."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE api_keys SET revoked = 1 WHERE id = ? AND user_id = ? AND revoked = 0",
+                (key_id, user_id),
+            )
+            self._conn.commit()
+        if cur.rowcount == 0:
+            raise TenancyError("No such key (already revoked?).")
+
+    def subject_for_api_key(self, raw: str) -> str | None:
+        """The OAuth subject a live key acts as, or None. Account status is NOT
+        checked here — the auth layer re-applies its allow predicate, so a suspended
+        account's keys stop working without anyone having to revoke them."""
+        if not raw.startswith(API_KEY_PREFIX):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT k.id, k.last_used, u.idp_subject FROM api_keys k "
+                "JOIN users u ON u.id = k.user_id "
+                "WHERE k.key_hash = ? AND k.revoked = 0",
+                (_hash_key(raw),),
+            ).fetchone()
+            if row is None:
+                return None
+            now = dt.datetime.now(dt.timezone.utc)
+            stale = row["last_used"] is None or (
+                now - dt.datetime.strptime(row["last_used"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=dt.timezone.utc
+                )
+            ) >= _LAST_USED_GRANULARITY
+            if stale:
+                self._conn.execute(
+                    "UPDATE api_keys SET last_used = ? WHERE id = ?", (_now(), row["id"])
+                )
+                self._conn.commit()
+        return str(row["idp_subject"])
