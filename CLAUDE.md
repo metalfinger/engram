@@ -233,6 +233,15 @@ CONCLUSION.** `kb_doctor` checks plumbing, reconcile checks structure, the tests
 server. Self-critique provably needs an external signal — and Engram owns unusual ones
 (git history, test results, commit-linked decisions).
 
+## API keys (shipped 2026-10-08)
+For MCP clients that take a fixed bearer token and can't run OAuth (hark first). Minted
+at `/dashboard/keys`, `egk_`-prefixed, SHA-256 only in `engram.db` (`api_keys`), shown
+once, full access as the owner until revoked; `ProxyOAuthProvider._api_key_access`
+re-checks the allow predicate per request (suspended = fails closed); the secret scanner
+refuses `egk_` keys. Don't mint keys from a chat tool — the raw key would land in a
+transcript. Decision: `projects/personal/engram/decisions/2026-10-api-keys.md`; runbook:
+`library/runbooks/connect-an-app-with-an-api-key.md`.
+
 ## What's next
 1. Wave 0 gates (Hiren): `ENGRAM_BACKUP_REMOTE` (hard gate), set `ENGRAM_DEFAULT_VISIBILITY=public`, seed ~15 decisions.
 2. Team onboarding (10 people at Alt Inc) — measure the §10 PRD numbers at two weeks.
