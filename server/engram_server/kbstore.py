@@ -271,6 +271,7 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("OpenAI API key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
     ("Engram API key", re.compile(r"egk_[A-Za-z0-9_-]{20,}")),
+    ("Money API key", re.compile(r"mnk_[A-Za-z0-9_-]{20,}")),
     ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("bearer token", re.compile(r"Bearer [A-Za-z0-9._-]{20,}")),
     ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),

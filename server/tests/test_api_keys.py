@@ -165,6 +165,16 @@ def test_the_secret_scanner_catches_a_pasted_key(tenancy):
     assert any(kind == "Engram API key" for kind, _ in _scan_secrets(f"my key is {raw}"))
 
 
+def test_the_secret_scanner_catches_a_money_key():
+    # Money MCP mints mnk_ keys the same way (secrets.token_urlsafe(32)); one
+    # pasted into the brain would be committed to git with full ledger access.
+    import secrets
+
+    raw = "mnk_" + secrets.token_urlsafe(32)
+    assert any(kind == "Money API key" for kind, _ in _scan_secrets(f"money key: {raw}"))
+    assert _scan_secrets("the mnk_ prefix names Money keys") == [], "the bare prefix is not a key"
+
+
 # -- dashboard ---------------------------------------------------------------
 
 
