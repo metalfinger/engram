@@ -2707,10 +2707,29 @@ class KBStore:
                     paths.append(p)
         return paths
 
+    # ------------------------------------------------------------------ handoff cards
+    #
+    # A handoff is a CARD: direction, not knowledge. Durable things (decisions,
+    # findings) are written as concepts first and the card points at them, so the
+    # next session pulls what it needs instead of inheriting a pasted summary.
+    # One live card per (project, stream): a new card supersedes the old one in the
+    # same commit, which is what stops handoffs going stale or stacking. Measured
+    # reason (10 Oct 2026): a real handoff's "next steps" kept recommending a check
+    # its own correction section had already shown to be wrong.
+
+    # ~1,200 tokens at 4 chars/token. A card over this is carrying knowledge that
+    # belongs in a concept.
+    _CARD_MAX_CHARS = 4800
+    _CARD_TEXT_FIELDS = ("goal", "outcome", "now", "first_action", "verify")
+    _CARD_LIST_FIELDS = ("decisions", "dead_ends", "open_questions")
+    _CARD_ANCHOR_FIELDS = ("sha", "cwd", "session_id", "transcript")
+    _HANDOFF_LIVE = ("open", "taken")
+    _OUTCOMES = ("", "done", "partial", "blocked")
+
     async def kb_handoff(
         self,
         from_session: str,
-        summary: str,
+        summary: str = "",
         repo: str = "",
         branch: str = "",
         state: str = "",
@@ -2719,25 +2738,105 @@ class KBStore:
         to: str = "any",
         room: str = "",
         allow_secrets: bool = False,
+        *,
+        project: str = "",
+        stream: str = "",
+        goal: str = "",
+        outcome: str = "",
+        now: str = "",
+        first_action: str = "",
+        verify: str = "",
+        sha: str = "",
+        cwd: str = "",
+        session_id: str = "",
+        transcript: str = "",
+        decisions: list[str] | None = None,
+        dead_ends: list[str] | None = None,
+        open_questions: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Write a structured, append-only handoff record (repo/branch/state/next-steps/refs)
-        so another session resumes exactly where this one left off. When `room` is given, ALSO
-        posts a short pointer into that thread so a watching session is notified. summary and
-        next_steps are scanned for secrets before the record is committed (handoffs are private
-        but git-permanent); pass allow_secrets=True to override. Returns {path, sha, pushed,
-        notified, room_error?}."""
+        """Write a structured, append-only handoff record so another session resumes exactly
+        where this one left off. Classic fields (summary/state/next_steps/refs) still work; the
+        card fields (project/stream/goal/now/first_action/verify/anchor/decisions/dead_ends/
+        open_questions) make it a CARD: capped in size, one live card per project+stream (the
+        previous one is superseded in the same commit). When `room` is given, ALSO posts a short
+        pointer into that thread. Every text field is scanned for secrets before the record is
+        committed (handoffs are private but git-permanent); pass allow_secrets=True to override.
+        Returns {path, sha, pushed, notified, card, superseded, warnings, room_error?}."""
         frm = (from_session or "").strip()
         if not frm or not _has_alnum(frm):
             raise KBError(
                 "A handoff needs from_session — the name of the session handing off, with at "
                 "least one letter or digit (e.g. 'session-a')."
             )
-        if not summary or not summary.strip():
-            raise KBError("Empty handoff summary — say what work is being handed off.")
+        goal_clean = (goal or "").strip()
+        summary_clean = (summary or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not summary_clean:
+            summary_clean = goal_clean
+        if not summary_clean:
+            raise KBError(
+                "Empty handoff summary — say what work is being handed off (or pass `goal` "
+                "for a card)."
+            )
+        outcome_clean = (outcome or "").strip().lower()
+        if outcome_clean not in self._OUTCOMES:
+            raise KBError(
+                f"outcome must be one of done / partial / blocked (got {outcome!r})."
+            )
+
+        def _clean_list(items: list[str] | None) -> list[str]:
+            return [str(i).strip() for i in (items or []) if str(i).strip()]
+
+        refs_list = _clean_list(refs)
+        lists = {
+            "decisions": _clean_list(decisions),
+            "dead_ends": _clean_list(dead_ends),
+            "open_questions": _clean_list(open_questions),
+        }
+        texts = {
+            "goal": goal_clean,
+            "outcome": outcome_clean,
+            "now": (now or "").strip(),
+            "first_action": (first_action or "").strip(),
+            "verify": (verify or "").strip(),
+        }
+        anchor = {
+            "sha": (sha or "").strip(),
+            "cwd": (cwd or "").strip(),
+            "session_id": (session_id or "").strip(),
+            "transcript": (transcript or "").strip(),
+        }
+        project_clean = (project or "").strip().lower()
+        stream_clean = (stream or "").strip() or (branch or "").strip()
+        is_card = bool(
+            project_clean or (stream or "").strip()
+            or any(texts.values()) or any(lists.values())
+            or any(anchor.values())
+        )
+
         if not allow_secrets:
-            findings = _scan_secrets(summary) + _scan_secrets(next_steps)
+            scanned = [summary_clean, state, next_steps, *texts.values()]
+            for vals in lists.values():
+                scanned.extend(vals)
+            findings: list[tuple[str, int]] = []
+            for text in scanned:
+                findings.extend(_scan_secrets(text or ""))
             if findings:
                 raise KBError(_secret_refusal("handoff", findings, "allow_secrets=True"))
+
+        if is_card:
+            size = (
+                len(summary_clean) + len(state or "") + len(next_steps or "")
+                + sum(len(v) for v in texts.values())
+                + sum(len(x) for vals in lists.values() for x in vals)
+                + sum(len(r) for r in refs_list)
+            )
+            if size > self._CARD_MAX_CHARS:
+                raise KBError(
+                    f"Card too big (~{size // 4} tokens, cap ~{self._CARD_MAX_CHARS // 4}). A card "
+                    "is direction, not knowledge: write the detail as a concept (kb_write a "
+                    "decision or finding) and put its path in `decisions` or `refs`."
+                )
+
         room_id = (room or "").strip()
         if room_id and not _THREAD_ID_RE.fullmatch(room_id):
             # Validate up front so a bad room id can't leave a committed handoff whose
@@ -2746,17 +2845,27 @@ class KBStore:
                 f"Invalid room id {room_id!r} — rooms are kebab-case (lowercase letters, "
                 "digits, hyphens), e.g. 'deploy-handoff'. Call kb_threads to list open rooms."
             )
+
+        warnings: list[str] = []
+        missing = [
+            d for d in lists["decisions"]
+            if d.endswith(".md") and not (self.root / d).is_file()
+        ]
+        if missing:
+            warnings.append(
+                "decisions not found in the brain (write them first, then re-point): "
+                + ", ".join(missing)
+            )
+
         from_slug = _slug(frm, "anon")
-        refs_list = [str(r).strip() for r in (refs or []) if str(r).strip()]
         to_clean = (to or "any").strip() or "any"
-        summary_clean = summary.replace("\r\n", "\n").replace("\r", "\n").strip()
-        now = _utcnow()
-        created = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        result: dict[str, Any] = {}
+        stamp = _utcnow()
+        created = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+        result: dict[str, Any] = {"superseded": []}
 
         def _mutate() -> list[str]:
             hdir = self.root / "workspace" / "handoffs"
-            base = now.strftime("%Y%m%dT%H%M%S%f")
+            base = stamp.strftime("%Y%m%dT%H%M%S%f")
             name = f"{base}-{from_slug}.md"
             n = 2
             while (hdir / name).exists():
@@ -2780,14 +2889,46 @@ class KBStore:
                 "created": created,
                 "status": "open",
             }
+            paths: list[str] = []
+            if is_card:
+                meta["card"] = True
+                meta["project"] = project_clean
+                meta["stream"] = stream_clean
+                for k, v in texts.items():
+                    if v:
+                        meta[k] = v
+                for k, v in lists.items():
+                    if v:
+                        meta[k] = v
+                for k, v in anchor.items():
+                    if v:
+                        meta[k] = v
+                # One live card per stream: supersede the previous ones in THIS commit.
+                if project_clean and stream_clean:
+                    older = [
+                        h for h in self._handoffs_sync(None)
+                        if h["project"] == project_clean and h["stream"] == stream_clean
+                        and h["status"] in self._HANDOFF_LIVE
+                    ]
+                    if older:
+                        meta["supersedes"] = [h["path"] for h in older]
+                    for h in older:
+                        self._set_handoff_status_sync(
+                            h["path"], "superseded",
+                            {"superseded_by": rel, "valid_until": created},
+                        )
+                        paths.append(h["path"])
+                        result["superseded"].append(h["path"])
             _write_text(self.root / rel, serialize(Doc(meta=meta, body=self._render_handoff(meta))))
             result["rel"] = rel
-            paths = [rel]
+            paths.insert(0, rel)
             paths.extend(ensure_indexed(self.root, rel, title, desc))
             return paths
 
-        sha, pushed = await self._locked_commit(_mutate, f"workspace: handoff from {from_slug}")
-        self._log_mutation("kb_handoff", [result["rel"]], sha, pushed)
+        sha_commit, pushed = await self._locked_commit(
+            _mutate, f"workspace: handoff from {from_slug}"
+        )
+        self._log_mutation("kb_handoff", [result["rel"]], sha_commit, pushed)
         self._schedule_index(upserts=[result["rel"]])
 
         notified = False
@@ -2796,11 +2937,12 @@ class KBStore:
             # Notify a watching session. The handoff already committed; a room-post failure
             # (e.g. the room is closed) must not fail the handoff — log, report, move on.
             pointer = f"Handoff from {frm}: {summary_clean}"
-            if next_steps.strip():
-                pointer += f"\n\n**Next:** {next_steps.strip()}"
+            nxt = texts["first_action"] or next_steps.strip()
+            if nxt:
+                pointer += f"\n\n**Next:** {nxt}"
             try:
-                # allow_secrets carries through: summary/next_steps already passed the scan
-                # above, so the pointer built from them won't be spuriously refused.
+                # allow_secrets carries through: every field already passed the scan above,
+                # so the pointer built from them won't be spuriously refused.
                 await self.kb_thread_post(
                     room_id, frm, pointer, refs=[result["rel"], *refs_list], allow_secrets=True
                 )
@@ -2809,15 +2951,206 @@ class KBStore:
                 room_error = str(exc)
                 log.warning("kb_handoff: could not post pointer into room %r", room_id, exc_info=True)
 
-        out: dict[str, Any] = {"path": result["rel"], "sha": sha, "pushed": pushed, "notified": notified}
+        out: dict[str, Any] = {
+            "path": result["rel"],
+            "sha": sha_commit,
+            "pushed": pushed,
+            "notified": notified,
+            "card": is_card,
+            "superseded": result["superseded"],
+            "warnings": warnings,
+        }
         if room_error:
             out["room_error"] = room_error
         return out
 
+    def _set_handoff_status_sync(
+        self, rel: str, status: str, extra: dict[str, Any] | None = None
+    ) -> None:
+        """Rewrite one handoff's status (and any extra fields) and re-render its body. The
+        body is derived from the frontmatter, so it never disagrees with the status."""
+        path = self.root / rel
+        doc = split(_read_text_retry(path))
+        meta = normalize_meta(doc.meta) if doc is not None else read_meta(path)
+        meta["status"] = status
+        for k, v in (extra or {}).items():
+            meta[k] = v
+        _write_text(path, serialize(Doc(meta=meta, body=self._render_handoff(meta))))
+
+    def _handoff_rel(self, path: str) -> str:
+        """Validate a caller-supplied handoff path: it must be a handoff record."""
+        rel = (path or "").strip().lstrip("/")
+        if not rel.startswith("workspace/handoffs/") or not rel.endswith(".md") or ".." in rel:
+            raise KBError(
+                f"{path!r} is not a handoff path — handoffs live under workspace/handoffs/ "
+                "(kb_ready or kb_realign's `card.path` gives you the exact one)."
+            )
+        f = self.root / rel
+        if not f.is_file() or str(read_meta(f).get("type") or "") != "handoff":
+            raise KBError(f"No handoff at {rel} — kb_ready lists the live ones.")
+        return rel
+
+    async def kb_take_handoff(
+        self, path: str, session: str, done: bool = False
+    ) -> dict[str, Any]:
+        """Claim a handoff card (status taken) or close it (done=True). Idempotent for the
+        same session; a different taker is allowed (advisory) but warned with the first
+        taker's name. A superseded card is refused, pointing at the card that replaced it."""
+        who = (session or "").strip()
+        if not who or not _has_alnum(who):
+            raise KBError("kb_take_handoff needs `session` — your session's name.")
+        rel = self._handoff_rel(path)
+        meta = read_meta(self.root / rel)
+        status = str(meta.get("status") or "open")
+        if status == "superseded":
+            raise KBError(
+                f"That card was superseded by {meta.get('superseded_by') or 'a newer card'} — "
+                "take the newer one instead."
+            )
+        warnings: list[str] = []
+        prev = str(meta.get("taken_by") or "")
+        target = "done" if done else "taken"
+        if status == target and (done or prev == who):
+            return {"path": rel, "status": status, "changed": False, "warnings": warnings}
+        if status == "done" and not done:
+            warnings.append("This card was already marked done; re-taking it reopens the stream.")
+        if not done and status == "taken" and prev and prev != who:
+            warnings.append(
+                f"Already taken by {prev} at {meta.get('taken_at') or '?'} — check that session "
+                "isn't still on it before you both work the same stream."
+            )
+        stamp = _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        extra: dict[str, Any] = (
+            {"done_by": who, "done_at": stamp} if done else {"taken_by": who, "taken_at": stamp}
+        )
+
+        def _mutate() -> list[str]:
+            self._set_handoff_status_sync(rel, target, extra)
+            return [rel]
+
+        sha_commit, pushed = await self._locked_commit(
+            _mutate, f"workspace: handoff {target} by {_slug(who, 'anon')}"
+        )
+        self._log_mutation("kb_take_handoff", [rel], sha_commit, pushed)
+        return {
+            "path": rel, "status": target, "changed": True, "sha": sha_commit,
+            "pushed": pushed, "warnings": warnings,
+        }
+
+    async def kb_close_stream(self, project: str, stream: str) -> list[str]:
+        """Mark the live card(s) of one project+stream done (kb_finish_session's close-out).
+        Returns the paths changed; nothing to do is not an error."""
+        pid = (project or "").strip().lower()
+        st = (stream or "").strip()
+        if not pid or not st:
+            return []
+        live = [
+            h["path"] for h in await to_thread.run_sync(lambda: self._handoffs_sync(None))
+            if h["project"] == pid and h["stream"] == st and h["status"] in self._HANDOFF_LIVE
+        ]
+        if not live:
+            return []
+        stamp = _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _mutate() -> list[str]:
+            for rel in live:
+                self._set_handoff_status_sync(rel, "done", {"done_by": "finish", "done_at": stamp})
+            return list(live)
+
+        sha_commit, pushed = await self._locked_commit(_mutate, f"workspace: close stream {st}")
+        self._log_mutation("kb_close_stream", live, sha_commit, pushed)
+        return live
+
+    @staticmethod
+    def _card_view(h: dict[str, Any]) -> dict[str, Any]:
+        """The compact card a session reads at start: direction only, no ref bodies."""
+        view: dict[str, Any] = {
+            "path": h["path"],
+            "project": h["project"],
+            "stream": h["stream"],
+            "from": h["from"],
+            "created": h["created"],
+            "status": h["status"],
+            "goal": h["goal"] or h["summary"],
+            "first_action": h["first_action"] or h["next_steps"],
+        }
+        for k in ("outcome", "now", "verify"):
+            if h.get(k):
+                view[k] = h[k]
+        for k in ("decisions", "dead_ends", "open_questions", "refs"):
+            if h.get(k):
+                view[k] = h[k]
+        anchor = {k: h[k] for k in ("repo", "branch", "sha", "cwd", "session_id", "transcript")
+                  if h.get(k)}
+        if anchor:
+            view["anchor"] = anchor
+        if h.get("taken_by"):
+            view["taken_by"] = h["taken_by"]
+        return view
+
+    async def kb_ready(self, project: str = "", limit: int = 20) -> dict[str, Any]:
+        """Open (untaken) handoff cards, newest first, optionally for one project — the
+        'what can a fresh session pick up' list. Read-only, no git refresh."""
+        pid = (project or "").strip().lower()
+        rows = await to_thread.run_sync(lambda: self._handoffs_sync(None))
+        now_dt = _utcnow()
+        ready: list[dict[str, Any]] = []
+        stale = 0
+        for h in rows:
+            if pid and h["project"] != pid:
+                continue
+            if h["status"] == "stale":
+                stale += 1
+                continue
+            if h["status"] != "open":
+                continue
+            created = _parse_ts(h["created"])
+            age = round((now_dt - created).total_seconds() / 86400, 1) if created else None
+            ready.append({
+                "path": h["path"],
+                "project": h["project"],
+                "stream": h["stream"],
+                "goal": h["goal"] or h["summary"],
+                "first_action": h["first_action"] or (h["next_steps"].splitlines() or [""])[0],
+                "outcome": h["outcome"],
+                "from": h["from"],
+                "to": h["to"],
+                "created": h["created"],
+                "age_days": age,
+            })
+        cap = max(1, min(int(limit or 20), 100))
+        return {
+            "ready": ready[:cap],
+            "total": len(ready),
+            "stale": stale,
+            "instruction": (
+                "Take one with kb_take_handoff(path, session), then run its verify before "
+                "trusting it." if ready else "Nothing open."
+            ),
+        }
+
+    def _live_card_sync(self, project: str, branch: str = "") -> tuple[dict | None, list[dict]]:
+        """The card a session resolving to ``project`` should start from: the newest OPEN
+        card, preferring one whose stream matches ``branch``. Also returns the other open
+        cards (short form) so the session can see what else is waiting."""
+        cards = [
+            h for h in self._handoffs_sync(None)
+            if h["project"] == project and h["status"] == "open"
+        ]
+        if not cards:
+            return None, []
+        pick = next((h for h in cards if branch and h["stream"] == branch), cards[0])
+        others = [
+            {"path": h["path"], "stream": h["stream"], "goal": h["goal"] or h["summary"]}
+            for h in cards if h is not pick
+        ][:5]
+        return self._card_view(pick), others
+
     @staticmethod
     def _render_handoff(meta: dict[str, Any]) -> str:
-        """Human-readable handoff body (explorer renders it). Refs are code spans, not
-        markdown links, so the reconcile link sweep doesn't misread them from workspace/."""
+        """Human-readable handoff body (explorer renders it), in fixed sections. Refs are
+        code spans, not markdown links, so the reconcile link sweep doesn't misread them from
+        workspace/."""
         frm = str(meta.get("from") or "")
         lines = [f"# Handoff from {frm}", ""]
         lines.append(
@@ -2825,21 +3158,50 @@ class KBStore:
             f"**Status:** {meta.get('status') or 'open'}   "
             f"**Created:** {meta.get('created') or ''}"
         )
+        project = str(meta.get("project") or "")
+        stream = str(meta.get("stream") or "")
+        if project or stream:
+            lines.append(f"**Project:** {project or '—'}   **Stream:** {stream or '—'}")
         repo = str(meta.get("repo") or "")
         branch = str(meta.get("branch") or "")
         if repo or branch:
             lines.append(f"**Repo:** {repo or '—'}   **Branch:** {branch or '—'}")
-        lines += ["", "## Summary", str(meta.get("summary") or "").strip() or "—"]
-        state = str(meta.get("state") or "").strip()
-        if state:
-            lines += ["", "## State", state]
-        nxt = str(meta.get("next_steps") or "").strip()
-        if nxt:
-            lines += ["", "## Next steps", nxt]
-        refs = meta.get("refs")
-        if isinstance(refs, list) and refs:
-            lines += ["", "## Refs"]
-            lines += [f"- `{r}`" for r in refs]
+        for key, label in (("taken_by", "Taken by"), ("done_by", "Done by"),
+                           ("superseded_by", "Superseded by")):
+            if meta.get(key):
+                lines.append(f"**{label}:** `{meta[key]}`")
+
+        def _text(label: str, key: str) -> None:
+            val = str(meta.get(key) or "").strip()
+            if val:
+                lines.extend(["", f"## {label}", val])
+
+        def _list(label: str, key: str, code: bool = False) -> None:
+            vals = meta.get(key)
+            if isinstance(vals, list) and vals:
+                lines.extend(["", f"## {label}"])
+                lines.extend(f"- `{v}`" if code else f"- {v}" for v in vals)
+
+        if meta.get("card"):
+            _text("Goal", "goal")
+            _text("Outcome", "outcome")
+            _text("Now", "now")
+            _text("First action", "first_action")
+            _text("Verify", "verify")
+            _list("Decisions", "decisions", code=True)
+            _list("Dead ends", "dead_ends")
+            _list("Open questions", "open_questions")
+            if str(meta.get("summary") or "").strip() != str(meta.get("goal") or "").strip():
+                _text("Summary", "summary")
+        else:
+            lines += ["", "## Summary", str(meta.get("summary") or "").strip() or "—"]
+        _text("State", "state")
+        _text("Next steps", "next_steps")
+        _list("Refs", "refs", code=True)
+        anchor = [(k, meta.get(k)) for k in ("sha", "cwd", "session_id", "transcript") if meta.get(k)]
+        if anchor:
+            lines.extend(["", "## Anchor"])
+            lines.extend(f"- {k}: `{v}`" for k, v in anchor)
         return "\n".join(lines).rstrip("\n") + "\n"
 
     def _handoffs_sync(self, limit: int | None = 5) -> list[dict[str, Any]]:
@@ -2848,30 +3210,41 @@ class KBStore:
         out: list[dict[str, Any]] = []
         if not hdir.is_dir():
             return out
+
+        def _strs(val: Any) -> list[str]:
+            return [str(v) for v in val] if isinstance(val, list) else []
+
         for f in sorted(hdir.glob("*.md")):
             if f.name == "index.md":
                 continue
             meta = read_meta(f)
             if str(meta.get("type") or "") != "handoff":
                 continue
-            raw_refs = meta.get("refs")
-            refs = [str(r) for r in raw_refs] if isinstance(raw_refs, list) else []
-            out.append(
-                {
-                    "path": f.relative_to(self.root).as_posix(),
-                    "from": str(meta.get("from") or ""),
-                    "to": str(meta.get("to") or "any"),
-                    "summary": str(meta.get("summary") or ""),
-                    "repo": str(meta.get("repo") or ""),
-                    "branch": str(meta.get("branch") or ""),
-                    "state": str(meta.get("state") or ""),
-                    "next_steps": str(meta.get("next_steps") or ""),
-                    "refs": refs,
-                    "created": str(meta.get("created") or ""),
-                    "status": str(meta.get("status") or "open"),
-                }
-            )
-        out.sort(key=lambda h: str(h.get("created") or ""), reverse=True)
+            row: dict[str, Any] = {
+                "path": f.relative_to(self.root).as_posix(),
+                "from": str(meta.get("from") or ""),
+                "to": str(meta.get("to") or "any"),
+                "summary": str(meta.get("summary") or ""),
+                "repo": str(meta.get("repo") or ""),
+                "branch": str(meta.get("branch") or ""),
+                "state": str(meta.get("state") or ""),
+                "next_steps": str(meta.get("next_steps") or ""),
+                "refs": _strs(meta.get("refs")),
+                "created": str(meta.get("created") or ""),
+                "status": str(meta.get("status") or "open"),
+                "card": bool(meta.get("card")),
+                "project": str(meta.get("project") or "").lower(),
+                "stream": str(meta.get("stream") or ""),
+            }
+            for k in (*self._CARD_TEXT_FIELDS, *self._CARD_ANCHOR_FIELDS,
+                      "taken_by", "superseded_by"):
+                row[k] = str(meta.get(k) or "")
+            for k in self._CARD_LIST_FIELDS:
+                row[k] = _strs(meta.get(k))
+            out.append(row)
+        # `created` has one-second resolution; the filename's microsecond stamp breaks ties
+        # so "newest" is right even for two cards written in the same second.
+        out.sort(key=lambda h: (str(h.get("created") or ""), h["path"]), reverse=True)
         return out[:limit] if (limit is not None and limit >= 0) else out
 
     async def kb_concepts_since(self, since_iso: str, limit: int = 20) -> list[str]:
@@ -4192,7 +4565,8 @@ class KBStore:
         return lean
 
     async def kb_realign(
-        self, project: str = "", repo: str = "", cwd: str = "", pin: str = ""
+        self, project: str = "", repo: str = "", cwd: str = "", pin: str = "",
+        branch: str = "",
     ) -> dict[str, Any]:
         """Resolve → load → surface → pin, in one call. See the kb_realign tool."""
         await self._refresh()
@@ -4348,8 +4722,12 @@ class KBStore:
         log_entries = _parse_log_entries(_read_text_retry(log_path)) if log_path.is_file() else []
         unread = self._unread_messages(proot)
         has_map = (self.root / proot / "map.md").is_file()
+        # The handoff card, if one is waiting: direction for this session, read FIRST.
+        card, other_cards = await to_thread.run_sync(
+            lambda: self._live_card_sync(resolved, (branch or "").strip())
+        )
 
-        return {
+        result = {
             "resolved": True,
             "project": resolved,
             "resolved_by": how,
@@ -4402,6 +4780,19 @@ class KBStore:
                 "been doing against `sequence` and say plainly whether you drifted."
             ),
         }
+        if card is not None:
+            result["card"] = card
+            result["instruction"] = (
+                "0) A handoff CARD is waiting (`card`). Before trusting it: take it "
+                "(kb_take_handoff(card.path, <your session>)), run `card.verify` and compare "
+                "`card.anchor.sha` with HEAD — report any drift in one line. Pull decisions/refs "
+                "only when you need them; ask questions about the old session with a subagent "
+                "on `card.anchor.transcript`, never by loading it. Then do `card.first_action`. "
+                + result["instruction"]
+            )
+        if other_cards:
+            result["other_cards"] = other_cards
+        return result
 
     async def ensure_project(self, project: str, description: str) -> dict[str, Any]:
         """Create a project's scaffold (context.md) if it doesn't exist yet. Idempotent —

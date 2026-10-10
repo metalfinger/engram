@@ -38,6 +38,8 @@ EXPECTED_TOOLS = frozenset(
         "kb_presence",
         "kb_roster",
         "kb_handoff",
+        "kb_take_handoff",
+        "kb_ready",
         "kb_workspace",
         "kb_claim",
         "kb_release",

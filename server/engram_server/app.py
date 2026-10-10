@@ -1217,7 +1217,7 @@ async def kb_roster(active_within_min: int = 15) -> list[dict[str, Any]]:
 @mcp.tool()
 async def kb_handoff(
     from_session: str,
-    summary: str,
+    summary: str = "",
     repo: str = "",
     branch: str = "",
     state: str = "",
@@ -1226,26 +1226,79 @@ async def kb_handoff(
     to: str = "any",
     room: str = "",
     allow_secrets: bool = False,
+    project: str = "",
+    stream: str = "",
+    goal: str = "",
+    outcome: str = "",
+    now: str = "",
+    first_action: str = "",
+    verify: str = "",
+    sha: str = "",
+    cwd: str = "",
+    session_id: str = "",
+    transcript: str = "",
+    decisions: list[str] | None = None,
+    dead_ends: list[str] | None = None,
+    open_questions: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Hand your current work to another session (or leave it for whoever picks it up):
-    captures repo / branch / state / next-steps / refs so they resume exactly where you left
-    off. Use when the user says 'hand this off', 'another session will continue', or when
-    wrapping a session that has unfinished work. `from_session` is your session name;
-    `summary` is what's being handed off; `next_steps` is the to-do for the taker; `refs` is
-    a list of repo-relative concept/artifact paths they'll need; `to` names an intended taker
-    (default 'any'). Pass `room` (a kebab-case thread id) to ALSO drop a pointer into that
-    room so a watching session is notified immediately.
+    """Hand your current work to the next session as a CARD: direction, not knowledge.
+    Use when the user says 'hand this off', when context is getting large, or when wrapping
+    a session with unfinished work. The next session gets this card from kb_realign and
+    pulls everything else from the brain on demand.
 
-    summary and next_steps are scanned for likely secrets before the record commits —
-    handoffs are private but written to GIT HISTORY permanently — and refused if any are found
-    (pass allow_secrets=True to override a placeholder). `notified` reports whether the room
-    pointer posted; `room_error` carries the reason when it didn't.
+    LAND THE PLANE FIRST: write anything durable (a decision, a finding) as a concept with
+    kb_write, then put its path in `decisions`/`refs`. The card points; it does not paste.
 
-    Returns {path, sha, pushed, notified, room_error?}.
+    Card fields (all optional, use as many as apply):
+      project, stream (default: branch) — one LIVE card per project+stream: writing a new
+        one supersedes the previous in the same commit, so cards never go stale or stack.
+      goal (one line) · outcome (done|partial|blocked) · now (what is in progress)
+      first_action (the exact next step) · verify (a command/check proving the state)
+      sha, cwd, session_id, transcript (path to this session's .jsonl — lets the next
+        session ask a subagent about this one instead of loading it)
+      decisions (concept paths) · dead_ends (one line each: tried X, failed because Y)
+      open_questions · refs (2-5 paths or file:line)
+    A card is capped at ~1,200 tokens and refused above it. Classic calls (summary /
+    state / next_steps / refs only) still work. `to` names an intended taker (default
+    'any'); `room` also drops a pointer into that kebab-case thread.
+
+    Every text field is scanned for likely secrets before the record commits — handoffs are
+    private but written to GIT HISTORY permanently (allow_secrets=True overrides).
+
+    Returns {path, sha, pushed, notified, card, superseded, warnings, room_error?}.
     """
     return await (await current_store()).kb_handoff(
-        from_session, summary, repo, branch, state, next_steps, refs, to, room, allow_secrets
+        from_session, summary, repo, branch, state, next_steps, refs, to, room, allow_secrets,
+        project=project, stream=stream, goal=goal, outcome=outcome, now=now,
+        first_action=first_action, verify=verify, sha=sha, cwd=cwd, session_id=session_id,
+        transcript=transcript, decisions=decisions, dead_ends=dead_ends,
+        open_questions=open_questions,
     )
+
+
+@mcp.tool()
+async def kb_take_handoff(path: str, session: str, done: bool = False) -> dict[str, Any]:
+    """Take a handoff card before working from it (status -> taken), or close it when its
+    stream's work is finished (done=True). Call right after kb_realign hands you a `card`, or
+    after picking one from kb_ready. Idempotent for the same session. If another session
+    already took it you get a warning naming them — check they aren't still on it. A
+    superseded card is refused and points you at the card that replaced it.
+
+    Returns {path, status, changed, warnings}.
+    """
+    return await (await current_store()).kb_take_handoff(path, session, done)
+
+
+@mcp.tool()
+async def kb_ready(project: str = "", limit: int = 20) -> dict[str, Any]:
+    """What can a fresh session pick up? Lists OPEN (untaken) handoff cards, newest first,
+    optionally for one project: path, project, stream, goal, first_action, age. Use when the
+    user asks what's waiting, what to work on next, or to start a pane on the top card. Take
+    one with kb_take_handoff, then run its verify before trusting it.
+
+    Returns {ready: [...], total, stale, instruction}.
+    """
+    return await (await current_store()).kb_ready(project, limit)
 
 
 @mcp.tool()
@@ -1355,7 +1408,7 @@ async def kb_rename_project(old_id: str, new_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def kb_realign(
-    project: str = "", repo: str = "", cwd: str = "", pin: str = ""
+    project: str = "", repo: str = "", cwd: str = "", pin: str = "", branch: str = ""
 ) -> dict[str, Any]:
     """ORIENT THIS SESSION. Call this the moment the user says "realign" (or "realign on
     <project>", "where are we", "what should I be working on") — and at the start of any
@@ -1378,8 +1431,9 @@ async def kb_realign(
          neighbour. The `routing` block says whether the table is empty (hooks not
          installed on this machine) or simply had no match — a real difference.
 
-    ALWAYS pass pin, repo and cwd when you can see them (Claude Code: read
-    `.engram-project`, your working directory, and `git remote get-url origin`). The pin
+    ALWAYS pass pin, repo, cwd and branch when you can see them (Claude Code: read
+    `.engram-project`, your working directory, `git remote get-url origin` and
+    `git branch --show-current`). The pin
     makes resolution exact; repo/cwd make it reliable and teach the table for next time.
 
     If `pin_nudge` is non-empty, ACT ON IT: write `pin_content` into `.engram-project`
@@ -1408,13 +1462,19 @@ async def kb_realign(
     Hiren. Read both before you start: the point of orienting is knowing what NOT to
     pick up, and a collision you could have seen is worse than one you couldn't.
 
+    A HANDOFF CARD MAY BE WAITING. When `card` is present, a previous session handed this
+    work over: take it (kb_take_handoff), run `card.verify` and compare `card.anchor.sha`
+    with HEAD BEFORE trusting it, then do `card.first_action`. Pull its decisions/refs only
+    as needed; ask about the old session via a subagent on `card.anchor.transcript`.
+    `other_cards` lists other open cards in this project.
+
     Returns {resolved, project, resolved_by, phase, open_loops, next_actions, sequence,
     sequence_path, context_path, map_path, last_session, unread_messages, pin_file,
-    pin_content, working, needs_the_user, instruction} — or {resolved: false,
+    pin_content, working, needs_the_user, card?, other_cards?, instruction} — or {resolved: false,
     candidates, instruction}.
     """
     store = await current_store()
-    result = await store.kb_realign(project=project, repo=repo, cwd=cwd, pin=pin)
+    result = await store.kb_realign(project=project, repo=repo, cwd=cwd, pin=pin, branch=branch)
     if result.get("resolved"):
         _presence_project(str(result.get("project") or ""))
     # Orientation is the moment a session decides what to touch, so it is exactly
@@ -3678,6 +3738,12 @@ async def kb_finish_session(
             result["awaiting_human"] = pr_title.strip()
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(f"Could not put the PR to the user ({exc}).")
+
+    # The stream's handoff card is finished too — a done card must not sit in kb_ready.
+    try:
+        result["cards_closed"] = await store.kb_close_stream(project, thread)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(f"Handoff card not closed ({exc}).")
 
     # Release claims BEFORE closing, and outside the success path — a stale claim
     # outlives the session and misinforms everyone.
