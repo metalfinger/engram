@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-08-01.v3-rooms"
+SERVER_VERSION = "2026-10-10.handoff-cards"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -30,7 +30,7 @@ CURRENT_TOOLS = (
     "kb_recipes", "kb_share_artifact", "kb_unshare_artifact", "kb_rename_project",
     "kb_import", "kb_inbox", "kb_doctor",
     "kb_thread_post", "kb_thread_read", "kb_threads",
-    "kb_presence", "kb_roster", "kb_handoff", "kb_workspace",
+    "kb_presence", "kb_roster", "kb_handoff", "kb_take_handoff", "kb_ready", "kb_workspace",
     "kb_claim", "kb_release", "kb_claims",
     "kb_meetings", "meetings_state", "meeting_transcript", "meeting_reply",
     "kb_office", "office_state",
@@ -88,6 +88,9 @@ CHANGES = (
     "REALIGN: kb_realign(project?, repo, cwd) — one call orients a session (resolve "
     "project -> load -> unread -> pin); say 'realign' any time, mid-session too",
     "unified app: one widget (Home/Browse/People/Rooms/Office) replaces the five cards",
+    "HANDOFF CARDS: kb_handoff takes a card (goal/now/first_action/verify/anchor/decisions/"
+    "dead_ends), one live card per project+stream; kb_realign returns it as `card` — take it "
+    "(kb_take_handoff), verify, then first_action; kb_ready lists open cards",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.
