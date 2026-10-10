@@ -129,6 +129,47 @@ def _index() -> SemanticIndex:
     return SemanticIndex(settings, controls=_FakeControls(client=FakeQdrant(), embedder=FakeEmbedder()))
 
 
+class RecordingEmbedder(FakeEmbedder):
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def embed(self, texts):
+        self.seen.extend(texts)
+        yield from super().embed(texts)
+
+
+_PROMPT_DOC = "---\ntype: note\ntitle: Qdrant Chosen\ndescription: d\n---\n\n## Why\n\nBecause.\n"
+
+
+def _recording_index(model: str) -> tuple[SemanticIndex, RecordingEmbedder]:
+    emb = RecordingEmbedder()
+    settings = Settings(_env_file=None, qdrant_url="http://fake", qdrant_collection="c",
+                        embed_model=model)
+    return SemanticIndex(settings, controls=_FakeControls(client=FakeQdrant(), embedder=emb)), emb
+
+
+def test_default_model_embeds_raw_text_unchanged():
+    """bge-small has no prompt format: what goes in must be byte-for-byte what went in
+    before prompts existed, or every stored vector silently stops matching new ones."""
+    idx, emb = _recording_index("BAAI/bge-small-en-v1.5")
+    idx.upsert_file("projects/a/x.md", _PROMPT_DOC)
+    idx.search("why qdrant")
+    assert "why qdrant" in emb.seen
+    assert not any(s.startswith(("task:", "title:")) for s in emb.seen)
+
+
+def test_embeddinggemma_gets_its_query_and_document_prompts():
+    from engram_server.semantic import EMBEDDINGGEMMA
+
+    idx, emb = _recording_index(EMBEDDINGGEMMA)
+    idx.upsert_file("projects/a/x.md", _PROMPT_DOC)
+    idx.search("why qdrant")
+    assert "task: search result | query: why qdrant" in emb.seen
+    docs = [s for s in emb.seen if s.startswith("title: ")]
+    assert any(s.startswith("title: Qdrant Chosen | text: ") for s in docs), docs
+    assert any(s.startswith("title: Why | text: ") for s in docs), "section chunks carry their heading"
+
+
 _DOC = (
     "---\ntype: decision\ntitle: Qdrant Chosen\ndescription: Vector store pick.\n"
     "tags: [search, vectors]\ntimestamp: 2026-07-01T00:00:00Z\nproject: alt\n---\n\n"

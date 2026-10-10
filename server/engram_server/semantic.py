@@ -53,6 +53,52 @@ class Chunk:
     text: str
 
 
+EMBEDDINGGEMMA = "onnx-community/embeddinggemma-300m-ONNX"
+
+# Asymmetric retrieval prompts (query template, document template). A model listed here
+# was trained to see queries and documents worded differently, and raw text silently
+# costs it recall. Models absent from the map (bge-small) embed raw text, as always.
+_PROMPTS: dict[str, tuple[str, str]] = {
+    EMBEDDINGGEMMA: ("task: search result | query: {text}", "title: {title} | text: {text}"),
+}
+
+
+class _OnnxSentenceEmbedder:
+    """EmbeddingGemma via onnxruntime, reading the graph's ``sentence_embedding`` output.
+
+    Deliberately NOT fastembed's custom-model path: that always takes output [0] (the
+    per-token hidden states) and mean-pools it, skipping the model's two projection
+    layers. The result is a plausible 768-d vector that isn't EmbeddingGemma's embedding
+    at all — it reordered the model card's own Red Planet example. This class reproduces
+    the card's published similarities to 1e-7. fp32 on purpose: Gemma activations go
+    NaN in fp16, and the int8 build was ~6x slower per query on this CPU."""
+
+    def __init__(self, repo: str, batch_size: int = 16, max_tokens: int = 2048) -> None:
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        path = hf_hub_download(repo, "onnx/model.onnx")
+        hf_hub_download(repo, "onnx/model.onnx_data")
+        self._session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        self._tok = Tokenizer.from_file(hf_hub_download(repo, "tokenizer.json"))
+        self._tok.enable_padding(pad_id=0, pad_token="<pad>")
+        self._tok.enable_truncation(max_length=max_tokens)
+        self._batch = batch_size
+
+    def embed(self, texts: list[str]) -> Any:
+        import numpy as np
+
+        for start in range(0, len(texts), self._batch):
+            enc = self._tok.encode_batch(texts[start : start + self._batch])
+            feed = {
+                "input_ids": np.array([e.ids for e in enc], dtype=np.int64),
+                "attention_mask": np.array([e.attention_mask for e in enc], dtype=np.int64),
+            }
+            (vectors,) = self._session.run(["sentence_embedding"], feed)
+            yield from vectors
+
+
 @dataclass
 class _FakeControls:
     """Test seam: unit tests set .client, .embedder, and .reranker to fakes so no
@@ -189,12 +235,25 @@ class SemanticIndex:
             from fastembed import TextEmbedding
 
             log.info("semantic: loading embedding model %s (first use may download)", self.settings.embed_model)
-            self._ctl.embedder = TextEmbedding(model_name=self.settings.embed_model)
+            if self.settings.embed_model == EMBEDDINGGEMMA:
+                self._ctl.embedder = _OnnxSentenceEmbedder(EMBEDDINGGEMMA)
+            else:
+                self._ctl.embedder = TextEmbedding(model_name=self.settings.embed_model)
         return self._ctl.embedder
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         vectors = self._embedder().embed(texts)
         return [list(map(float, v)) for v in vectors]
+
+    def _prompts(self) -> tuple[str, str]:
+        return _PROMPTS.get(self.settings.embed_model, ("{text}", "{text}"))
+
+    def _embed_query(self, query: str) -> list[float]:
+        return self._embed([self._prompts()[0].format(text=query)])[0]
+
+    def _embed_docs(self, chunks: list[Chunk]) -> list[list[float]]:
+        doc = self._prompts()[1]
+        return self._embed([doc.format(title=c.heading or "none", text=c.text) for c in chunks])
 
     def _reranker(self) -> Any:
         if self._ctl.reranker is None:
@@ -396,7 +455,7 @@ class SemanticIndex:
         qm = self._models()
         points: list[Any] = []
         if to_embed:
-            vectors = self._embed([desired[pid][0].text for pid in to_embed])
+            vectors = self._embed_docs([desired[pid][0] for pid in to_embed])
             for pid, vec in zip(to_embed, vectors):
                 chunk, sha = desired[pid]
                 payload = self._payload(path, text, chunk)
@@ -435,7 +494,7 @@ class SemanticIndex:
         self._delete_path(path)
         if not chunks:
             return True
-        vectors = self._embed([c.text for c in chunks])
+        vectors = self._embed_docs(chunks)
         qm = self._models()
         points = []
         for i, c in enumerate(chunks):
@@ -487,7 +546,7 @@ class SemanticIndex:
         if not self.ensure_collection():
             return None
         try:
-            qvec = self._embed([query])[0]
+            qvec = self._embed_query(query)
             qm = self._models()
             # Tenant condition is mandatory, not opt-in like project/type — a bare
             # search() with no filters must still never cross tenants.
@@ -557,7 +616,7 @@ class SemanticIndex:
         if not self.ensure_collection():
             return None
         try:
-            qvec = self._embed([query])[0]
+            qvec = self._embed_query(query)
             qm = self._models()
             query_filter = qm.Filter(
                 must=[qm.FieldCondition(key="visibility", match=qm.MatchValue(value="public"))],
@@ -696,7 +755,7 @@ class SemanticIndex:
                 pieces = _cap(result_text.strip())
             if not pieces:
                 return None
-            result_centroid = _centroid(self._embed(pieces))
+            result_centroid = _centroid(self._embed_docs([Chunk(heading="", text=p) for p in pieces]))
             if result_centroid is None:
                 return None
             source_vectors: list[list[float]] = []
