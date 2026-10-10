@@ -20,7 +20,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 
-SERVER_VERSION = "2026-10-10.handoff-cards"
+SERVER_VERSION = "2026-10-10.take-returns-card"
 
 # The full tool surface this server offers right now (kept in sync with the
 # registry-guard test). A session missing any of these is running a stale tool list.
@@ -91,6 +91,7 @@ CHANGES = (
     "HANDOFF CARDS: kb_handoff takes a card (goal/now/first_action/verify/anchor/decisions/"
     "dead_ends), one live card per project+stream; kb_realign returns it as `card` — take it "
     "(kb_take_handoff), verify, then first_action; kb_ready lists open cards",
+    "kb_take_handoff returns the whole `card`, so a session that takes one needs no kb_read",
 )
 
 # The canonical skill path inside the brain bundle — its sha is the skill fingerprint.

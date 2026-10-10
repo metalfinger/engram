@@ -1284,7 +1284,11 @@ async def kb_take_handoff(path: str, session: str, done: bool = False) -> dict[s
     already took it you get a warning naming them — check they aren't still on it. A
     superseded card is refused and points you at the card that replaced it.
 
-    Returns {path, status, changed, warnings}.
+    The result carries the whole `card` (goal, first_action, verify, anchor with sha and
+    transcript, decisions, dead_ends, open_questions, refs), so there is no need to kb_read the
+    card file. Pull ref bodies only when you need them.
+
+    Returns {path, status, changed, warnings, card}.
     """
     return await (await current_store()).kb_take_handoff(path, session, done)
 
