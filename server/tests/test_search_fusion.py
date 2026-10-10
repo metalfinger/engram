@@ -51,6 +51,44 @@ def test_rrf_fuse_rewards_agreement() -> None:
     assert scores["shared"] > scores["top_a"] and scores["shared"] > scores["top_b"]
 
 
+def test_rrf_fuse_default_weights_are_unweighted() -> None:
+    list_a = [{"path": "top_a", "score": 0.9}, {"path": "shared", "score": 0.5}]
+    list_b = [{"path": "top_b", "score": 0.9}, {"path": "shared", "score": 0.4}]
+    assert rrf_fuse([list_a, list_b]) == rrf_fuse([list_a, list_b], weights=[1.0, 1.0])
+
+
+def test_rrf_fuse_weight_lets_a_strong_list_keep_its_leader() -> None:
+    """The measured Gemma failure: the vector list's #1 lost to a path that sat
+    mid-pack in BOTH lists. Weighting the vector vote keeps its leader on top."""
+    vec = [{"path": "right", "score": 0.9}] + [{"path": f"v{i}", "score": 0.1} for i in range(20)] + [
+        {"path": "both", "score": 0.1}
+    ]
+    text = [{"path": f"t{i}", "score": 0.5} for i in range(3)] + [{"path": "both", "score": 0.2}]
+    assert rrf_fuse([vec, text])[0]["path"] == "both", "equal votes: agreement wins"
+    assert rrf_fuse([vec, text], weights=[5.0, 1.0])[0]["path"] == "right"
+
+
+def test_model_profiles_resolve_and_explicit_settings_override() -> None:
+    from engram_server.semantic import EMBEDDINGGEMMA, SemanticIndex, _FakeControls
+
+    bge = SemanticIndex(Settings(_env_file=None), controls=_FakeControls())
+    assert (bge.fusion_weight, bge.dupe_threshold, bge.drift_threshold, bge.common_ground_threshold) == (
+        1.0, 0.80, 0.5, 0.55,
+    ), "bge-small must keep exactly today's values"
+
+    gemma = SemanticIndex(Settings(_env_file=None, embed_model=EMBEDDINGGEMMA), controls=_FakeControls())
+    assert (gemma.fusion_weight, gemma.dupe_threshold, gemma.drift_threshold, gemma.common_ground_threshold) == (
+        5.0, 0.75, 0.60, 0.70,
+    )
+
+    pinned = SemanticIndex(
+        Settings(_env_file=None, embed_model=EMBEDDINGGEMMA, fusion_weight=2.0,
+                 dupe_threshold=0.9, artifact_drift_threshold=0.3),
+        controls=_FakeControls(),
+    )
+    assert (pinned.fusion_weight, pinned.dupe_threshold, pinned.drift_threshold) == (2.0, 0.9, 0.3)
+
+
 def test_window_search_bounds_and_failure_soft(tmp_path) -> None:
     (tmp_path / "projects/alt/decisions").mkdir(parents=True)
     (tmp_path / "projects/alt/decisions/june.md").write_text(
@@ -75,6 +113,8 @@ def test_window_search_bounds_and_failure_soft(tmp_path) -> None:
 
 class FakeSem:
     """Stand-in semantic engine: returns fixed rows (optionally None to simulate down)."""
+
+    fusion_weight = 1.0
 
     def __init__(self, rows) -> None:
         self.rows = rows

@@ -99,6 +99,8 @@ async def test_run_reconcile_calls_semantic_reindex(store: KBStore) -> None:
     calls = {}
 
     class FakeSem:
+        dupe_threshold = 0.80
+
         def full_reindex(self, root):
             calls["root"] = root
             return {"indexed": 3}
@@ -130,6 +132,7 @@ async def test_reconcile_reports_similar_pairs(store):
     fake_idx = SimpleNamespace(
         full_reindex=lambda root: {"indexed": 2, "failed": 0, "skipped": 0},
         search=fake_search,
+        dupe_threshold=0.80,
     )
     from engram_server.reconcile import run_reconcile
 

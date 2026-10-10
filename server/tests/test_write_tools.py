@@ -350,7 +350,8 @@ async def test_new_concept_warns_on_semantic_near_duplicate(store):
     store.semantic = SimpleNamespace(
         search=lambda q, limit=3: [
             {"path": "projects/alt/specs/existing-thing.md", "score": 0.91}
-        ]
+        ],
+        dupe_threshold=0.80,
     )
     content = "---\ntype: idea\ndescription: A very similar thought.\n---\n\nSee [ctx](../context.md).\n"
     r = await store.kb_write("projects/alt/ideas/similar-thing.md", content, "add similar")
@@ -358,7 +359,8 @@ async def test_new_concept_warns_on_semantic_near_duplicate(store):
 
     # below threshold -> silent; artifacts exempt entirely
     store.semantic = SimpleNamespace(
-        search=lambda q, limit=3: [{"path": "projects/alt/specs/existing-thing.md", "score": 0.55}]
+        search=lambda q, limit=3: [{"path": "projects/alt/specs/existing-thing.md", "score": 0.55}],
+        dupe_threshold=0.80,
     )
     r2 = await store.kb_write(
         "projects/alt/ideas/different-thing.md",

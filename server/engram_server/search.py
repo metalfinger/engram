@@ -261,7 +261,7 @@ def union_max(rankings: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
 
 
 def rrf_fuse(
-    rankings: list[list[dict[str, Any]]], k: int = 60
+    rankings: list[list[dict[str, Any]]], k: int = 60, weights: list[float] | None = None
 ) -> list[dict[str, Any]]:
     """Reciprocal-rank fusion of two (or more) ranked result lists.
 
@@ -274,15 +274,19 @@ def rrf_fuse(
     Score for a path = sum over lists of 1/(k + rank) (rank 0-based within each list).
     A path present in BOTH lists therefore outranks one present in only one at a
     similar position. The returned ``score`` is the RRF score; each row carries the
-    richest metadata seen (the appearance with the highest original engine score)."""
+    richest metadata seen (the appearance with the highest original engine score).
+
+    ``weights`` scales each list's vote (default: all 1). A strong embedding model's
+    list deserves more than an equal vote — see semantic.ModelProfile.fusion_weight."""
     scores: dict[str, float] = {}
     meta: dict[str, dict[str, Any]] = {}
-    for results in rankings:
+    for i, results in enumerate(rankings):
+        weight = weights[i] if weights else 1.0
         for rank, r in enumerate(results):
             path = r.get("path")
             if not path:
                 continue
-            scores[path] = scores.get(path, 0.0) + 1.0 / (k + rank + 1)
+            scores[path] = scores.get(path, 0.0) + weight / (k + rank + 1)
             if path not in meta or r.get("score", 0.0) > meta[path].get("score", 0.0):
                 meta[path] = r
     fused: list[dict[str, Any]] = []

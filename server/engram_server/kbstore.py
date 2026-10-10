@@ -1295,7 +1295,9 @@ class KBStore:
         # fall back to whichever single engine has something (text preferred when tie-empty).
         if semantic_ranked:
             if text_ranked:
-                fused = _rrf_fuse([semantic_ranked, text_ranked])
+                fused = _rrf_fuse(
+                    [semantic_ranked, text_ranked], weights=[self.semantic.fusion_weight, 1.0]
+                )
                 engine = "hybrid"
             else:
                 fused = semantic_ranked
@@ -1581,7 +1583,7 @@ class KBStore:
         for hit in hits:
             path = str(hit.get("path") or "")
             score = float(hit.get("score") or 0.0)
-            if path and path != rel and score >= self.settings.dupe_threshold:
+            if path and path != rel and score >= self.semantic.dupe_threshold:
                 return (
                     f"Possibly a duplicate of existing concept '{path}' "
                     f"(similarity {score:.2f}) — consider updating that concept "
@@ -1600,7 +1602,7 @@ class KBStore:
             return None
         if similarity is None:
             return None
-        if similarity < self.settings.artifact_drift_threshold:
+        if similarity < self.semantic.drift_threshold:
             return (
                 f"this artifact diverged from its sources (similarity {similarity:.2f}) — "
                 "it may contain content not grounded in them; review."

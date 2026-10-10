@@ -55,11 +55,47 @@ class Chunk:
 
 EMBEDDINGGEMMA = "onnx-community/embeddinggemma-300m-ONNX"
 
-# Asymmetric retrieval prompts (query template, document template). A model listed here
-# was trained to see queries and documents worded differently, and raw text silently
-# costs it recall. Models absent from the map (bge-small) embed raw text, as always.
-_PROMPTS: dict[str, tuple[str, str]] = {
-    EMBEDDINGGEMMA: ("task: search result | query: {text}", "title: {title} | text: {text}"),
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """Everything that is specific to one embedding model, kept together so switching
+    ``embed_model`` can't leave a setting tuned for the old one.
+
+    - prompts: models trained on asymmetric query/document wording lose recall on raw text.
+    - fusion_weight: the vector list's vote in kb_search's rank fusion (text = 1). A weak
+      model needs the text scorer's help; a strong one is held back by an equal vote.
+    - cutoffs: cosine thresholds for features that compare a score to a fixed number.
+      Ranking survives a model swap; these don't — every model has its own score scale.
+    Values come from scripts/bench_fusion.py and scripts/calibrate_thresholds.py; see
+    projects/personal/engram/research/2026-10-google-embeddings.md in the brain."""
+
+    query_prompt: str = "{text}"
+    doc_prompt: str = "{text}"
+    fusion_weight: float = 1.0
+    dupe_threshold: float = 0.80
+    common_ground_threshold: float = 0.55
+    drift_threshold: float = 0.5
+
+
+# Models not listed (bge-small, the default) use ModelProfile() — today's behavior exactly.
+_PROFILES: dict[str, ModelProfile] = {
+    # Cutoffs chosen by SEPARATION, not by copying bge's rates: bge-small packs every
+    # score into 0.75-0.92, so its 0.80 duplicate cutoff fires on 56% of concepts, its
+    # 0.55 overlap cutoff matches 100%, and random unrelated pairs clear its 0.5 drift
+    # floor (median 0.81) — two of its three guards measure nothing. Gemma spreads scores:
+    #   dupe 0.75   -> 3.5% of concepts, top pairs are real overlaps (research note vs
+    #                  its own report, two specs for one feature)
+    #   overlap 0.70 -> ~top 16% of cross-project nearest neighbours
+    #   drift 0.60  -> all 10 real artifacts score >= 0.69 vs their sources; random
+    #                  unrelated pairs median 0.54
+    EMBEDDINGGEMMA: ModelProfile(
+        query_prompt="task: search result | query: {text}",
+        doc_prompt="title: {title} | text: {text}",
+        fusion_weight=5.0,
+        dupe_threshold=0.75,
+        common_ground_threshold=0.70,
+        drift_threshold=0.60,
+    ),
 }
 
 
@@ -245,14 +281,37 @@ class SemanticIndex:
         vectors = self._embedder().embed(texts)
         return [list(map(float, v)) for v in vectors]
 
-    def _prompts(self) -> tuple[str, str]:
-        return _PROMPTS.get(self.settings.embed_model, ("{text}", "{text}"))
+    @property
+    def profile(self) -> ModelProfile:
+        return _PROFILES.get(self.settings.embed_model, ModelProfile())
+
+    def _setting_or_profile(self, name: str) -> float:
+        """An explicit setting wins; None means 'the model's measured value'."""
+        explicit = getattr(self.settings, name, None)
+        return float(explicit) if explicit is not None else float(getattr(self.profile, name))
+
+    @property
+    def fusion_weight(self) -> float:
+        return self._setting_or_profile("fusion_weight")
+
+    @property
+    def dupe_threshold(self) -> float:
+        return self._setting_or_profile("dupe_threshold")
+
+    @property
+    def drift_threshold(self) -> float:
+        explicit = self.settings.artifact_drift_threshold
+        return float(explicit) if explicit is not None else self.profile.drift_threshold
+
+    @property
+    def common_ground_threshold(self) -> float:
+        return float(self.profile.common_ground_threshold)
 
     def _embed_query(self, query: str) -> list[float]:
-        return self._embed([self._prompts()[0].format(text=query)])[0]
+        return self._embed([self.profile.query_prompt.format(text=query)])[0]
 
     def _embed_docs(self, chunks: list[Chunk]) -> list[list[float]]:
-        doc = self._prompts()[1]
+        doc = self.profile.doc_prompt
         return self._embed([doc.format(title=c.heading or "none", text=c.text) for c in chunks])
 
     def _reranker(self) -> Any:
@@ -655,7 +714,7 @@ class SemanticIndex:
             return None
 
     def common_ground(
-        self, other_user: str, pairs: int = 8, threshold: float = 0.55
+        self, other_user: str, pairs: int = 8, threshold: float | None = None
     ) -> list[dict[str, Any]] | None:
         """Explainable work-overlap between the CALLER's brain and another user's
         PUBLIC work: pairs of (my concept, their public concept) whose stored
@@ -668,6 +727,8 @@ class SemanticIndex:
         ~15 distinct paths by frontmatter timestamp. None on failure."""
         if not other_user or other_user == self.tenant:
             return None
+        if threshold is None:
+            threshold = self.common_ground_threshold
         if not self.ensure_collection():
             return None
         try:

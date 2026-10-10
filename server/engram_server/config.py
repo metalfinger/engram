@@ -65,14 +65,21 @@ class Settings(BaseSettings):
 
     # Semantic near-duplicate detection: kb_write warning + the nightly
     # similar-pairs sweep. Cosine floor — bge-small near-dupes usually score > 0.8.
-    dupe_threshold: float = 0.80
+    # None = the embedding model's calibrated value (semantic.ModelProfile; 0.80 for
+    # bge-small). Cosine cutoffs are per-model: set an explicit number only to override.
+    dupe_threshold: float | None = None
 
     # Artifact rebuild-guard (hallucination check for living documents): on a
     # type: artifact write that lists sources, kb_write compares the artifact body's
     # embedding centroid to its sources' centroid and warns (never blocks) when the
     # cosine falls below this floor — a low score means the document drifted from
-    # what it claims to be built on.
-    artifact_drift_threshold: float = 0.5
+    # what it claims to be built on. None = the embedding model's calibrated value
+    # (semantic.ModelProfile; 0.5 for bge-small).
+    artifact_drift_threshold: float | None = None
+
+    # Vector list's vote in kb_search's rank fusion (text list = 1). None = the
+    # embedding model's measured value (semantic.ModelProfile; 1.0 for bge-small).
+    fusion_weight: float | None = None
 
     # Cross-encoder rerank of kb_search results (opt-in; OFF by default — it adds
     # latency and a one-time model download). When on and the semantic backend is

@@ -161,19 +161,19 @@ def test_artifact_drift_warning_none_when_semantic_off(store: KBStore) -> None:
 
 
 def test_artifact_drift_warning_fires_below_threshold(store: KBStore) -> None:
-    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.20)
+    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.20, drift_threshold=0.5)
     warning = store._artifact_drift_warning("body", ["projects/alt/context.md"])
     assert warning is not None and "diverged from its sources" in warning
     # Above threshold -> no warning.
-    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.90)
+    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.90, drift_threshold=0.5)
     assert store._artifact_drift_warning("body", ["projects/alt/context.md"]) is None
     # None similarity -> no warning.
-    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: None)
+    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: None, drift_threshold=0.5)
     assert store._artifact_drift_warning("body", ["projects/alt/context.md"]) is None
 
 
 async def test_kb_write_artifact_appends_drift_warning(store: KBStore) -> None:
-    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.15)
+    store.semantic = SimpleNamespace(centroid_drift=lambda body, srcs: 0.15, drift_threshold=0.5)
     result = await store.kb_write(
         "projects/alt/artifacts/2026-07-summary.md",
         "---\ntype: artifact\ntitle: Summary\ndescription: d\n"

@@ -824,7 +824,7 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
     clusters: list[list[str]] = []
     if semantic_index is not None:
         semantic_summary = await to_thread.run_sync(lambda: semantic_index.full_reindex(store.root))
-        threshold = float(getattr(store.settings, "dupe_threshold", 0.80))
+        threshold = semantic_index.dupe_threshold
         clusters = await to_thread.run_sync(
             lambda: _fresh_clusters(
                 store.root, semantic_index, threshold,
