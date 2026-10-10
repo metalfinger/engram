@@ -3011,7 +3011,8 @@ class KBStore:
         prev = str(meta.get("taken_by") or "")
         target = "done" if done else "taken"
         if status == target and (done or prev == who):
-            return {"path": rel, "status": status, "changed": False, "warnings": warnings}
+            return {"path": rel, "status": status, "changed": False, "warnings": warnings,
+                    "card": self._take_card(rel)}
         if status == "done" and not done:
             warnings.append("This card was already marked done; re-taking it reopens the stream.")
         if not done and status == "taken" and prev and prev != who:
@@ -3034,8 +3035,14 @@ class KBStore:
         self._log_mutation("kb_take_handoff", [rel], sha_commit, pushed)
         return {
             "path": rel, "status": target, "changed": True, "sha": sha_commit,
-            "pushed": pushed, "warnings": warnings,
+            "pushed": pushed, "warnings": warnings, "card": self._take_card(rel),
         }
+
+    def _take_card(self, rel: str) -> dict[str, Any]:
+        """The card as kb_realign shows it, read after the status change, so the taker has
+        everything in the take result and needs no kb_read of the card file."""
+        row = self._handoff_row(self.root / rel)
+        return self._card_view(row) if row is not None else {"path": rel}
 
     async def kb_close_stream(self, project: str, stream: str) -> list[str]:
         """Mark the live card(s) of one project+stream done (kb_finish_session's close-out).
@@ -3204,44 +3211,51 @@ class KBStore:
             lines.extend(f"- {k}: `{v}`" for k, v in anchor)
         return "\n".join(lines).rstrip("\n") + "\n"
 
+    def _handoff_row(self, f: Path) -> dict[str, Any] | None:
+        """One handoff file as a row (the shape _handoffs_sync lists and _card_view reads),
+        or None when the file is not a handoff."""
+        meta = read_meta(f)
+        if str(meta.get("type") or "") != "handoff":
+            return None
+
+        def _strs(val: Any) -> list[str]:
+            return [str(v) for v in val] if isinstance(val, list) else []
+
+        row: dict[str, Any] = {
+            "path": f.relative_to(self.root).as_posix(),
+            "from": str(meta.get("from") or ""),
+            "to": str(meta.get("to") or "any"),
+            "summary": str(meta.get("summary") or ""),
+            "repo": str(meta.get("repo") or ""),
+            "branch": str(meta.get("branch") or ""),
+            "state": str(meta.get("state") or ""),
+            "next_steps": str(meta.get("next_steps") or ""),
+            "refs": _strs(meta.get("refs")),
+            "created": str(meta.get("created") or ""),
+            "status": str(meta.get("status") or "open"),
+            "card": bool(meta.get("card")),
+            "project": str(meta.get("project") or "").lower(),
+            "stream": str(meta.get("stream") or ""),
+        }
+        for k in (*self._CARD_TEXT_FIELDS, *self._CARD_ANCHOR_FIELDS,
+                  "taken_by", "superseded_by"):
+            row[k] = str(meta.get(k) or "")
+        for k in self._CARD_LIST_FIELDS:
+            row[k] = _strs(meta.get(k))
+        return row
+
     def _handoffs_sync(self, limit: int | None = 5) -> list[dict[str, Any]]:
         """Recent handoff records, newest first (filenames are compact-ts prefixed)."""
         hdir = self.root / "workspace" / "handoffs"
         out: list[dict[str, Any]] = []
         if not hdir.is_dir():
             return out
-
-        def _strs(val: Any) -> list[str]:
-            return [str(v) for v in val] if isinstance(val, list) else []
-
         for f in sorted(hdir.glob("*.md")):
             if f.name == "index.md":
                 continue
-            meta = read_meta(f)
-            if str(meta.get("type") or "") != "handoff":
-                continue
-            row: dict[str, Any] = {
-                "path": f.relative_to(self.root).as_posix(),
-                "from": str(meta.get("from") or ""),
-                "to": str(meta.get("to") or "any"),
-                "summary": str(meta.get("summary") or ""),
-                "repo": str(meta.get("repo") or ""),
-                "branch": str(meta.get("branch") or ""),
-                "state": str(meta.get("state") or ""),
-                "next_steps": str(meta.get("next_steps") or ""),
-                "refs": _strs(meta.get("refs")),
-                "created": str(meta.get("created") or ""),
-                "status": str(meta.get("status") or "open"),
-                "card": bool(meta.get("card")),
-                "project": str(meta.get("project") or "").lower(),
-                "stream": str(meta.get("stream") or ""),
-            }
-            for k in (*self._CARD_TEXT_FIELDS, *self._CARD_ANCHOR_FIELDS,
-                      "taken_by", "superseded_by"):
-                row[k] = str(meta.get(k) or "")
-            for k in self._CARD_LIST_FIELDS:
-                row[k] = _strs(meta.get(k))
-            out.append(row)
+            row = self._handoff_row(f)
+            if row is not None:
+                out.append(row)
         # `created` has one-second resolution; the filename's microsecond stamp breaks ties
         # so "newest" is right even for two cards written in the same second.
         out.sort(key=lambda h: (str(h.get("created") or ""), h["path"]), reverse=True)

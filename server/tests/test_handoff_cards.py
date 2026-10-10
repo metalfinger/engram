@@ -109,6 +109,28 @@ async def test_take_is_idempotent_and_warns_second_taker(store: KBStore, setting
     assert read_meta(settings.brain_path / res["path"])["done_by"] == "pane-c"
 
 
+async def test_take_returns_the_whole_card_on_every_path(store: KBStore) -> None:
+    """The first real relay needed an extra kb_read because take returned no card."""
+    res = await _card(
+        store, now="wiring the judge", sha="abc123", transcript="/x/s.jsonl",
+        dead_ends=["tried Y, OOM"], open_questions=["which model?"], refs=["server/app.py:12"],
+    )
+    taken = await store.kb_take_handoff(res["path"], "pane-b")
+    card = taken["card"]
+    assert card["path"] == res["path"] and card["status"] == "taken"
+    assert card["goal"] == "Ship the harness pilot"
+    assert card["first_action"] == "run the pilot story" and card["verify"] == "pytest -q"
+    assert card["now"] == "wiring the judge" and card["dead_ends"] == ["tried Y, OOM"]
+    assert card["open_questions"] == ["which model?"] and card["refs"] == ["server/app.py:12"]
+    assert card["anchor"]["sha"] == "abc123" and card["anchor"]["transcript"] == "/x/s.jsonl"
+    assert card["taken_by"] == "pane-b"
+    # the unchanged (already-taken) path carries the card too
+    again = await store.kb_take_handoff(res["path"], "pane-b")
+    assert again["changed"] is False and again["card"]["first_action"] == "run the pilot story"
+    done = await store.kb_take_handoff(res["path"], "pane-b", done=True)
+    assert done["card"]["status"] == "done"
+
+
 async def test_take_refuses_superseded_and_non_handoff_paths(store: KBStore) -> None:
     first = await _card(store)
     second = await _card(store)
