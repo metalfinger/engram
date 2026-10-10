@@ -241,7 +241,10 @@ async def test_housekeep_never_touches_fresh_records(store: KBStore) -> None:
     )
     changed, hk = _housekeep(root, now, 24.0, 7.0)
     assert changed == []
-    assert hk == {"pruned_presence": [], "staled_handoffs": []}
+    assert hk == {
+        "pruned_presence": [], "staled_handoffs": [],
+        "superseded_duplicate_cards": [], "cards_with_broken_refs": [],
+    }
     assert (root / "workspace/presence/live.md").is_file()
 
 
@@ -261,3 +264,29 @@ async def test_outputs_exempt_from_orphans_and_dead(store):
     report = (store.root / "library/reports/brain-health.md").read_text(encoding="utf-8")
     assert "some-brief.md" not in report          # artifact exempt
     assert "truly-alone.md" in report             # real orphan still flagged
+
+
+async def test_lint_supersedes_duplicate_live_cards_and_reports_broken_refs(
+    store: KBStore,
+) -> None:
+    """Two live cards on one stream (a hand edit or race) -> keep newest, supersede the rest.
+    A card pointing at a missing BRAIN path is reported; repo paths are never judged."""
+    first = await store.kb_handoff("a", project="p", stream="s", goal="g1")
+    second = await store.kb_handoff("a", project="p", stream="other", goal="g2",
+                                    refs=["projects/p/gone.md", "server/app.py:3"])
+    root = store.root
+    # Simulate a race: point the second card at stream "s" and make the first live again.
+    for rel, status in ((first["path"], "open"),):
+        text = (root / rel).read_text(encoding="utf-8").replace("status: superseded", f"status: {status}")
+        (root / rel).write_text(text, encoding="utf-8")
+    text = (root / second["path"]).read_text(encoding="utf-8").replace("stream: other", "stream: s")
+    (root / second["path"]).write_text(text, encoding="utf-8")
+
+    changed, hk = _housekeep(root, datetime.now(timezone.utc), 24.0, 7.0)
+    assert hk["superseded_duplicate_cards"] == [first["path"]]
+    meta = read_meta(root / first["path"])
+    assert meta["status"] == "superseded" and meta["superseded_by"] == second["path"]
+    assert first["path"] in changed
+    assert len(hk["cards_with_broken_refs"]) == 1
+    assert "projects/p/gone.md" in hk["cards_with_broken_refs"][0]
+    assert "server/app.py" not in hk["cards_with_broken_refs"][0]

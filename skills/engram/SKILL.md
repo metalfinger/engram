@@ -18,13 +18,14 @@ Never try to load everything. Orient from indexes, fetch files one at a time as 
 
 **The verb.** Hiren says **"realign"**, optionally with a project — *"realign on vibechk"*. Also triggered by "where are we", "what should I be working on", or any session beginning work without knowing its project. One word is the whole interface, and it works for a fresh session AND one that has been running for hours.
 
-**Call `kb_realign(project, repo, cwd)`** — one call resolves the project, loads it, surfaces unread messages and hands you the pin. **Always pass `repo` and `cwd`** when you can see them (Claude Code: your working directory and `git remote get-url origin`) — that is what makes resolution reliable, and it teaches the routing table for next time.
+**Call `kb_realign(project, repo, cwd, branch)`** — one call resolves the project, loads it, surfaces unread messages, hands you the pin and any waiting handoff card. **Always pass `repo`, `cwd` and `branch`** when you can see them (Claude Code: your working directory, `git remote get-url origin`, `git branch --show-current`) — that is what makes resolution reliable, and it teaches the routing table for next time.
 
 1. **Resolution order** — first answer wins: he named it (loose match) → the learned routing table (repo/cwd → project, derived from presence history, self-maintaining) → a guess from the directory name (returned `guess: true` — confirm it) → nothing matched, so `resolved: false` + candidates: ask **ONE** question naming your best candidate, never make him read the list. If the work genuinely has no project yet, say so and offer `kb_attach_project` — never file it under the nearest neighbour.
 2. **Read order** — the tool hands you `phase`, `open_loops`/`next_actions` and `sequence` (the project's backlog/todos file, else its Open Loops). If it returns a `map_path`, note it exists; don't read it until you need a topic. Navigate, never ingest: a good realign touches ~3 files.
 3. **Surface unread messages FIRST** — they are instructions from a previous session, possibly addressed to your surface (`to: claude-code` means you, in Claude Code). Act or ask, then `kb_mark_read`. Expired ones: mention in passing, archive, don't act.
-4. **Pin the repo — the load-bearing step.** If `pin_nudge` comes back non-empty, write `pin_content` into `.engram-project` at the repo root. It commits with the repo (so it resolves cold on a machine with no history), it means Hiren is asked exactly once per repo, and it is the ONLY thing that teaches the routing table: the presence hook reads each session's project from that file, so an **unpinned repo stays invisible to routing forever**, however much work happens in it. Pass the pin back as `pin=` on every later realign.
-5. **Report in ONE line** — where you are · phase · top open loop · what he asked for. **Do not recite the context back** — he wrote it. One line, then start.
+4. **Then the handoff `card`, when there is one — it is your starting point.** A previous session handed this work over. Take it (`kb_take_handoff(card.path, <your session>)`), then **verify before trusting**: run `card.verify` and compare `card.anchor.sha` with HEAD, and say in one line what drifted. Do `card.first_action`. Pull `decisions`/`refs` only when you need them. A question only the old session can answer goes to a subagent reading `card.anchor.transcript` (it returns the answer, not the transcript) — never load the old session into your own context. `other_cards` lists the rest of this project's open cards.
+5. **Pin the repo — the load-bearing step.** If `pin_nudge` comes back non-empty, write `pin_content` into `.engram-project` at the repo root. It commits with the repo (so it resolves cold on a machine with no history), it means Hiren is asked exactly once per repo, and it is the ONLY thing that teaches the routing table: the presence hook reads each session's project from that file, so an **unpinned repo stays invisible to routing forever**, however much work happens in it. Pass the pin back as `pin=` on every later realign.
+6. **Report in ONE line** — where you are · phase · top open loop · what he asked for. **Do not recite the context back** — he wrote it. One line, then start.
 
 **Mid-session realign is a DRIFT CHECK, not a reload.** When a running session is told to realign, compare what you have actually been doing against `sequence`, then say plainly in a sentence or two: what you've been working on, whether it's still the priority, and what the backlog says is next. **If you drifted, say so** — the drift itself is information. Never quietly reconcile it.
 
@@ -59,6 +60,19 @@ When Hiren says "close session" or the work clearly wraps up, run the checklist 
 4. Confirm in one line what was committed.
 
 Offer the close-out proactively; don't let sessions end with unwritten state.
+
+### Handing off mid-work — land the plane, then write a CARD
+
+When the work continues in a fresh session (context getting large, ~300k; a phase boundary; end of day; "hand this off"), hand off with a card instead of compacting:
+
+1. **Land the plane.** Write anything durable as a concept first — a decision (`kb_write` a decision), a finding, a correction. The card points at these; it never pastes them.
+2. **Write the card** — `kb_handoff(from_session, project, stream, goal, outcome, now, first_action, verify, sha, cwd, session_id, transcript, decisions, dead_ends, open_questions, refs)`. `stream` defaults to the branch. One live card per project+stream: a new card supersedes the previous one, so never hand-edit an old card — write a new one. Capped at ~1,200 tokens; if it's refused as too big, move the detail into a concept and point at it.
+   - `first_action`: the exact next step, not a list. `verify`: a command or check that proves the state is as you claim.
+   - `dead_ends`: one line each, "tried X, failed because Y" — the thing summaries lose.
+   - `transcript`: this session's `.jsonl` path, so the next session can ask about this one through a subagent.
+   - **Re-read your next steps against any correction you made this session.** A card that still recommends a method you found to be wrong is the classic stale handoff.
+3. **Show Hiren the card** (goal, first action, verify) before the session clears or ends.
+4. When the stream's work is finished, `kb_take_handoff(path, session, done=True)` — or `kb_finish_session`, which closes it for you.
 
 ## Judgment calls
 
@@ -140,9 +154,10 @@ Many sessions run at once across Hiren's PCs; make yours visible and coordinated
   session that already holds the relevant context? Don't drag folders or brief a blank
   agent — fork this session there: `claude --fork-session --resume <own-session-id>`.
   Recipe: kb_read `library/runbooks/fork-session-context-handoff.md`.
-- **Hand off.** `kb_handoff(from, summary, repo, branch, state, next_steps, refs, to)` passes
-  unfinished work to a named session (`to="<session>"`) or parks it for whoever picks it up
-  (`to=""`), so the next session resumes from the exact state.
+- **Hand off.** `kb_handoff` with card fields (see *Handing off mid-work*) passes unfinished
+  work to a named session (`to="<session>"`) or parks it for whoever picks it up. The next
+  session gets it as `card` from `kb_realign`; `kb_ready` lists every open card ("what can a
+  fresh pane pick up?").
 
 ## Being reachable — how a session LEARNS a turn landed
 
