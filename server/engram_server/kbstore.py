@@ -1577,12 +1577,17 @@ class KBStore:
         if not query:
             return None
         try:
-            hits = self.semantic.search(query, limit=3) or []
+            hits = self.semantic.search(query, limit=6) or []
         except Exception:  # noqa: BLE001 — advisory only, never break a write
             return None
         for hit in hits:
             path = str(hit.get("path") or "")
             score = float(hit.get("score") or 0.0)
+            parts = path.split("/")
+            # A project's context/log/index or its session mail summarises the concepts
+            # around it, so it always scores close: "duplicate of its own log" is noise.
+            if parts[-1] in ("context.md", "log.md", "index.md") or "messages" in parts[:-1]:
+                continue
             if path and path != rel and score >= self.semantic.dupe_threshold:
                 return (
                     f"Possibly a duplicate of existing concept '{path}' "

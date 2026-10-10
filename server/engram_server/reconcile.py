@@ -50,6 +50,13 @@ def _in_messages(rel: str) -> bool:
     return "messages" in rel.split("/")[:-1]
 
 
+def _not_a_concept(rel: str) -> bool:
+    """Anchors and session mail embed close to the concepts they summarise or discuss,
+    so matching one reports 'X duplicates its own project log', which is noise. Measured
+    on the real brain (2026-10-10): a design-system charter vs its log scored 0.80+."""
+    return _is_anchor(rel) or _in_messages(rel)
+
+
 def _resolve_link(src_rel: str, target: str) -> str:
     if target.startswith("/"):
         return posixpath.normpath(target.lstrip("/"))
@@ -553,7 +560,7 @@ def _similar_pairs(root: Path, idx: Any, threshold: float) -> list[tuple[str, st
     pairs: dict[frozenset[str], float] = {}
     for f in sorted(root.rglob("*.md")):
         rel = f.relative_to(root).as_posix()
-        if ".git" in f.parts or _is_index(rel) or _is_log(rel) or _in_messages(rel):
+        if ".git" in f.parts or _is_anchor(rel) or _in_messages(rel):
             continue
         meta = read_meta(f)
         if str(meta.get("type") or "") in _PAIR_EXEMPT_TYPES:
@@ -562,10 +569,12 @@ def _similar_pairs(root: Path, idx: Any, threshold: float) -> list[tuple[str, st
         if not query:
             continue
         try:
-            hits = idx.search(query, limit=2) or []
+            # Deeper than the 2 pairs we keep: anchors and session mail are skipped
+            # below, and they often take the top slots.
+            hits = idx.search(query, limit=6) or []
         except Exception:  # noqa: BLE001 — advisory sweep, never fail the reconcile
             continue
-        for hit in hits:
+        for hit in [h for h in hits if not _not_a_concept(str(h.get("path") or ""))][:2]:
             other = str(hit.get("path") or "")
             score = float(hit.get("score") or 0.0)
             if other and other != rel and score >= threshold:

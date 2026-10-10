@@ -202,6 +202,31 @@ def _allow_subject(subject: str) -> bool:
     return user is not None and user.status == "active"
 
 
+async def _reindex_tenants() -> dict[str, Any]:
+    """Nightly: re-embed every OTHER active account's brain (the reconcile covers the
+    owner's). Through the registry's own stores, so the server stays each brain's only
+    writer and every point gets that account's visibility. Incremental per chunk, so a
+    quiet night costs almost nothing. One account failing never stops the rest."""
+    if not settings.multiuser:
+        return {}
+    done: dict[str, Any] = {}
+    for u in registry.tenancy.list_users():
+        if u.status != "active" or u.handle == settings.owner_handle:
+            continue
+        try:
+            tenant = await registry.store_for_handle(u.handle)
+            if tenant.semantic is None:
+                continue
+            done[u.handle] = await to_thread.run_sync(
+                lambda s=tenant: s.semantic.full_reindex(s.root)
+            )
+        except Exception as exc:  # noqa: BLE001 — one tenant must not stop the rest
+            log.warning("tenant reindex @%s failed: %s", u.handle, exc)
+            done[u.handle] = {"error": str(exc)}
+    log.info("scheduler: tenant reindex %s", done)
+    return done
+
+
 def _api_key_subject(token: str) -> str | None:
     # Keys are minted from the dashboard, which only exists in multiuser.
     if not settings.multiuser:
@@ -4962,7 +4987,9 @@ def main() -> None:
 
         @asynccontextmanager
         async def _lifespan_with_scheduler(app_: Any) -> AsyncIterator[None]:
-            scheduler = start_schedulers(store, settings, asyncio.get_running_loop())
+            scheduler = start_schedulers(
+                store, settings, asyncio.get_running_loop(), tenant_reindex=_reindex_tenants
+            )
             try:
                 async with inner_lifespan(app_):
                     yield

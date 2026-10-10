@@ -52,8 +52,15 @@ def _next_dt(hh: int, mm: int, after: datetime) -> datetime:
 class Scheduler:
     """Daily HH:MM scheduler bridging a daemon thread to the server event loop."""
 
-    def __init__(self, store: Any, settings: Settings, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        store: Any,
+        settings: Settings,
+        loop: asyncio.AbstractEventLoop,
+        tenant_reindex: Callable[[], Coroutine[Any, Any, Any]] | None = None,
+    ) -> None:
         self._store = store
+        self._tenant_reindex = tenant_reindex
         self._settings = settings
         self._loop = loop
         self._stop = threading.Event()
@@ -70,6 +77,11 @@ class Scheduler:
             self._jobs.append(
                 ("reconcile", reconcile_t, lambda: run_reconcile(self._store, self._store.semantic))
             )
+            # The reconcile only re-embeds the OWNER's brain. Other accounts' concepts
+            # were embedded only when written, so a model switch left their older work
+            # out of vector search, and payload fixes never reached them.
+            if self._tenant_reindex is not None:
+                self._jobs.append(("tenant-reindex", reconcile_t, self._tenant_reindex))
         if briefing_t:
             self._jobs.append(("briefing", briefing_t, lambda: build_briefing(self._store)))
         # Off-site mirror of tenant bares (M0.8) — only scheduled when a remote is
@@ -139,12 +151,15 @@ class Scheduler:
 
 
 def start_schedulers(
-    store: Any, settings: Settings, loop: asyncio.AbstractEventLoop
+    store: Any,
+    settings: Settings,
+    loop: asyncio.AbstractEventLoop,
+    tenant_reindex: Callable[[], Coroutine[Any, Any, Any]] | None = None,
 ) -> Scheduler | None:
     """Create and start the scheduler unless disabled. Returns it (for stop()) or None."""
     if not settings.scheduler_enabled:
         log.info("scheduler: disabled (ENGRAM_SCHEDULER=0)")
         return None
-    sched = Scheduler(store, settings, loop)
+    sched = Scheduler(store, settings, loop, tenant_reindex=tenant_reindex)
     sched.start()
     return sched
