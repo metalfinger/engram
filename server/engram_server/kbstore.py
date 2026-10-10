@@ -4782,13 +4782,18 @@ class KBStore:
         }
         if card is not None:
             result["card"] = card
-            result["instruction"] = (
-                "0) A handoff CARD is waiting (`card`). Before trusting it: take it "
+            card_step = (
+                "2) A handoff CARD is waiting (`card`). Before trusting it: take it "
                 "(kb_take_handoff(card.path, <your session>)), run `card.verify` and compare "
                 "`card.anchor.sha` with HEAD — report any drift in one line. Pull decisions/refs "
                 "only when you need them; ask questions about the old session with a subagent "
-                "on `card.anchor.transcript`, never by loading it. Then do `card.first_action`. "
-                + result["instruction"]
+                "on `card.anchor.transcript`, never by loading it. Then `card.first_action` is "
+                "your next step. "
+            )
+            result["instruction"] = (
+                result["instruction"]
+                .replace("3) Report", "4) Report")
+                .replace("2) Write pin_content", card_step + "3) Write pin_content")
             )
         if other_cards:
             result["other_cards"] = other_cards

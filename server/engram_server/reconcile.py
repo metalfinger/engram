@@ -681,7 +681,87 @@ def _housekeep(
             changed.append(rel)
             staled_handoffs.append(rel)
 
-    return changed, {"pruned_presence": pruned_presence, "staled_handoffs": staled_handoffs}
+    dup_superseded, broken_refs = _lint_cards(root, now, changed)
+    return changed, {
+        "pruned_presence": pruned_presence,
+        "staled_handoffs": staled_handoffs,
+        "superseded_duplicate_cards": dup_superseded,
+        "cards_with_broken_refs": broken_refs,
+    }
+
+
+_BRAIN_PREFIXES = ("projects/", "library/", "self/", "skills/", "inbox/")
+_LIVE_CARD = ("open", "taken")
+
+
+def _lint_cards(root: Path, now: datetime, changed: list[str]) -> tuple[list[str], list[str]]:
+    """Deterministic handoff-card lint (no LLM — engram has none server-side).
+
+    1. Two live cards on one project+stream should never exist (kb_handoff supersedes in
+       the same commit), but a hand edit or a race can leave them: keep the newest, mark
+       the rest superseded. History, not trash.
+    2. Cards whose decisions/refs name a brain path that no longer exists are REPORTED,
+       not changed — a moved concept is a link to fix, not a card to retire. Repo paths
+       (anything not under a brain root) are skipped: the server cannot see repos.
+    Contradictions inside a card are the reader's job ("verify before trusting")."""
+    hdir = root / "workspace" / "handoffs"
+    if not hdir.is_dir():
+        return [], []
+    cards: list[tuple[str, Path, dict[str, Any], Any]] = []
+    for f in sorted(hdir.glob("*.md")):
+        if f.name == "index.md":
+            continue
+        try:
+            doc = split(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a corrupt record is left alone
+            continue
+        if doc is None:
+            continue
+        meta = normalize_meta(doc.meta)
+        if str(meta.get("type") or "") != "handoff" or not meta.get("card"):
+            continue
+        cards.append((f.relative_to(root).as_posix(), f, meta, doc))
+
+    superseded: list[str] = []
+    groups: dict[tuple[str, str], list[tuple[str, Path, dict[str, Any], Any]]] = {}
+    for item in cards:
+        meta = item[2]
+        key = (str(meta.get("project") or "").lower(), str(meta.get("stream") or ""))
+        if key[0] and key[1] and str(meta.get("status") or "") in _LIVE_CARD:
+            groups.setdefault(key, []).append(item)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for items in groups.values():
+        if len(items) < 2:
+            continue
+        items.sort(key=lambda it: (str(it[2].get("created") or ""), it[0]), reverse=True)
+        keep = items[0][0]
+        for rel, f, meta, doc in items[1:]:
+            meta["status"] = "superseded"
+            meta["superseded_by"] = keep
+            meta["valid_until"] = stamp
+            body = re.sub(r"(\*\*Status:\*\*\s*)(open|taken)", r"\g<1>superseded", doc.body, count=1)
+            try:
+                with open(f, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(serialize(Doc(meta=meta, body=body)))
+            except OSError as exc:
+                log.warning("reconcile: could not supersede card %s: %s", rel, exc)
+                continue
+            changed.append(rel)
+            superseded.append(rel)
+
+    broken: list[str] = []
+    for rel, _f, meta, _doc in cards:
+        if str(meta.get("status") or "") not in _LIVE_CARD:
+            continue
+        targets = [str(t) for key in ("decisions", "refs") for t in (meta.get(key) or [])
+                   if isinstance(meta.get(key), list)]
+        missing = [
+            t for t in targets
+            if t.startswith(_BRAIN_PREFIXES) and t.endswith(".md") and not (root / t).is_file()
+        ]
+        if missing:
+            broken.append(f"{rel} -> {', '.join(missing)}")
+    return superseded, broken
 
 
 def _render_housekeeping(hk: dict[str, list[str]]) -> str:
@@ -697,6 +777,14 @@ def _render_housekeeping(hk: dict[str, list[str]]) -> str:
     lines += [f"    * `{p}`" for p in pruned]
     lines.append(f"* Marked {len(staled)} open handoff(s) stale.")
     lines += [f"    * `{p}`" for p in staled]
+    dups = hk.get("superseded_duplicate_cards", [])
+    if dups:
+        lines.append(f"* Superseded {len(dups)} duplicate live handoff card(s).")
+        lines += [f"    * `{p}`" for p in dups]
+    broken = hk.get("cards_with_broken_refs", [])
+    if broken:
+        lines.append(f"* {len(broken)} live card(s) point at missing brain paths:")
+        lines += [f"    * `{b}`" for b in broken]
     return "\n".join(lines) + "\n"
 
 
@@ -857,6 +945,8 @@ async def run_reconcile(store: Any, semantic_index: Any | None = None) -> dict[s
         "clusters": len(clusters),
         "pruned_presence": len(housekeeping["pruned_presence"]),
         "staled_handoffs": len(housekeeping["staled_handoffs"]),
+        "superseded_duplicate_cards": len(housekeeping.get("superseded_duplicate_cards") or []),
+        "cards_with_broken_refs": len(housekeeping.get("cards_with_broken_refs") or []),
         "report_path": _REPORT_PATH,
     }
     log.info("reconcile: %s", summary)

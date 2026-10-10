@@ -143,13 +143,13 @@ async def test_realign_returns_the_card(store: KBStore) -> None:
     out = await store.kb_realign(project="fever-dream", branch="main")
     assert out["card"]["path"] == a["path"]
     assert out["card"]["first_action"] == "run the pilot story"
-    assert out["instruction"].startswith("0) A handoff CARD")
+    assert "2) A handoff CARD" in out["instruction"] and "4) Report" in out["instruction"]
     assert [c["path"] for c in out["other_cards"]] == [b["path"]]
     # no branch match -> newest open card
     assert (await store.kb_realign(project="fever-dream"))["card"]["path"] == b["path"]
     # other projects see nothing
     plain = await store.kb_realign(project="slate")
-    assert "card" not in plain and not plain["instruction"].startswith("0)")
+    assert "card" not in plain and "handoff CARD" not in plain["instruction"]
 
 
 async def test_realign_skips_taken_cards(store: KBStore) -> None:
